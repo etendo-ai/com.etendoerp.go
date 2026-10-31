@@ -275,6 +275,13 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
   /** Default {@code upgradeAction} of an onboarding: create a new environment. */
   private static final String UPGRADE_ACTION_CREATE_PRODUCTIVE = "create-productive";
   private static final String FIELD_PLAN_KEY = "planKey";
+  private static final String FIELD_DISPLAY_PRICE = "displayPrice";
+  private static final String FIELD_BILLING_INTERVAL = "billingInterval";
+  private static final String FIELD_HAS_SUBSCRIPTION = "hasSubscription";
+  /** ETP-5053 — the timing of a plan change ({@code immediate} / {@code period_end}). */
+  private static final String FIELD_TIMING = "timing";
+  private static final String NO_SUBSCRIPTION_MESSAGE = "No subscription for this account";
+  private static final String ACTION_BILLING_PLAN_CHANGE = "billing-plan-change";
   private static final String CODE_PLAN_NOT_AVAILABLE = "PLAN_NOT_AVAILABLE";
   private static final String PLAN_NOT_AVAILABLE_MESSAGE =
       "The selected plan is no longer available. Reload the page to see the current plans.";
@@ -962,9 +969,9 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
     // ("Grandfathered plan ... sold only via the legacy price fallback ... etendo.go.checkout...")
     // and would put internal configuration keys in front of a buyer on the upgrade page.
     item.put("description", "");
-    item.put("displayPrice", displayPrice.toPlainString());
+    item.put(FIELD_DISPLAY_PRICE, displayPrice.toPlainString());
     item.put(FIELD_CURRENCY, price.getCurrency());
-    item.put("billingInterval", StringUtils.defaultString(price.getInterval()));
+    item.put(FIELD_BILLING_INTERVAL, StringUtils.defaultString(price.getInterval()));
     return item;
   }
 
@@ -998,9 +1005,9 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
     item.put("description", StringUtils.defaultString(plan.getDescription()));
     // A plain string, not a double: the amount crosses to a client that formats it, and a
     // binary float would quietly re-round a price on the way.
-    item.put("displayPrice", displayPrice.toPlainString());
+    item.put(FIELD_DISPLAY_PRICE, displayPrice.toPlainString());
     item.put(FIELD_CURRENCY, currency);
-    item.put("billingInterval", StringUtils.defaultString(plan.getBillingInterval()));
+    item.put(FIELD_BILLING_INTERVAL, StringUtils.defaultString(plan.getBillingInterval()));
     item.put("includesApi", Boolean.TRUE.equals(plan.isIncludesAPI()));
     item.put("highlight", plan.getHighlight() == null ? JSONObject.NULL : plan.getHighlight());
     item.put("quotas", buildPlanQuotasJson(plan));
@@ -1629,7 +1636,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
           requestedSubscriptionClientId(request));
       if (purchase == null) {
         JSONObject result = new JSONObject();
-        result.put("hasSubscription", false);
+        result.put(FIELD_HAS_SUBSCRIPTION, false);
         writeResponse(response, HttpServletResponse.SC_OK, result);
         return;
       }
@@ -1691,7 +1698,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
       CheckoutRequest purchase = findRequestedSubscription(authenticated, requestedClientId);
       if (purchase == null || StringUtils.isBlank(purchase.getStripeCustomer())) {
         writeError(response, HttpServletResponse.SC_NOT_FOUND, "NO_SUBSCRIPTION",
-            "No subscription for this account", "No subscription for this account");
+            NO_SUBSCRIPTION_MESSAGE, NO_SUBSCRIPTION_MESSAGE);
         return;
       }
       JSONObject session;
@@ -1804,7 +1811,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
       graceDaysRemaining = remainingSeconds <= 0 ? 0 : (int) ((remainingSeconds + 86399) / 86400);
     }
     JSONObject result = new JSONObject();
-    result.put("hasSubscription", true);
+    result.put(FIELD_HAS_SUBSCRIPTION, true);
     result.put("plan", live.getPlan());
     result.put("amountMinor", live.getAmountMinor());
     result.put(FIELD_CURRENCY, live.getCurrency());
@@ -1877,7 +1884,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
     }
     JSONObject pending = planJson(subscription.getPendingPlan());
     pending.put("effectiveAt", subscription.getPendingEffectiveDate().toInstant().toString());
-    pending.put("timing", PlanChangeTiming.PERIOD_END.value());
+    pending.put(FIELD_TIMING, PlanChangeTiming.PERIOD_END.value());
     return pending;
   }
 
@@ -1886,8 +1893,8 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
     JSONObject json = new JSONObject();
     json.put(FIELD_PLAN_KEY, plan.getSearchKey());
     json.put("planName", StringUtils.defaultString(plan.getName()));
-    json.put("billingInterval", StringUtils.defaultString(plan.getBillingInterval()));
-    json.put("displayPrice", plan.getDisplayPrice() == null ? JSONObject.NULL
+    json.put(FIELD_BILLING_INTERVAL, StringUtils.defaultString(plan.getBillingInterval()));
+    json.put(FIELD_DISPLAY_PRICE, plan.getDisplayPrice() == null ? JSONObject.NULL
         : plan.getDisplayPrice().toPlainString());
     json.put(FIELD_CURRENCY, StringUtils.defaultString(plan.getCurrencyCode()));
     return json;
@@ -1913,7 +1920,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
           ZERO_ID.equals(requestedClientId) ? null : requestedClientId);
       JSONObject result = new JSONObject();
       if (purchase == null || purchase.getCreatedClient() == null) {
-        result.put("hasSubscription", false);
+        result.put(FIELD_HAS_SUBSCRIPTION, false);
         result.put("changes", new JSONArray());
         writeResponse(response, HttpServletResponse.SC_OK, result);
         return;
@@ -1924,7 +1931,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
       try {
         Subscription subscription = subscriptionService.findOpen(clientId).orElse(null);
         Plan current = subscription == null ? null : subscription.getPlan();
-        result.put("hasSubscription", subscription != null);
+        result.put(FIELD_HAS_SUBSCRIPTION, subscription != null);
         result.put(FIELD_CLIENT_ID, clientId);
         result.put("currentPlan", current == null ? JSONObject.NULL : planJson(current));
         result.put("subscriptionStatus", subscription == null ? JSONObject.NULL
@@ -1934,7 +1941,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
         for (PlanChange change : planChangeService.allowedChanges(subscription)) {
           Plan target = change.getTargetPlan();
           JSONObject item = planJson(target);
-          item.put("timing", change.getTiming());
+          item.put(FIELD_TIMING, change.getTiming());
           item.put("intervalChange", current != null && !StringUtils.equalsIgnoreCase(
               StringUtils.trimToEmpty(current.getBillingInterval()),
               StringUtils.trimToEmpty(target.getBillingInterval())));
@@ -1967,7 +1974,7 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
    */
   private void handleBillingPlanChange(HttpServletRequest request, HttpServletResponse response)
       throws IOException {
-    runWithPlatformContext(request, response, "billing-plan-change", authenticated -> {
+    runWithPlatformContext(request, response, ACTION_BILLING_PLAN_CHANGE, authenticated -> {
       JSONObject body = readJsonBodyOrBadRequest(request, response);
       if (body == null) {
         return;
@@ -1983,8 +1990,8 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
           ZERO_ID.equals(requestedClientId) ? null : requestedClientId);
       if (purchase == null || purchase.getCreatedClient() == null) {
         writeError(response, HttpServletResponse.SC_NOT_FOUND,
-            PlanChangeRefusedException.NO_SUBSCRIPTION, "No subscription for this account",
-            "No subscription for this account");
+            PlanChangeRefusedException.NO_SUBSCRIPTION, NO_SUBSCRIPTION_MESSAGE,
+            NO_SUBSCRIPTION_MESSAGE);
         return;
       }
       String clientId = purchase.getCreatedClient().getId();
@@ -1992,19 +1999,19 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
         // The service runs its own client-0 writes as system; the request's DAL filter commits.
         PlanChangeResult changed = planChangeService.requestChange(clientId, planKey);
         JSONObject result = planJson(changed.targetPlan());
-        result.put("timing", changed.timing().value());
+        result.put(FIELD_TIMING, changed.timing().value());
         result.put("effectiveAt", changed.effectiveAt().toString());
         result.put("alreadyPending", changed.alreadyPending());
         result.put(FIELD_CLIENT_ID, clientId);
         writeResponse(response, HttpServletResponse.SC_OK, result);
       } catch (PlanChangeRefusedException e) {
-        EtendoGoDalHelper.rollbackDalChanges("billing-plan-change", e, log);
+        EtendoGoDalHelper.rollbackDalChanges(ACTION_BILLING_PLAN_CHANGE, e, log);
         log.warn("Plan change refused for tenant {}: {} ({})", clientId, e.getMessage(),
             e.code());
         writeError(response, planChangeStatusOf(e.code()), e.code(), e.getMessage(),
             e.getMessage());
       } catch (StripeTransportException e) {
-        EtendoGoDalHelper.rollbackDalChanges("billing-plan-change", e, log);
+        EtendoGoDalHelper.rollbackDalChanges(ACTION_BILLING_PLAN_CHANGE, e, log);
         log.error("The payment provider did not answer the plan change of tenant {}", clientId,
             e);
         writeError(response, HttpServletResponse.SC_BAD_GATEWAY, BILLING_PROVIDER_ERROR,
