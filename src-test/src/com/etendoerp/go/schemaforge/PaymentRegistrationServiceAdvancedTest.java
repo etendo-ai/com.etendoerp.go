@@ -87,6 +87,8 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_Payment_Credit;
 import org.openbravo.model.financialmgmt.payment.FinAccPaymentMethod;
+import org.openbravo.module.remittance.Remittance;
+import org.openbravo.module.remittance.RemittanceLine;
 import org.openbravo.service.db.DalConnectionProvider;
 
 import com.etendoerp.payment.removal.util.PaymentRemovalUtil;
@@ -118,6 +120,9 @@ import com.etendoerp.psd2.bank.integration.utils.PISPaymentDao;
  * fixtures without a database. Because each scenario wires a different criteria/HQL graph,
  * fixtures are built as local mocks inside each test (matching the established convention of
  * the sibling payment tests) under {@code Strictness.LENIENT}.
+ *
+ * @covers com.etendoerp.go.schemaforge.PaymentRegistrationService
+ * @covers com.etendoerp.go.schemaforge.InvoiceRemittance
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -174,6 +179,7 @@ class PaymentRegistrationServiceAdvancedTest {
   private OBError okResult;
 
   @BeforeEach
+  @SuppressWarnings("unchecked")
   void setUp() {
     dal = mock(OBDal.class);
     obContext = mock(OBContext.class);
@@ -270,6 +276,12 @@ class PaymentRegistrationServiceAdvancedTest {
           .thenReturn(mock(FIN_PaymentDetail.class));
     });
     connConstruction = mockConstruction(DalConnectionProvider.class);
+
+    // ETP-6247: invoicePayments names the remittance a payment came from (REM_RemittanceLine);
+    // none unless a test says otherwise.
+    OBCriteria<RemittanceLine> remittanceLineCrit = mock(OBCriteria.class);
+    when(dal.createCriteria(RemittanceLine.class)).thenReturn(remittanceLineCrit);
+    when(remittanceLineCrit.add(any(Criterion.class))).thenReturn(remittanceLineCrit);
   }
 
   @AfterEach
@@ -1235,6 +1247,258 @@ class PaymentRegistrationServiceAdvancedTest {
         any(), any(), eq(newPayment), eq(new BigDecimal("-50.00")), any()));
     finAddPaymentMock.verify(() -> FIN_AddPayment.processPayment(
         any(), any(), eq("P"), eq(refundPayment), eq(""), anyString()));
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // doRegisterPaymentAdvanced - installment partly in a confirmed remittance (ETP-6247)
+  // ════════════════════════════════════════════════════════════════════════
+
+  /**
+   * ETP-6247 repro. 60 of a 100 installment sit in a confirmed remittance (a REM_SENT payment
+   * linked to that split of the detail); the other 40 are free. Registering 100 used to apply 40
+   * and keep the 60 as credit of the business partner, so collecting the remittance later charged
+   * those 60 a second time. It must be refused before anything is written.
+   */
+  @Test
+  @DisplayName("A registration over the payable part of a partly remitted installment is refused "
+      + "with 422 and leaves no credit")
+  @SuppressWarnings("unchecked")
+  void testAdvancedRefusesFundsOverPayableOfRemittedInstallment() throws Exception {
+    stubAdvancedBasics();
+    FIN_PaymentScheduleDetail freePsd = stubPendingPSDs(new BigDecimal("40.00"));
+    FIN_Payment remitted = mock(FIN_Payment.class);
+    when(remitted.getId()).thenReturn("rem-pay-1");
+    when(remitted.getStatus()).thenReturn(InvoiceRemittance.STATUS_REMITTED);
+    FIN_PaymentDetail remittedDetail = mock(FIN_PaymentDetail.class);
+    when(remittedDetail.getFinPayment()).thenReturn(remitted);
+    FIN_PaymentScheduleDetail remittedPsd = mock(FIN_PaymentScheduleDetail.class);
+    when(remittedPsd.getAmount()).thenReturn(new BigDecimal("60.00"));
+    when(remittedPsd.getPaymentDetails()).thenReturn(remittedDetail);
+    when(schedule.getFINPaymentScheduleDetailInvoicePaymentScheduleList())
+        .thenReturn(Arrays.asList(remittedPsd, freePsd));
+    Remittance remittance = mock(Remittance.class);
+    when(remittance.getId()).thenReturn("rem-1");
+    when(remittance.getDocumentNo()).thenReturn("REM-0042");
+    RemittanceLine line = mock(RemittanceLine.class);
+    when(line.getRemittance()).thenReturn(remittance);
+    OBCriteria<RemittanceLine> lineCrit = mock(OBCriteria.class);
+    when(dal.createCriteria(RemittanceLine.class)).thenReturn(lineCrit);
+    when(lineCrit.add(any(Criterion.class))).thenReturn(lineCrit);
+    when(lineCrit.uniqueResult()).thenReturn(line);
+    when(currency.getStandardPrecision()).thenReturn(2L);
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPaymentAdvanced(INVOICE_ID,
+        advancedBody("100.00", CONFIRM).put("overpaymentAction", "leave-credit"), true);
+
+    assertEquals(422, response.getHttpStatus());
+    JSONObject error = response.getBody().getJSONObject("error");
+    assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE,
+        error.getJSONArray("messageKeys").getString(0));
+    assertEquals("REM-0042", error.getString("remittanceDocumentNo"));
+    assertEquals(0, new BigDecimal("40.00").compareTo(
+        new BigDecimal(error.getString("payableAmount"))));
+    // The text names the remittance and what can still be registered (catalog wording, no DB).
+    String message = error.getString("message");
+    assertTrue(message.contains("REM-0042") && message.contains("40.00"), message);
+    // Nothing written: no draft, no link, no credit detail.
+    assertTrue(daoConstruction.constructed().isEmpty());
+    finAddPaymentMock.verify(
+        () -> FIN_AddPayment.updatePaymentDetail(any(), any(), any(), anyBoolean()), never());
+  }
+
+  @Test
+  @DisplayName("A registration within the payable part of a partly remitted installment proceeds")
+  void testAdvancedAcceptsFundsWithinPayableOfRemittedInstallment() throws Exception {
+    stubAdvancedBasics();
+    FIN_PaymentScheduleDetail freePsd = stubPendingPSDs(new BigDecimal("40.00"));
+    stubInstallmentDetails(remittedDetail("60.00"), freePsd);
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPaymentAdvanced(INVOICE_ID,
+        advancedBody("40.00", CONFIRM), true);
+
+    assertEquals(201, response.getHttpStatus());
+    finAddPaymentMock.verify(() -> FIN_AddPayment.updatePaymentDetail(
+        eq(freePsd), eq(newPayment), eq(new BigDecimal("40.00")), eq(false)));
+    // Nothing left over → no generated credit.
+    AdvPaymentMngtDao dao = daoConstruction.constructed().get(0);
+    verify(dao, never()).getNewPaymentScheduleDetail(any(), any());
+  }
+
+  @Test
+  @DisplayName("Consumed credit counts toward the funds checked against the payable part")
+  void testAdvancedRefusesCashPlusCreditOverPayableOfRemittedInstallment() throws Exception {
+    stubAdvancedBasics();
+    FIN_PaymentScheduleDetail freePsd = stubPendingPSDs(new BigDecimal("40.00"));
+    stubInstallmentDetails(remittedDetail("60.00"), freePsd);
+    JSONArray sources = new JSONArray(Collections.singletonList(
+        new JSONObject().put("kind", KIND_CREDIT).put("paymentId", CREDIT_PAY_ID).put("use", "20")));
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPaymentAdvanced(INVOICE_ID,
+        advancedBody("30.00", CONFIRM).put("creditSources", sources), true);
+
+    assertEquals(422, response.getHttpStatus());
+    assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE, response.getBody()
+        .getJSONObject("error").getJSONArray("messageKeys").getString(0));
+    finPaymentProcessMock.verify(
+        () -> FIN_PaymentProcess.linkCreditPayment(any(), any(), any()), never());
+  }
+
+  /**
+   * A fully remitted installment has no pending detail at all, so without the guard the request
+   * would fall through to the generic "No pending payment schedule details" (a 400). It must say
+   * why instead: the installment is in a remittance.
+   */
+  @Test
+  @DisplayName("A fully remitted installment is refused with 422 ETGO_InvoiceInRemittance, not the "
+      + "generic no-pending error")
+  @SuppressWarnings("unchecked")
+  void testAdvancedRefusesFullyRemittedInstallmentWithRemittanceDetails() throws Exception {
+    stubAdvancedBasics();
+    stubPendingPSDs(); // nothing free
+    stubInstallmentDetails(remittedDetail("100.00"));
+    stubRemittanceLine("rem-1", "REM-0042");
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPaymentAdvanced(INVOICE_ID,
+        advancedBody("10.00", CONFIRM), true);
+
+    assertEquals(422, response.getHttpStatus());
+    JSONObject error = response.getBody().getJSONObject("error");
+    assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE,
+        error.getJSONArray("messageKeys").getString(0));
+    assertEquals("rem-1", error.getString("remittanceId"));
+    assertEquals("REM-0042", error.getString("remittanceDocumentNo"));
+    assertEquals(0, BigDecimal.ZERO.compareTo(new BigDecimal(error.getString("payableAmount"))));
+    assertEquals(0, new BigDecimal("100.00")
+        .compareTo(new BigDecimal(error.getString("remittedAmount"))));
+    assertTrue(daoConstruction.constructed().isEmpty());
+  }
+
+  /** Nothing remitted: an overpayment keeps its usual leave-credit handling. */
+  @Test
+  @DisplayName("An installment with no remitted part still turns a genuine overpayment into credit")
+  void testAdvancedOverpaymentWithoutRemittanceStillLeavesCredit() throws Exception {
+    stubAdvancedBasics();
+    FIN_PaymentScheduleDetail freePsd = stubPendingPSDs(new BigDecimal("100.00"));
+    FIN_Payment ordinary = mock(FIN_Payment.class);
+    when(ordinary.getStatus()).thenReturn("RPR");
+    FIN_PaymentDetail ordinaryDetail = mock(FIN_PaymentDetail.class);
+    when(ordinaryDetail.getFinPayment()).thenReturn(ordinary);
+    FIN_PaymentScheduleDetail paidPsd = mock(FIN_PaymentScheduleDetail.class);
+    when(paidPsd.getAmount()).thenReturn(new BigDecimal("20.00"));
+    when(paidPsd.getPaymentDetails()).thenReturn(ordinaryDetail);
+    stubInstallmentDetails(paidPsd, freePsd);
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPaymentAdvanced(INVOICE_ID,
+        advancedBody("150.00", CONFIRM).put("overpaymentAction", "leave-credit"), true);
+
+    assertEquals(201, response.getHttpStatus());
+    AdvPaymentMngtDao dao = daoConstruction.constructed().get(0);
+    verify(dao).getNewPaymentScheduleDetail(eq(org), eq(new BigDecimal("50.00")));
+  }
+
+  /**
+   * Editing a draft: the detail the draft already holds is re-applied by the edit, so it counts as
+   * payable for that draft — re-saving the draft with the same amount must not be refused because
+   * the rest of the installment is remitted. A larger amount still is.
+   */
+  @Test
+  @DisplayName("Editing a draft counts the draft's own link as payable on a remitted installment")
+  void testAdvancedEditDraftCountsOwnLinkAsPayableOnRemittedInstallment() throws Exception {
+    stubAdvancedBasics();
+    FIN_Payment draft = stubExistingDraft(new BigDecimal("100.00"));
+    FIN_PaymentDetail ownDetail = mock(FIN_PaymentDetail.class);
+    when(ownDetail.getFinPayment()).thenReturn(draft);
+    FIN_PaymentScheduleDetail ownPsd = mock(FIN_PaymentScheduleDetail.class);
+    when(ownPsd.getAmount()).thenReturn(new BigDecimal("40.00"));
+    when(ownPsd.getPaymentDetails()).thenReturn(ownDetail);
+    stubInstallmentDetails(remittedDetail("60.00"), ownPsd);
+
+    NeoResponse over = PaymentRegistrationService.doRegisterPaymentAdvanced(INVOICE_ID,
+        advancedBody("40.01", DRAFT).put("paymentId", DRAFT_PAY_ID), true);
+    NeoResponse same = PaymentRegistrationService.doRegisterPaymentAdvanced(INVOICE_ID,
+        advancedBody("40.00", DRAFT).put("paymentId", DRAFT_PAY_ID), true);
+
+    assertEquals(422, over.getHttpStatus());
+    assertEquals(201, same.getHttpStatus());
+    assertEquals(DRAFT_PAY_ID, same.getBody().getJSONObject("response")
+        .getJSONObject("data").getString("id"));
+  }
+
+  /** A remittance due payment, listed on the invoice, names its remittance; a hand payment not. */
+  @Test
+  @DisplayName("handleListPayments names the remittance a payment came from")
+  void testHandleListPaymentsNamesTheRemittanceOfARemittedPayment() throws Exception {
+    stubNoPisPaymentLinked();
+    FIN_Payment remitted = mock(FIN_Payment.class);
+    when(remitted.getId()).thenReturn("rem-pay-1");
+    when(remitted.getDocumentNo()).thenReturn("PAY-REM");
+    when(remitted.getAmount()).thenReturn(new BigDecimal("60.00"));
+    when(remitted.getStatus()).thenReturn(InvoiceRemittance.STATUS_REMITTED);
+    when(remitted.isProcessed()).thenReturn(true);
+    when(remitted.isReceipt()).thenReturn(true);
+    stubRemittanceLine("rem-1", "REM-0042");
+    stubCreditQuery(Collections.singletonList(remitted));
+
+    JSONObject item = PaymentRegistrationService.handleListPayments(listPaymentsContext())
+        .getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
+
+    assertEquals("rem-1", item.getString("remittanceId"));
+    assertEquals("REM-0042", item.getString("remittanceDocumentNo"));
+  }
+
+  @Test
+  @DisplayName("handleListPayments adds no remittance keys to a payment registered by hand")
+  void testHandleListPaymentsOmitsRemittanceForAHandPayment() throws Exception {
+    stubNoPisPaymentLinked();
+    FIN_Payment hand = mock(FIN_Payment.class);
+    when(hand.getId()).thenReturn(NEW_PAY_ID);
+    when(hand.getDocumentNo()).thenReturn("PAY-1");
+    when(hand.getAmount()).thenReturn(new BigDecimal("100.00"));
+    when(hand.getStatus()).thenReturn("RPR");
+    when(hand.isProcessed()).thenReturn(true);
+    when(hand.isReceipt()).thenReturn(true);
+    stubCreditQuery(Collections.singletonList(hand));
+
+    JSONObject item = PaymentRegistrationService.handleListPayments(listPaymentsContext())
+        .getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
+
+    assertFalse(item.has("remittanceId"));
+    assertFalse(item.has("remittanceDocumentNo"));
+  }
+
+  /** A detail of {@code amount} linked to a {@code REM_SENT} payment (a confirmed remittance). */
+  private static FIN_PaymentScheduleDetail remittedDetail(String amount) {
+    FIN_Payment remitted = mock(FIN_Payment.class);
+    when(remitted.getId()).thenReturn("rem-pay-1");
+    when(remitted.getDocumentNo()).thenReturn("PAY-REM");
+    when(remitted.getStatus()).thenReturn(InvoiceRemittance.STATUS_REMITTED);
+    FIN_PaymentDetail detail = mock(FIN_PaymentDetail.class);
+    when(detail.getFinPayment()).thenReturn(remitted);
+    FIN_PaymentScheduleDetail psd = mock(FIN_PaymentScheduleDetail.class);
+    when(psd.getAmount()).thenReturn(new BigDecimal(amount));
+    when(psd.getPaymentDetails()).thenReturn(detail);
+    return psd;
+  }
+
+  /** The installment's details, as {@code InvoiceRemittance} reads them. */
+  private void stubInstallmentDetails(FIN_PaymentScheduleDetail... psds) {
+    when(schedule.getFINPaymentScheduleDetailInvoicePaymentScheduleList())
+        .thenReturn(new ArrayList<>(Arrays.asList(psds)));
+    when(currency.getStandardPrecision()).thenReturn(2L);
+  }
+
+  /** Every payment looked up through {@code REM_RemittanceLine} came from this remittance. */
+  @SuppressWarnings("unchecked")
+  private void stubRemittanceLine(String remittanceId, String documentNo) {
+    Remittance remittance = mock(Remittance.class);
+    when(remittance.getId()).thenReturn(remittanceId);
+    when(remittance.getDocumentNo()).thenReturn(documentNo);
+    RemittanceLine line = mock(RemittanceLine.class);
+    when(line.getRemittance()).thenReturn(remittance);
+    OBCriteria<RemittanceLine> lineCrit = mock(OBCriteria.class);
+    when(dal.createCriteria(RemittanceLine.class)).thenReturn(lineCrit);
+    when(lineCrit.add(any(Criterion.class))).thenReturn(lineCrit);
+    when(lineCrit.uniqueResult()).thenReturn(line);
   }
 
   // ════════════════════════════════════════════════════════════════════════

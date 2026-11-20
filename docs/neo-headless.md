@@ -2845,8 +2845,9 @@ not recorded by `CopilotToolUsageRecorder` (the client calls the service directl
 Classic's «Remittance» window (`org.openbravo.module.remittance`, window
 `FF8080812E71F7C7012E71FD0499001B`) served as the spec `remittance`: header `remittance`
 (`REM_Remittance`) and `lines` (`REM_RemittanceLine`, only «A remesar» editable). Behind the per-account flag
-`sepa-remittances` (`SepaRemittancesFlag`, off by default). `com.etendoerp.go` adds no column:
-everything is Classic's model.
+`sepa-remittances` (`SepaRemittancesFlag`, off by default). `com.etendoerp.go` adds no column to
+the remittance tables: everything is Classic's model. The one remittance column it adds is on the
+invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed remittance* below).
 
 - **No per-account switch.** Every **Bank** (`B`) financial account created while the flag is on for
   the acting user gets the two remittance payment methods; Cash and Card accounts never do. Accounts
@@ -3443,6 +3444,58 @@ everything is Classic's model.
   before the column keeps the default `'PE'` until one of those transitions refreshes it.
   `com.etendoerp.go` only reads it (list, filter). `RemittanceMethodLinkObserver` refuses an active
   remittance-method link on a non-Bank account, on every channel, Classic included.
+- **The invoice side of a confirmed remittance (ETP-6247).** Confirming creates one `REM_SENT`
+  payment per due and links the due's `FIN_PAYMENT_SCHEDULEDETAIL` to it (a partial remittance
+  splits the detail: the remitted part is linked, the remainder stays free), but the invoice's
+  amounts do not move until the remittance is collected. A draft (`PE`) remittance creates no
+  payment and never counts; «Enviada al banco» (`SB`) touches no payment; reactivating deletes the
+  payments and a return voids them, both of which drop the due back to free. The remitted part is
+  **still owed**: totals, KPIs, aging, the portal and the "pending" named filters are deliberately
+  unchanged. What changes is that it can no longer be registered as a payment from the invoice — it
+  would be collected twice. One shared utility, `InvoiceRemittance`, defines it for every path:
+  - **Invoice header:** `C_Invoice.EM_ETGO_Remitted_Amt` (DAL/NEO property `etgoRemittedAmt`) —
+    stored computed column (`S`/`S`), function `ETGO_GET_REMITTED_AMT` = sum of the invoice's
+    detail amounts linked to a `REM_SENT` payment, `0` otherwise (DB default `0` for a new
+    invoice). Dependencies: `FIN_PAYMENT` (update of `Status`) and `FIN_PAYMENT_SCHEDULEDETAIL`
+    (insert/delete, update of `FIN_Payment_Detail_ID`, `Amount`, `FIN_Payment_Schedule_Invoice`),
+    both resolving the invoice through `fin_payment_schedule`. Filterable and sortable like any
+    column; a window shows it once its `decisions.json` declares the field (read-only).
+  - **Payment plan** (`sales-invoice`/`purchase-invoice` `paymentPlan`, `InvoicePaymentPlanHandler`
+    bound by `@NeoExtension` per spec): each installment row gains `remittedAmount` (linked to a
+    `REM_SENT` payment) and `payableAmount` (the free details: what a payment registered from the
+    invoice may still take). `outstandingAmount` is unchanged. A per-invoice sub-list nobody
+    filters, so a read decoration (one batched query), not a column.
+  - **`registerPayment`** (simple and advanced, REST and MCP) — when the installment has a remitted
+    part, funds (cash plus consumed credit) over `payableAmount` are refused with
+    `422 ETGO_InvoiceInRemittance` (`error.remittanceId`, `remittanceDocumentNo`, `payableAmount`,
+    `remittedAmount`, and `currency` — the invoice's ISO code, so the SPA formats both amounts with
+    `formatCurrency`), before anything is written (a PIS transfer included); a fully remitted
+    installment gets the same refusal instead of the generic "no pending payment schedule details".
+    Without a remitted part nothing changes: a genuine overpayment still becomes credit or a refund.
+    Editing a draft counts the draft's own link as payable. The MCP runs the same check before its
+    `overpaymentAction` question (`PaymentAgentSupport.checkRemittance`), and its write answer's
+    `invoice` block carries `remittedAmount`.
+  - **Financial-account «Add payment»** (`AddPaymentService.linkInvoices`) refuses a detail that is
+    already linked to a payment: the same `422 ETGO_InvoiceInRemittance` answer as `registerPayment`
+    when that payment is `REM_SENT` (thrown as a `NeoRefusalException`, which
+    `FinancialAccountTransactionsSupport.runMutation` answers verbatim after the rollback), and
+    `400 ETGO_InstallmentAlreadyPaid` (`{0}` = the payment's document number) when it is any other
+    payment.
+  - **Bank reconciliation** (`ReconciliationFlowSupport.settleInvoice`) sizes the payment from the
+    free details — the ones `registerReconciliationPayment` links — instead of the schedule's
+    outstanding, and refuses a fully remitted installment. Known gap: the explicit-conversion and
+    write-off checks (`ReconciliationConversionSupport.outstandingOf`,
+    `ReconciliationWriteoffSupport`) still read the outstanding.
+  - **Payment Reactivate / Eliminar** (`ReactivatePaymentHandler`) refuse a `REM_SENT` payment with
+    `422 ETGO_PaymentInRemittance`: the remittance owns it until it is collected, reactivated or
+    returned.
+  - **`invoicePayments`** rows carry `remittanceId` / `remittanceDocumentNo` for every payment a
+    remittance created (remitted, collected or returned; through `REM_RemittanceLine.FIN_Payment_ID`).
+  - **No flag gate, on purpose.** None of this reads `sepa-remittances`: a `REM_SENT` payment exists
+    only where a remittance was confirmed, i.e. where the flag was on (or in Classic, which shares
+    the double-collection risk). Gating the guards would only re-open the double collection for a
+    tenant whose flag was switched off after remitting. The column and messages ship
+    unconditionally, like the rest of the remittance schema.
 
 Flag, debt and retirement: `docs/feature-flags-and-tenant-upgrade.md` → `sepa-remittances`.
 

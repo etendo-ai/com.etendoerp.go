@@ -55,6 +55,7 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentMethod;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FinAccPaymentMethod;
+import org.openbravo.module.remittance.Remittance;
 import org.openbravo.service.db.DalConnectionProvider;
 import org.openbravo.service.json.JsonUtils;
 
@@ -165,6 +166,12 @@ public final class PaymentRegistrationService {
     if (account == null) {
       return NeoResponse.error(HttpServletResponse.SC_BAD_REQUEST,
           "Financial account not found");
+    }
+
+    // ETP-6247: a partly or fully remitted installment takes no more than its payable part.
+    NeoResponse remittanceError = InvoiceRemittance.installmentRefusal(schedule, amount, null);
+    if (remittanceError != null) {
+      return remittanceError;
     }
 
     try {
@@ -466,7 +473,22 @@ public final class PaymentRegistrationService {
     if (!Boolean.TRUE.equals(p.isProcessed())) {
       item.put("creditSourcesUsed", PaymentInvoiceApplications.creditSourcesUsedByPayment(p));
     }
+    putRemittance(item, p);
     return item;
+  }
+
+  /**
+   * ETP-6247: the remittance a payment came from — remitted ({@code REM_SENT}), collected or
+   * returned alike — so the list can say "in remittance N" and route edit/delete to the remittance
+   * (a remitted payment refuses both, see {@link InvoiceRemittance#paymentRefusal}). Absent for a
+   * payment registered by hand.
+   */
+  private static void putRemittance(JSONObject item, FIN_Payment p) throws Exception {
+    Remittance remittance = InvoiceRemittance.remittanceOf(p);
+    if (remittance != null) {
+      item.put("remittanceId", remittance.getId());
+      item.put("remittanceDocumentNo", remittance.getDocumentNo());
+    }
   }
 
   // ─── PAYMENT METHODS: list the full catalog for the invoice's direction ────
@@ -642,6 +664,17 @@ public final class PaymentRegistrationService {
         scheduleId);
     if (writeoffLimitError != null) {
       return writeoffLimitError;
+    }
+    // ETP-6247: part of the installment may sit in a confirmed remittance. Funds over what is still
+    // payable would become credit and the remittance would collect them again, so refuse before
+    // anything is written (a PIS transfer included). Same known gap as the write-off guard above
+    // for the deferred replay.
+    NeoResponse remittanceError = InvoiceRemittance.installmentRefusal(
+        PaymentOwnership.scheduleOf(scheduleId, invoice),
+        cash.add(PaymentCreditConsumer.requestedFunding(body.optJSONArray("creditSources"))),
+        body.optString(KEY_PAYMENT_ID, null));
+    if (remittanceError != null) {
+      return remittanceError;
     }
 
     Organization org = invoice.getOrganization();

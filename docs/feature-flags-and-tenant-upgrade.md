@@ -880,7 +880,13 @@ refusal to change a Bank account with open remittances to another type
 (`ETGO_RemittanceAccountTypeChangeBlocked`: the remittances exist whatever the flag says now) and
 the deactivation of its remittance-method links when it leaves Bank with none open. An
 observer cannot read a per-account flag, and remittance methods only exist where the flag was on.
-The module adds no column for remittances.
+Nor the **invoice side of a confirmed remittance** (ETP-6247, `InvoiceRemittance`, `neo-headless.md`
+§4.6c): the stored computed column `C_Invoice.EM_ETGO_Remitted_Amt`, the paymentPlan
+`remittedAmount`/`payableAmount`, the `ETGO_InvoiceInRemittance` / `ETGO_PaymentInRemittance`
+refusals and the `invoicePayments` remittance keys. They read `REM_SENT` payments, which exist only
+where a remittance was confirmed (flag on, or Classic); gating them would re-open the double
+collection for a tenant whose flag was switched off after remitting.
+That invoice column is the only one the module adds for remittances.
 The remittance status is not this module's: `REM_REMITTANCE.REMITTANCE_STATUS` (list
 `REM_RemittanceStatus`: `PE` pending, `PR` processed, `CT`/`PT` collected/paid, `CP`/`PP`
 partially, `AN` voided) is the remittance module's `REMITTANCE_STATUS` (added by ETP-6148), owned

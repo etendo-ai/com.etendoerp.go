@@ -3,7 +3,7 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=financiero [-Pkind=mock|integration|all]
 
-# --- con mocks (127)
+# --- con mocks (129)
 com.etendoerp.go.schemaforge.AddPaymentServiceTest
 com.etendoerp.go.schemaforge.AutoMatchSupportRuleDimensionsTest
 com.etendoerp.go.schemaforge.AutoMatchSupportTest
@@ -60,6 +60,8 @@ com.etendoerp.go.schemaforge.FinancialAccountTransferActionsTest
 com.etendoerp.go.schemaforge.FinancialAccountsPageHandlerTest
 com.etendoerp.go.schemaforge.GenericCsvBankStatementImporterTest
 com.etendoerp.go.schemaforge.InvoiceExchangeRateValidatorTest
+com.etendoerp.go.schemaforge.InvoicePaymentPlanHandlerTest
+com.etendoerp.go.schemaforge.InvoiceRemittanceTest
 com.etendoerp.go.schemaforge.MatchRuleEngineTest
 com.etendoerp.go.schemaforge.MatchRuleHandlerTest
 com.etendoerp.go.schemaforge.NearMatchSupportTest

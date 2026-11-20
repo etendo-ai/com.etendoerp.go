@@ -40,6 +40,7 @@ import java.util.List;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
+import org.hibernate.criterion.Criterion;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -72,6 +73,8 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentMethod;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FinAccPaymentMethod;
+import org.openbravo.module.remittance.Remittance;
+import org.openbravo.module.remittance.RemittanceLine;
 import org.openbravo.service.db.DalConnectionProvider;
 
 /**
@@ -83,6 +86,8 @@ import org.openbravo.service.db.DalConnectionProvider;
  * {@link RequestContext}) and every constructed collaborator
  * ({@link AdvPaymentMngtDao}, {@link DalConnectionProvider}) is mocked, so the
  * orchestration logic runs over deterministic in-memory fixtures without a DB.
+ *
+ * @covers com.etendoerp.go.schemaforge.AddPaymentService
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -475,6 +480,86 @@ class AddPaymentServiceTest {
     JSONObject body = baseBody("18.03").put("selectedInvoices", new JSONObject().put(PSD_ID, 18.03));
     OBException ex = assertThrows(OBException.class, () -> AddPaymentService.doAddPayment(body));
     assertTrue(ex.getMessage().contains("Invoice installment not found"));
+  }
+
+  // ── Installment detail already taken (InvoiceRemittance.assertDetailPayable) ──
+
+  /** A tenant-owned installment detail of {@code amount}, linked to {@code linkedTo} if given. */
+  private FIN_PaymentScheduleDetail selectedPsd(String amount, FIN_Payment linkedTo) {
+    Client tenantClient = mock(Client.class);
+    when(tenantClient.getId()).thenReturn(TENANT_CLIENT);
+    FIN_PaymentScheduleDetail psd = mock(FIN_PaymentScheduleDetail.class);
+    when(psd.getId()).thenReturn(PSD_ID);
+    when(psd.getClient()).thenReturn(tenantClient);
+    when(psd.getAmount()).thenReturn(new BigDecimal(amount));
+    if (linkedTo != null) {
+      FIN_PaymentDetail detail = mock(FIN_PaymentDetail.class);
+      when(detail.getFinPayment()).thenReturn(linkedTo);
+      when(psd.getPaymentDetails()).thenReturn(detail);
+    }
+    when(dal.get(eq(FIN_PaymentScheduleDetail.class), anyString())).thenReturn(psd);
+    return psd;
+  }
+
+  @Test
+  @DisplayName("A free installment detail is linked to the new payment")
+  void testFreeInstallmentDetailIsLinked() throws Exception {
+    FIN_PaymentScheduleDetail free = selectedPsd("18.03", null);
+    JSONObject body = baseBody("18.03").put("selectedInvoices", new JSONObject().put(PSD_ID, 18.03));
+
+    NeoResponse response = AddPaymentService.doAddPayment(body);
+
+    assertEquals(201, response.getHttpStatus());
+    finAddPaymentMock.verify(() -> FIN_AddPayment.updatePaymentDetail(eq(free), eq(payment),
+        eq(new BigDecimal("18.03")), eq(false)));
+  }
+
+  @Test
+  @DisplayName("An installment detail already taken by a payment is refused, not linked twice")
+  void testInstallmentDetailOfAnotherPaymentIsRefused() throws Exception {
+    FIN_Payment other = mock(FIN_Payment.class);
+    when(other.getStatus()).thenReturn("RPR");
+    when(other.getDocumentNo()).thenReturn("PAY-0007");
+    selectedPsd("18.03", other);
+    JSONObject body = baseBody("18.03").put("selectedInvoices", new JSONObject().put(PSD_ID, 18.03));
+
+    MessageKeyedException ex = assertThrows(MessageKeyedException.class,
+        () -> AddPaymentService.doAddPayment(body));
+
+    assertEquals(InvoiceRemittance.MSG_INSTALLMENT_ALREADY_PAID, ex.getMessageKey());
+    assertTrue(ex.getMessage().contains("PAY-0007"), ex.getMessage());
+    finAddPaymentMock.verify(
+        () -> FIN_AddPayment.updatePaymentDetail(any(), any(), any(), anyBoolean()), never());
+    finAddPaymentMock.verify(
+        () -> FIN_AddPayment.processPayment(any(), any(), anyString(), any(), anyString()), never());
+  }
+
+  @Test
+  @DisplayName("An installment detail in a confirmed remittance is refused with the keyed message")
+  @SuppressWarnings("unchecked")
+  void testInstallmentDetailInRemittanceIsRefusedWithKey() throws Exception {
+    FIN_Payment remitted = mock(FIN_Payment.class);
+    when(remitted.getId()).thenReturn("rem-pay-1");
+    when(remitted.getStatus()).thenReturn(InvoiceRemittance.STATUS_REMITTED);
+    selectedPsd("18.03", remitted);
+    Remittance remittance = mock(Remittance.class);
+    when(remittance.getDocumentNo()).thenReturn("REM-0042");
+    RemittanceLine line = mock(RemittanceLine.class);
+    when(line.getRemittance()).thenReturn(remittance);
+    OBCriteria<RemittanceLine> lineCrit = mock(OBCriteria.class);
+    when(dal.createCriteria(RemittanceLine.class)).thenReturn(lineCrit);
+    when(lineCrit.add(any(Criterion.class))).thenReturn(lineCrit);
+    when(lineCrit.uniqueResult()).thenReturn(line);
+    JSONObject body = baseBody("18.03").put("selectedInvoices", new JSONObject().put(PSD_ID, 18.03));
+
+    NeoRefusalException ex = assertThrows(NeoRefusalException.class,
+        () -> AddPaymentService.doAddPayment(body));
+
+    assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE, ex.getMessageKey());
+    assertTrue(ex.getMessage().contains("REM-0042"), ex.getMessage());
+    assertEquals(422, ex.getResponse().getHttpStatus());
+    finAddPaymentMock.verify(
+        () -> FIN_AddPayment.updatePaymentDetail(any(), any(), any(), anyBoolean()), never());
   }
 
   /**

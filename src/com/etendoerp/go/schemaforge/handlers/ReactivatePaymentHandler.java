@@ -48,6 +48,7 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentProposal;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentPropDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 
+import com.etendoerp.go.schemaforge.InvoiceRemittance;
 import com.etendoerp.go.schemaforge.NeoActionRecordGuard;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoCurrencyTotals;
@@ -300,6 +301,27 @@ public class ReactivatePaymentHandler implements NeoHandler {
   }
 
   /**
+   * The refusals of Reactivate, on one load of the payment: the 404 of
+   * {@link #requireOwnedPayment} (ETP-5558), then ETP-6247's 422 {@code ETGO_PaymentInRemittance}
+   * when the payment belongs to a confirmed remittance ({@code REM_SENT}). Classic REM owns that
+   * payment until the remittance is collected, reactivated or returned; reactivating it here would
+   * leave the remittance pointing at a payment that no longer matches it. See
+   * {@link InvoiceRemittance#paymentRefusal}.
+   */
+  private static NeoResponse reactivationRefusal(NeoContext context) {
+    OBContext.setAdminMode(true);
+    try {
+      FIN_Payment payment = NeoActionRecordGuard.loadOwned(FIN_Payment.class,
+          context.getRecordId());
+      return payment == null
+          ? NeoResponse.error(404, "Payment not found: " + context.getRecordId())
+          : InvoiceRemittance.paymentRefusal(payment);
+    } finally {
+      OBContext.restorePreviousMode();
+    }
+  }
+
+  /**
    * 404 unless the record the action is posted to is a payment of the current tenant (ETP-5558).
    * The action path checks this before any customization runs ({@code NeoActionRecordGuard}); this
    * repeats it where the payment is mutated, so the handler does not depend on being reached only
@@ -330,9 +352,9 @@ public class ReactivatePaymentHandler implements NeoHandler {
    * user to edit that draft.
    */
   private NeoResponse handleReactivate(NeoContext context) {
-    NeoResponse notOwned = requireOwnedPayment(context);
-    if (notOwned != null) {
-      return notOwned;
+    NeoResponse refused = reactivationRefusal(context);
+    if (refused != null) {
+      return refused;
     }
     ReconciledPaymentReactivation.Prepared reconciled = null;
     try {
@@ -496,6 +518,10 @@ public class ReactivatePaymentHandler implements NeoHandler {
           context.getRecordId());
       if (payment == null) {
         return NeoResponse.error(404, "Payment not found: " + context.getRecordId());
+      }
+      NeoResponse inRemittance = InvoiceRemittance.paymentRefusal(payment);
+      if (inRemittance != null) {
+        return inRemittance;
       }
       if (context.isMcpOrigin()) {
         NeoResponse refused = agentRemovalRefusal(payment);

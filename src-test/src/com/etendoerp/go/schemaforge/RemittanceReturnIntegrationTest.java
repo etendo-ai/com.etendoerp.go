@@ -29,6 +29,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.codehaus.jettison.json.JSONArray;
@@ -84,6 +85,10 @@ import org.openbravo.module.remittance.utility.RemittanceStatusUtil;
  *   <li>a reconciled settlement transaction refuses the return and changes nothing;</li>
  *   <li>grouping {@code GGPD}: two lines share one payment, one of them alone is refused
  *       ({@code SHARED_PAYMENT}) and both together are returned;</li>
+ *   <li>the remitted amount of the invoice ({@link InvoiceRemittance}, {@code etgo_get_remitted_amt}
+ *       and the stored column {@code C_Invoice.EM_ETGO_Remitted_Amt}): the due, or the part a
+ *       partial line takes, once processed; back to 0 once collected, reactivated or returned;
+ *       the paymentPlan amounts ({@link InvoicePaymentPlanHandler}) agree with it;</li>
  *   <li>REM's own processes run the same on a remittance whose SEPA columns are NULL (one from
  *       before they existed) and on one that carries them: the trigger's freeze of the processed
  *       remittance does not stop them; values set before processing come out unchanged, and a
@@ -107,6 +112,8 @@ import org.openbravo.module.remittance.utility.RemittanceStatusUtil;
  * @covers com.etendoerp.go.schemaforge.RemittanceProcessAction
  * @covers com.etendoerp.go.schemaforge.RemittanceIban
  * @covers com.etendoerp.go.schemaforge.RemittanceCreditorId
+ * @covers com.etendoerp.go.schemaforge.InvoiceRemittance
+ * @covers com.etendoerp.go.schemaforge.InvoicePaymentPlanHandler
  */
 public class RemittanceReturnIntegrationTest extends WeldBaseTest {
 
@@ -635,6 +642,187 @@ public class RemittanceReturnIntegrationTest extends WeldBaseTest {
         refused.getBody().getJSONObject("error").getJSONArray("messageKeys").getString(0));
     assertTrue("nothing was reactivated (" + status + ")", Boolean.TRUE.equals(
         remittance.isProcessed()));
+  }
+
+  // ---------------------------------------------------------------- the remitted amount
+
+  /**
+   * What a confirmed remittance means on the invoice side, at every step: the remitted part of the
+   * invoice, read three ways that must agree — {@link InvoiceRemittance#remittedAmount(Invoice)}
+   * (the Java sum, exact inside the transaction), the SQL function {@code etgo_get_remitted_amt}
+   * and the stored computed column {@code C_Invoice.EM_ETGO_Remitted_Amt} it feeds.
+   *
+   * <p>The column is {@code Refresh_Mode = 'S'}: its deferred constraint trigger only fires at
+   * COMMIT, which this rolled-back harness never reaches. {@link #storedRemittedAmount} makes it
+   * fire now ({@code SET CONSTRAINTS ALL IMMEDIATE}) and clears the engine's per-transaction
+   * recursion guard first, so each read is the refresh a commit at that point would have made —
+   * driven by the real watched-column triggers, nothing recomputed by hand.
+   */
+  @Test
+  public void aProcessedRemittanceMakesTheWholeDueRemittedWithoutPayingIt() throws Exception {
+    Remittance remittance = processed(RemittanceProcessAction.GROUPING_NONE, DUE_A);
+    String lineId = lineIds(remittance).get(0);
+    String scheduleId = scheduleIdOf(lineId);
+    String invoiceId = invoiceOf(scheduleId).getId();
+    FIN_Payment payment = OBDal.getInstance().get(FIN_Payment.class,
+        lineOf(RemittanceReturnAction.state(remittance), lineId).getString("paymentId"));
+    OBDal.getInstance().refresh(payment);
+
+    assertEquals(InvoiceRemittance.STATUS_REMITTED, payment.getStatus());
+    assertRemittedAmount(invoiceId, DUE_AMOUNT);
+    assertEquals("the remitted part is still owed", 0,
+        DUE_AMOUNT.compareTo(outstandingOf(scheduleId)));
+    FIN_PaymentSchedule schedule = OBDal.getInstance().get(FIN_PaymentSchedule.class, scheduleId);
+    assertEquals("nothing is left to register from the invoice", 0,
+        BigDecimal.ZERO.compareTo(InvoiceRemittance.payableAmount(schedule)));
+    assertNotNull("a registration from the invoice is refused",
+        InvoiceRemittance.installmentRefusal(schedule, new BigDecimal("0.01"), null));
+    assertEquals(0, DUE_AMOUNT.compareTo(storedRemittedAmount(invoiceId)));
+  }
+
+  @Test
+  public void aPartialRemittanceMakesOnlyItsPartRemitted() throws Exception {
+    BigDecimal part = new BigDecimal("15.00");
+    Remittance remittance = built(RemittanceProcessAction.GROUPING_NONE, DUE_A);
+    String lineId = lineIds(remittance).get(0);
+    RemittanceLine line = OBDal.getInstance().get(RemittanceLine.class, lineId);
+    line.setAmount(part);
+    OBDal.getInstance().save(line);
+    OBDal.getInstance().flush();
+    NeoResponse processed = RemittanceProcessAction.process(remittance,
+        new JSONObject().put(RemittanceProcessAction.P_GROUPING,
+            RemittanceProcessAction.GROUPING_NONE));
+    assertEquals(String.valueOf(processed.getBody()), 200, processed.getHttpStatus());
+    String scheduleId = scheduleIdOf(lineId);
+    String invoiceId = invoiceOf(scheduleId).getId();
+
+    assertRemittedAmount(invoiceId, part);
+    FIN_PaymentSchedule schedule = OBDal.getInstance().get(FIN_PaymentSchedule.class, scheduleId);
+    OBDal.getInstance().refresh(schedule);
+    BigDecimal rest = DUE_AMOUNT.subtract(part);
+    assertEquals("the rest of the due can still be registered", 0,
+        rest.compareTo(InvoiceRemittance.payableAmount(schedule)));
+    assertNull("up to the rest is accepted",
+        InvoiceRemittance.installmentRefusal(schedule, rest, null));
+    assertNotNull("one cent more is refused",
+        InvoiceRemittance.installmentRefusal(schedule, rest.add(new BigDecimal("0.01")), null));
+    assertEquals(0, part.compareTo(storedRemittedAmount(invoiceId)));
+  }
+
+  @Test
+  public void collectingTheRemittanceClearsTheRemittedAmount() throws Exception {
+    Remittance remittance = processed(RemittanceProcessAction.GROUPING_NONE, DUE_A);
+    String invoiceId = invoiceOf(scheduleIdOf(lineIds(remittance).get(0))).getId();
+    assertEquals(0, DUE_AMOUNT.compareTo(storedRemittedAmount(invoiceId)));
+
+    collect(remittance);
+
+    assertRemittedAmount(invoiceId, BigDecimal.ZERO);
+    assertEquals(0, BigDecimal.ZERO.compareTo(storedRemittedAmount(invoiceId)));
+  }
+
+  @Test
+  public void reactivatingTheRemittanceClearsTheRemittedAmount() throws Exception {
+    Remittance remittance = processed(RemittanceProcessAction.GROUPING_NONE, DUE_A);
+    String invoiceId = invoiceOf(scheduleIdOf(lineIds(remittance).get(0))).getId();
+    assertEquals(0, DUE_AMOUNT.compareTo(storedRemittedAmount(invoiceId)));
+
+    assertReactivated(remittance);
+
+    assertRemittedAmount(invoiceId, BigDecimal.ZERO);
+    assertEquals(0, BigDecimal.ZERO.compareTo(storedRemittedAmount(invoiceId)));
+  }
+
+  @Test
+  public void returningTheCollectedRemittanceLeavesNothingRemitted() throws Exception {
+    Remittance remittance = confirmed(RemittanceProcessAction.GROUPING_NONE, DUE_A);
+    String lineId = lineIds(remittance).get(0);
+    String scheduleId = scheduleIdOf(lineId);
+    String invoiceId = invoiceOf(scheduleId).getId();
+
+    NeoResponse returned = RemittanceReturnAction.returnLines(handler, remittance,
+        params(LocalDate.now().minusDays(2).toString(), lineId));
+    assertEquals(String.valueOf(returned.getBody()), 200, returned.getHttpStatus());
+
+    assertRemittedAmount(invoiceId, BigDecimal.ZERO);
+    assertEquals(0, BigDecimal.ZERO.compareTo(storedRemittedAmount(invoiceId)));
+    FIN_PaymentSchedule schedule = OBDal.getInstance().get(FIN_PaymentSchedule.class, scheduleId);
+    OBDal.getInstance().refresh(schedule);
+    assertEquals("the returned due is payable again, in full", 0,
+        DUE_AMOUNT.compareTo(InvoiceRemittance.payableAmount(schedule)));
+    assertNull("a registration up to the due is accepted again",
+        InvoiceRemittance.installmentRefusal(schedule, DUE_AMOUNT, null));
+  }
+
+  /**
+   * The Java sum and the SQL function agree on {@code expected}, inside the transaction, and the
+   * paymentPlan decoration ({@link InvoicePaymentPlanHandler}, whose SQL repeats the
+   * {@link InvoiceRemittance} definitions) answers the same payable and remitted amounts.
+   */
+  private static void assertRemittedAmount(String invoiceId, BigDecimal expected) {
+    OBDal.getInstance().flush();
+    Invoice invoice = OBDal.getInstance().get(Invoice.class, invoiceId);
+    OBDal.getInstance().refresh(invoice);
+    for (FIN_PaymentSchedule schedule : invoice.getFINPaymentScheduleList()) {
+      OBDal.getInstance().refresh(schedule);
+    }
+    assertEquals("InvoiceRemittance.remittedAmount", 0,
+        expected.compareTo(InvoiceRemittance.remittedAmount(invoice)));
+    Object function = OBDal.getInstance().getSession()
+        .createNativeQuery("select etgo_get_remitted_amt(:id)")
+        .setParameter("id", invoiceId)
+        .uniqueResult();
+    assertEquals("etgo_get_remitted_amt", 0,
+        expected.compareTo(new BigDecimal(String.valueOf(function))));
+    assertPaymentPlanAgrees(invoice);
+  }
+
+  /** {@code InvoicePaymentPlanHandler.AMOUNTS_SQL} and {@link InvoiceRemittance}, same data. */
+  private static void assertPaymentPlanAgrees(Invoice invoice) {
+    List<String> ids = new ArrayList<>();
+    for (FIN_PaymentSchedule schedule : invoice.getFINPaymentScheduleList()) {
+      ids.add(schedule.getId());
+    }
+    Map<String, BigDecimal[]> plan = new SalesInvoicePaymentPlanHandler().fetchAmounts(ids);
+    for (FIN_PaymentSchedule schedule : invoice.getFINPaymentScheduleList()) {
+      BigDecimal[] amounts = plan.get(schedule.getId());
+      assertNotNull("the payment plan answers every installment", amounts);
+      assertEquals("payableAmount", 0,
+          InvoiceRemittance.payableAmount(schedule).compareTo(amounts[0]));
+      assertEquals("remittedAmount", 0,
+          InvoiceRemittance.remittedAmount(schedule).compareTo(amounts[1]));
+    }
+  }
+
+  /**
+   * {@code C_Invoice.EM_ETGO_Remitted_Amt} as a commit at this point would leave it: flushes, lets
+   * the stored-computed-column engine drain again in this transaction (its recursion guard is a
+   * transaction-local setting), fires the pending deferred refresh now and clears the guard again,
+   * so the next source write is enqueued as it would be in the next transaction.
+   */
+  private static BigDecimal storedRemittedAmount(String invoiceId) {
+    OBDal.getInstance().flush();
+    BigDecimal[] value = new BigDecimal[1];
+    OBDal.getInstance().getSession().doWork(connection -> {
+      try (java.sql.Statement statement = connection.createStatement()) {
+        statement.execute("select set_config('my.scd_refreshing', 'false', true)");
+        statement.execute("SET CONSTRAINTS ALL IMMEDIATE");
+        statement.execute("SET CONSTRAINTS ALL DEFERRED");
+        // The drain leaves the guard on for the rest of the transaction, and the watched-column
+        // triggers enqueue nothing while it is on: clear it, as the end of a real commit does.
+        statement.execute("select set_config('my.scd_refreshing', 'false', true)");
+      }
+      try (java.sql.PreparedStatement select = connection.prepareStatement(
+          "select em_etgo_remitted_amt from c_invoice where c_invoice_id = ?")) {
+        select.setString(1, invoiceId);
+        try (java.sql.ResultSet rs = select.executeQuery()) {
+          assertTrue("the invoice exists", rs.next());
+          value[0] = rs.getBigDecimal(1);
+        }
+      }
+    });
+    assertNotNull("the stored column is never NULL", value[0]);
+    return value[0];
   }
 
   // ---------------------------------------------------------------- fixtures
