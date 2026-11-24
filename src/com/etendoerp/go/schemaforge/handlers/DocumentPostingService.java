@@ -54,6 +54,8 @@ import org.openbravo.model.common.plm.ProductAccounts;
 import org.openbravo.model.financialmgmt.accounting.coa.AccountingCombination;
 import org.openbravo.model.materialmgmt.transaction.InternalConsumption;
 import org.openbravo.model.materialmgmt.transaction.InternalConsumptionLine;
+import org.openbravo.model.materialmgmt.transaction.InternalMovement;
+import org.openbravo.model.materialmgmt.transaction.InternalMovementLine;
 import org.openbravo.model.materialmgmt.transaction.InventoryCount;
 import org.openbravo.model.materialmgmt.transaction.InventoryCountLine;
 import org.openbravo.model.materialmgmt.transaction.MaterialTransaction;
@@ -376,8 +378,9 @@ public class DocumentPostingService {
   }
 
   /**
-   * Cost-calculated pre-check scoped to Physical Inventory ({@code M_Inventory}, ETP-5360) and
-   * Internal Consumption ({@code M_Internal_Consumption}, ETP-5445) ONLY — do not generalize to
+   * Cost-calculated pre-check scoped to Physical Inventory ({@code M_Inventory}, ETP-5360),
+   * Internal Consumption ({@code M_Internal_Consumption}, ETP-5445) and Goods Movement
+   * ({@code M_Movement}, ETP-6406) ONLY — do not generalize to
    * other document types without confirming they share this exact per-transaction cost-calculation
    * shape (one {@code M_Transaction} per document line, validated line by line in
    * {@code createFact}).
@@ -411,9 +414,9 @@ public class DocumentPostingService {
    * @param recordId
    *     primary key of the record being posted ({@code M_Inventory_ID} or
    *     {@code M_Internal_Consumption_ID} when applicable).
-   * @return the {@code M_Inventory} or {@code M_Internal_Consumption} document when at least one
-   *     of its line transactions has no calculated cost (including a null/unset flag, treated as
-   *     not calculated); {@code null} otherwise, including when the table is neither of those two,
+   * @return the {@code M_Inventory}, {@code M_Internal_Consumption} or {@code M_Movement} document
+   *     when at least one of its line transactions has no calculated cost (including a null/unset
+   *     flag, treated as not calculated); {@code null} otherwise, including when the table is none of those three,
    *     the record cannot be resolved, or the lookup itself fails.
    *     Unlike {@link #resolveMissingBpGroupAccounts} and {@link #resolveMissingProductAccounts}
    *     — enrichment helpers called AFTER {@code acct.post()} has already failed, where a failure
@@ -437,6 +440,9 @@ public class DocumentPostingService {
       }
       if (TABLE_M_INTERNAL_CONSUMPTION.equals(dbTableName)) {
         return uncalculatedInternalConsumption(recordId);
+      }
+      if (TABLE_M_MOVEMENT.equals(dbTableName)) {
+        return uncalculatedMovement(recordId);
       }
       return null;
     } catch (Exception e) {
@@ -503,6 +509,30 @@ public class DocumentPostingService {
     for (InternalConsumptionLine line : consumption.getMaterialMgmtInternalConsumptionLineList()) {
       if (hasUncalculatedTransaction(line.getMaterialMgmtMaterialTransactionList())) {
         return consumption;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * {@code M_Movement} branch of {@link #uncalculatedCostDocument} (ETP-6406): resolves the Goods
+   * Movement header and scans each line's transactions. Core's {@code DocMovement#createFact}
+   * ({@code DocMovement.java}, line 180) has the same shape as Internal Consumption: it sets
+   * {@code STATUS_NotCalculatedCost} with a {@code @product@} parameter core never substitutes,
+   * then throws a bare {@code IllegalStateException()} that {@code AcctServer.createFacts}
+   * swallows, so the caller got a 422 {@code validation_error} reading "The cost of the product
+   * product has not been calculated." with no retry guidance, in the app and through MCP alike.
+   * {@code null} when the record does not exist. Exceptions propagate to the caller's fail-open
+   * {@code catch}.
+   */
+  private static InternalMovement uncalculatedMovement(String recordId) {
+    InternalMovement movement = OBDal.getInstance().get(InternalMovement.class, recordId);
+    if (movement == null) {
+      return null;
+    }
+    for (InternalMovementLine line : movement.getMaterialMgmtInternalMovementLineList()) {
+      if (hasUncalculatedTransaction(line.getMaterialMgmtMaterialTransactionList())) {
+        return movement;
       }
     }
     return null;

@@ -3628,4 +3628,132 @@ public class DocumentPostingServiceTest {
       verify(mockIcObDal, never()).getConnection();
     }
   }
+
+  /** Arbitrary test AD_Table_ID standing in for M_Movement (fully mocked, never looked up live). */
+  private static final String TABLE_ID_M_MOVEMENT = "323";
+  private static final String MOVEMENT_RECORD_ID = "mov-1";
+
+  /**
+   * Stubs the table lookup to resolve {@code M_Movement} and the header lookup to a single-line
+   * Goods Movement whose line carries one transaction with the given cost-calculated flag, owned
+   * by client C1 / organisation O1.
+   */
+  private static org.openbravo.model.materialmgmt.transaction.InternalMovement stubMovement(
+      OBDal obDal, Boolean costCalculated) {
+    stubTableWithDbName(obDal, TABLE_ID_M_MOVEMENT, "M_Movement");
+    MaterialTransaction transaction = mock(MaterialTransaction.class);
+    when(transaction.isCostCalculated()).thenReturn(costCalculated);
+    org.openbravo.model.materialmgmt.transaction.InternalMovementLine line =
+        mock(org.openbravo.model.materialmgmt.transaction.InternalMovementLine.class);
+    when(line.getMaterialMgmtMaterialTransactionList()).thenReturn(List.of(transaction));
+    org.openbravo.model.materialmgmt.transaction.InternalMovement movement =
+        mock(org.openbravo.model.materialmgmt.transaction.InternalMovement.class);
+    when(movement.getMaterialMgmtInternalMovementLineList()).thenReturn(List.of(line));
+    org.openbravo.model.ad.system.Client client = mock(org.openbravo.model.ad.system.Client.class);
+    when(client.getId()).thenReturn("C1");
+    org.openbravo.model.common.enterprise.Organization org =
+        mock(org.openbravo.model.common.enterprise.Organization.class);
+    when(org.getId()).thenReturn("O1");
+    when(movement.get("client")).thenReturn(client);
+    when(movement.get("organization")).thenReturn(org);
+    when(obDal.get(org.openbravo.model.materialmgmt.transaction.InternalMovement.class,
+        MOVEMENT_RECORD_ID)).thenReturn(movement);
+    return movement;
+  }
+
+  /** Answers the costing-queue probe on the given mocked DAL's connection. */
+  private static void stubQueueStalled(OBDal obDal, boolean stalled) throws Exception {
+    Connection read = mock(Connection.class);
+    java.sql.PreparedStatement ps = mock(java.sql.PreparedStatement.class);
+    java.sql.ResultSet rs = mock(java.sql.ResultSet.class);
+    when(obDal.getConnection()).thenReturn(read);
+    when(read.prepareStatement(anyString())).thenReturn(ps);
+    when(ps.executeQuery()).thenReturn(rs);
+    when(rs.next()).thenReturn(true);
+    when(rs.getBoolean(1)).thenReturn(stalled);
+  }
+
+  /**
+   * ETP-6406 — a Goods Movement whose cost is not calculated yet used to reach core's
+   * {@code DocMovement}, whose swallowed exception came back as a 422 {@code validation_error}
+   * reading "the product product". The pre-check now stops it before {@code AcctServer} with the
+   * retryable 409 {@code costNotCalculated}, like an Internal Consumption.
+   */
+  @Test
+  public void testUncalculatedGoodsMovementIsRetryable() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    OBDal obDal = mock(OBDal.class);
+    stubMovement(obDal, Boolean.FALSE);
+    stubQueueStalled(obDal, false);
+    ConnectionProvider conn = mock(ConnectionProvider.class);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class);
+        MockedStatic<OBMessageUtils> msgMock = mockStatic(OBMessageUtils.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(obDal);
+      msgMock.when(() -> OBMessageUtils.messageBD(MSG_NOT_CALCULATED_COST))
+          .thenReturn(NOT_CALCULATED_COST_TEXT);
+
+      DocumentPostingService.PostResult r = svc.post(TABLE_ID_M_MOVEMENT, MOVEMENT_RECORD_ID, conn);
+      NeoResponse resp = svc.toResponse(r, MOVEMENT_RECORD_ID);
+
+      assertEquals(List.of(MSG_NOT_CALCULATED_COST), r.messageKeys());
+      assertEquals(409, resp.getHttpStatus());
+      assertEquals("costNotCalculated", resp.getBody().getString("error"));
+      assertEquals(NOT_CALCULATED_COST_TEXT, resp.getBody().getString("message"));
+      acctStatic.verify(
+          () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
+      verify(conn, never()).getTransactionConnection();
+    }
+  }
+
+  /** ETP-6406 — the same Goods Movement with the organisation's costing stuck: 422 stalled. */
+  @Test
+  public void testUncalculatedGoodsMovementWithStalledCostingIsNotRetryable() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    OBDal obDal = mock(OBDal.class);
+    stubMovement(obDal, Boolean.FALSE);
+    stubQueueStalled(obDal, true);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class);
+        MockedStatic<OBMessageUtils> msgMock = mockStatic(OBMessageUtils.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(obDal);
+
+      DocumentPostingService.PostResult r =
+          svc.post(TABLE_ID_M_MOVEMENT, MOVEMENT_RECORD_ID, mock(ConnectionProvider.class));
+
+      assertEquals(List.of("ETGO_CostCalculationStalled"), r.messageKeys());
+      assertEquals(422, svc.toResponse(r, MOVEMENT_RECORD_ID).getHttpStatus());
+      acctStatic.verify(
+          () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
+    }
+  }
+
+  /**
+   * ETP-6406 — a Goods Movement whose cost IS calculated is not stopped: the pre-check lets it
+   * reach {@code AcctServer.get()} as before.
+   */
+  @Test
+  public void testCalculatedGoodsMovementReachesTheAccountingEngine() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    OBDal obDal = mock(OBDal.class);
+    stubMovement(obDal, Boolean.TRUE);
+    ConnectionProvider conn = mock(ConnectionProvider.class);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<OBContext> obc = mockStatic(OBContext.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(obDal);
+      stubObContext(obc, "en_US");
+      acctStatic.when(() -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)))
+          .thenReturn(null);
+
+      svc.post(TABLE_ID_M_MOVEMENT, MOVEMENT_RECORD_ID, conn);
+
+      acctStatic.verify(
+          () -> AcctServer.get(eq(TABLE_ID_M_MOVEMENT), anyString(), anyString(), any(ConnectionProvider.class)));
+      verify(obDal, never()).getConnection();
+    }
+  }
 }
