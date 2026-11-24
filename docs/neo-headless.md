@@ -6141,10 +6141,49 @@ the asymmetry is the wrapper, not the field. Fixed by `ContactsLocationAddressHa
 `regionName`, plus `streetName`/`buildingNumber`/`buildingName` **only while the flag is on for the
 caller's account**, since with it off those 3 are genuinely absent and must stay reportable.
 Base property names only: the validator reduces `country$_identifier` to `country` before judging.
-**Known gap:** `WarehouseLocationHandler` (`warehouse/location`, and the Organization address that
-goes through it) injects the same keys and does NOT declare them, so it still exhibits CP-12h. Left
-out of this change on purpose — it is a qualifier-bound handler, so touching it triggers the
-ETP-5588 `@NeoExtension` migration in the same PR. Track it separately.
+**`warehouse/location` — CLOSED, and not by declaring anything. An earlier revision of this note
+recorded it as an open CP-12h gap deferred behind the ETP-5588 migration; both halves of that were
+wrong.** `WarehouseLocationHandler` does inject the same keys and does not override
+`responseEnrichedFields()`, but it does not exhibit CP-12h, because it is a different route end to
+end. Verified live against the deployed backend:
+`etendo_get(warehouse, location, fields:[streetName, buildingNumber, buildingName, cityName,
+postalCode, country, region, addressLine1, name])` returns every value with **no** `unknownFields`,
+while the same call with an invented name reports that one and only that one — so the validator is
+active on the route and already honest.
+
+Why the wrapper fix does not transfer: `contacts/locationAddress` is a **tabbed** wrapper, so its
+read runs the generic path and is judged against the spec's `ETGO_SF_FIELD` rows.
+`warehouse/location` is **tab-less**, so `handle()` serves the whole read in the READ pre-phase
+(`McpHookExecutor#runReadProvider`) and the answer is shaped by `McpProvidedReadShaper#project`,
+which derives the emittable set from **the rows themselves**. `McpQuerySupport#applyProjection` is
+therefore never reached on this entity (and would raise `entityHasNoTab` if it were), and
+`etendo_schema` — whose `McpSchemaResponseHints#withEnrichedReadFields` is the only other reader of
+`responseEnrichedFields()` — refuses the entity outright with a 405 *"served by a dedicated handler,
+not by a window"*. An override here would have **no reader at all**: dead code that would also
+contradict the mechanism that actually keeps the route honest. The deferral reason was stale too —
+the handler carries `@NeoExtension(spec = "warehouse", entity = "location")` alongside its `@Named`
+since ETP-5806, consistently double-bound, so nothing about it drags in ETP-5588.
+
+**What keeps it honest, and the one change that would break it.** `buildRecord` names every
+emittable key unconditionally, writing `JSONObject.NULL` for an absent value rather than omitting
+the key. "Optimizing" that to skip nulls is exactly what would reintroduce CP-12h here: the key
+would vanish from the row, the shaper would stop seeing it as emittable, and
+`fields:["postalCode"]` on a record with no postal code would come back as
+`unknownFields:["postalCode"]`. Pinned by
+`WarehouseLocationHandlerTest#testGetByIdNamesEveryProjectableKeyEvenWhenTheValueIsAbsent` (flag on,
+all 13 keys) and `#testGetByIdFlagOffStillNamesEveryNonStructuredProjectableKey` (flag off, the 10
+that do not follow the flag — the 3 structured ones stay absent on purpose, so a caller asking for
+them while the flag is off keeps being told they are unknown).
+
+**Scope: this handler serves TWO windows, not one.** Besides Warehouse's *Location / Address*, the
+**Organization fiscal address** is served by it — `OrganizationPage.jsx` passes
+the `warehouse` base URL (`neoBase(apiBaseUrl) + '/warehouse'`) to `LocationModalField` (`saveMode="location"`)
+deliberately, because no `location` entity was ever registered under the `organization` spec. Note
+the asymmetry with the shared `LocationEditorModal`, which routes its own CRUD through
+`contacts/locationAddress` on purpose so that `AD_Window_Access` to Contacts is enough for the user;
+Organization uses the other mode and points explicitly at `warehouse`. That fiscal address is the
+one feeding ETP-5806's SEPA remittance acceptance criterion, so any change to this handler's read or
+write shape must be exercised on both windows.
 
 **ETP-5806 follow-up — `bp-location`/`BpLocationHandler`.** The AD window behind the `bp-location`
 spec (AD_Window 121 "Location", inactive in the menu but served regardless via NEO Headless/MCP)
