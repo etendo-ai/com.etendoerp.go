@@ -197,33 +197,6 @@ class McpConfigSourcedataTest {
   }
 
   /**
-   * ETP-5812 — {@code updatePaymentPlan} is an internal flag of {@code FIN_Payment_Schedule}, not an
-   * agent action: both invoice {@code paymentPlan} entities must keep it in {@code actions.hidden}
-   * with a reason.
-   */
-  @Test
-  @DisplayName("both invoice paymentPlan entities hide updatePaymentPlan with a reason")
-  void paymentPlanHidesUpdatePaymentPlan() throws IOException, JSONException {
-    Map<String, String> byId = new TreeMap<>();
-    for (String[] row : authoredPayloads()) {
-      byId.put(row[0], row[1]);
-    }
-    for (String id : new String[] { "1343B4002EE14A9896594655770261ED",
-        "28A6378134714F1E8D3C0869C1C77438" }) {
-      String payload = byId.get("ETGO_SF_ENTITY.xml#" + id);
-      assertNotNull(payload, "MCP_CONFIG of paymentPlan entity " + id + " not found");
-      JSONObject actions = new JSONObject(payload).getJSONObject(McpActionsSection.NAME);
-      Set<String> hidden = new TreeSet<>();
-      JSONArray array = actions.getJSONArray("hidden");
-      for (int i = 0; i < array.length(); i++) {
-        hidden.add(array.getString(i));
-      }
-      assertTrue(hidden.contains("updatePaymentPlan"), id + " must hide updatePaymentPlan");
-      assertFalse(actions.getString("reason").trim().isEmpty(), id + " needs a reason");
-    }
-  }
-
-  /**
    * ETP-5715 — the windows whose SPA hides the Attachments tab ({@code window.attachments:false} in
    * {@code schema_forge/artifacts/<window>/decisions.json}) carry {@code MCP_CONFIG.attachments
    * .enabled:false} on their root entity, so the MCP offers no attachments either. The flag lives in
@@ -553,7 +526,7 @@ class McpConfigSourcedataTest {
       assertEveryWriteHidden(verbs, id);
       assertTrue(verbs.getString(McpVerbsSection.KEY_INSTEAD).contains("registerPayment"), id);
       if (PAYMENT_PLANS.contains(id)) {
-        // ETP-5812: updatePaymentPlan is an internal flag, hidden from agents.
+        // ETP-5812: the Classic UpdatePaymentPlan process, which Classic does not display either.
         JSONObject actions = payload.getJSONObject(McpActionsSection.NAME);
         assertEquals(Set.of("updatePaymentPlan"),
             setOf(actions.getJSONArray(McpActionsSection.KEY_HIDDEN)), id);
@@ -599,6 +572,67 @@ class McpConfigSourcedataTest {
     assertTrue(verbs.getString(McpVerbsSection.KEY_INSTEAD).contains(
         "etendo_action(spec:'bank-reconciliation'"), verbs.getString(McpVerbsSection.KEY_INSTEAD));
     assertResolvesCleanly(FA_RECONCILIATIONS);
+  }
+
+  /** ETGO_SF_ENTITY of financial-account/importedBankStatements. */
+  private static final String FA_IMPORTED_BANK_STATEMENTS = "495659D935FB48EAA6E796F9ED42CAE7";
+
+  /** The actions section exactly as the MCP resolves it for the entity's row. */
+  private static McpActionsSection.View actionsViewOf(String entityId)
+      throws IOException, JSONException {
+    McpConfigSections.resetForTests();
+    McpConfigCache.invalidateAll();
+    try {
+      SFSpec spec = mock(SFSpec.class);
+      when(spec.getId()).thenReturn("spec-of-" + entityId);
+      SFEntity entity = mock(SFEntity.class);
+      when(entity.getId()).thenReturn(entityId);
+      when(entity.getETGOSFSpec()).thenReturn(spec);
+      when(entity.get(McpEntityConfig.PROPERTY_MCP_CONFIG))
+          .thenReturn(payloadOf(entityId).toString());
+      return McpActionsSection.forEntity(entity);
+    } finally {
+      McpConfigCache.invalidateAll();
+    }
+  }
+
+  /**
+   * ETP-5812: the Classic process buttons that the scheduling bundle made runnable but that have an
+   * agent route of their own are refused, each with a reason naming that route, and listed as
+   * withheld so the agent learns why.
+   */
+  @Test
+  @DisplayName("the Classic process buttons with an agent route are refused with a reason naming"
+      + " that route")
+  void classicProcessButtonsWithAnAgentRouteAreRefused() throws IOException, JSONException {
+    Map<String, String> buttonByEntity = new TreeMap<>(Map.of(
+        FA_RECONCILIATIONS, "aPRMProcessReconciliation",
+        FA_IMPORTED_BANK_STATEMENTS, "aPRMProcessBankStatement"));
+    for (String id : PAYMENT_PLANS) {
+      buttonByEntity.put(id, "updatePaymentPlan");
+    }
+    for (Map.Entry<String, String> entry : buttonByEntity.entrySet()) {
+      String id = entry.getKey();
+      String button = entry.getValue();
+      McpActionsSection.View view = actionsViewOf(id);
+      assertFalse(view.isUnusable(), id);
+      assertTrue(view.isHidden(button), id + " must refuse " + button);
+      assertEquals(Set.of(button), view.withheldActions().keySet(), id);
+      assertFalse(view.reasonOf(button).isBlank(), id + " needs a reason");
+      assertResolvesCleanly(id);
+    }
+    String reconciliation = actionsViewOf(FA_RECONCILIATIONS).reasonOf("aPRMProcessReconciliation");
+    assertTrue(reconciliation.contains("etendo_action(spec:'bank-reconciliation'"), reconciliation);
+    String statement = actionsViewOf(FA_IMPORTED_BANK_STATEMENTS)
+        .reasonOf("aPRMProcessBankStatement");
+    assertTrue(statement.contains("etendo_action(spec:'bank-statements'")
+        && statement.contains("'processStatement'")
+        && statement.contains("'reactivateStatement'"), statement);
+    for (String id : PAYMENT_PLANS) {
+      String plan = actionsViewOf(id).reasonOf("updatePaymentPlan");
+      assertTrue(plan.contains("due date") && plan.contains("payments"), plan);
+      assertFalse(plan.contains("flag"), "it is a Classic process, not a flag: " + plan);
+    }
   }
 
   @Test
@@ -990,6 +1024,10 @@ class McpConfigSourcedataTest {
     for (String key : List.of("RM_ReceiveMaterials", "RM_CreateInvoice")) {
       assertFalse(reasons.optString(key, "").isBlank(), "a reason for " + key);
     }
+    // ETP-5812: the button is the Classic returns invoice; a return to vendor has its own route.
+    String createInvoice = actionsViewOf(PURCHASE_ORDER_HEADER).redirectReasonOf("RM_CreateInvoice");
+    assertTrue(createInvoice.contains("createReturnInvoice")
+        && createInvoice.contains("return-to-vendor-shipment"), createInvoice);
     assertFalse(actions.optString(McpActionsSection.KEY_REDIRECT_REASON, "").isBlank());
     Set<String> declared = new PurchaseOrderHeaderHandler().actionContracts().keySet();
     assertTrue(declared.containsAll(Set.of("createGoodsReceipt", "createPurchaseInvoice")), declared
