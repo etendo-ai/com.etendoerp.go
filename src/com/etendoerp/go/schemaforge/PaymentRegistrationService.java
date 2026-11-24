@@ -479,7 +479,9 @@ public final class PaymentRegistrationService {
 
   /**
    * ETP-6247: the remittance a payment came from — remitted ({@code REM_SENT}), collected or
-   * returned alike — so the list can say "in remittance N" and route edit/delete to the remittance
+   * returned alike — with its status code and its name in the request language
+   * ({@link InvoiceRemittance#remittanceStatusLabel}), so the list can say «En la remesa N ·
+   * Pendiente de envío» and route edit/delete to the remittance
    * (a remitted payment refuses both, see {@link InvoiceRemittance#paymentRefusal}). Absent for a
    * payment registered by hand.
    */
@@ -488,6 +490,10 @@ public final class PaymentRegistrationService {
     if (remittance != null) {
       item.put("remittanceId", remittance.getId());
       item.put("remittanceDocumentNo", remittance.getDocumentNo());
+      String status = InvoiceRemittance.remittanceStatus(remittance);
+      item.put("remittanceStatus", status == null ? JSONObject.NULL : status);
+      item.put("remittanceStatusLabel", status == null ? JSONObject.NULL
+          : InvoiceRemittance.remittanceStatusLabel(status));
     }
   }
 

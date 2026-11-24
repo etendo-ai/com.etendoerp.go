@@ -91,6 +91,7 @@ import org.openbravo.module.remittance.Remittance;
 import org.openbravo.module.remittance.RemittanceLine;
 import org.openbravo.service.db.DalConnectionProvider;
 
+import com.etendoerp.go.common.NeoCurrencyFormatConfig;
 import com.etendoerp.payment.removal.util.PaymentRemovalUtil;
 import com.etendoerp.psd2.bank.integration.data.PisPayment;
 import com.etendoerp.psd2.bank.integration.utils.BankIntegrationConstants;
@@ -1299,7 +1300,8 @@ class PaymentRegistrationServiceAdvancedTest {
         new BigDecimal(error.getString("payableAmount"))));
     // The text names the remittance and what can still be registered (catalog wording, no DB).
     String message = error.getString("message");
-    assertTrue(message.contains("REM-0042") && message.contains("40.00"), message);
+    assertTrue(message.contains("REM-0042") && message.contains("40" + decimalSeparator() + "00"),
+        message);
     // Nothing written: no draft, no link, no credit detail.
     assertTrue(daoConstruction.constructed().isEmpty());
     finAddPaymentMock.verify(
@@ -1444,6 +1446,9 @@ class PaymentRegistrationServiceAdvancedTest {
 
     assertEquals("rem-1", item.getString("remittanceId"));
     assertEquals("REM-0042", item.getString("remittanceDocumentNo"));
+    assertEquals("PR", item.getString("remittanceStatus"));
+    // No request language here: the English catalog, worded as the remittance window.
+    assertEquals("Pending to send", item.getString("remittanceStatusLabel"));
   }
 
   @Test
@@ -1464,6 +1469,8 @@ class PaymentRegistrationServiceAdvancedTest {
 
     assertFalse(item.has("remittanceId"));
     assertFalse(item.has("remittanceDocumentNo"));
+    assertFalse(item.has("remittanceStatus"));
+    assertFalse(item.has("remittanceStatusLabel"));
   }
 
   /** A detail of {@code amount} linked to a {@code REM_SENT} payment (a confirmed remittance). */
@@ -1495,10 +1502,17 @@ class PaymentRegistrationServiceAdvancedTest {
     when(remittance.getDocumentNo()).thenReturn(documentNo);
     RemittanceLine line = mock(RemittanceLine.class);
     when(line.getRemittance()).thenReturn(remittance);
+    // REM_REMITTANCE.REMITTANCE_STATUS, read through the generic property (RemittanceStatusUtil).
+    when(remittance.get("remittanceStatus")).thenReturn("PR");
     OBCriteria<RemittanceLine> lineCrit = mock(OBCriteria.class);
     when(dal.createCriteria(RemittanceLine.class)).thenReturn(lineCrit);
     when(lineCrit.add(any(Criterion.class))).thenReturn(lineCrit);
     when(lineCrit.uniqueResult()).thenReturn(line);
+  }
+
+  /** The instance decimal separator {@code InvoiceRemittance.formatMoney} formats with. */
+  private static String decimalSeparator() {
+    return NeoCurrencyFormatConfig.fromRuntime().getDecimalSeparator();
   }
 
   // ════════════════════════════════════════════════════════════════════════

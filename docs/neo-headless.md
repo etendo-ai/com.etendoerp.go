@@ -3468,8 +3468,13 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
   - **`registerPayment`** (simple and advanced, REST and MCP) — when the installment has a remitted
     part, funds (cash plus consumed credit) over `payableAmount` are refused with
     `422 ETGO_InvoiceInRemittance` (`error.remittanceId`, `remittanceDocumentNo`, `payableAmount`,
-    `remittedAmount`, and `currency` — the invoice's ISO code, so the SPA formats both amounts with
-    `formatCurrency`), before anything is written (a PIS transfer included); a fully remitted
+    `remittedAmount`, `currency` — the invoice's ISO code, so the SPA formats both amounts with
+    `formatCurrency` — and `fullyRemitted`), before anything is written. The text an API or MCP
+    caller reads names the remittance and the payable amount as money (currency precision, the
+    instance separators of `/sws/neo/currency-format`, the symbol on its `IsSymbolRightSide` side:
+    `InvoiceRemittance.formatMoney`); when nothing is left to register it is the
+    `ETGO_InvoiceFullyInRemittance` wording instead, which names no amount, and `messageKeys` is
+    `[ETGO_InvoiceInRemittance, ETGO_InvoiceFullyInRemittance]` (the first key is always there) (a PIS transfer included); a fully remitted
     installment gets the same refusal instead of the generic "no pending payment schedule details".
     Without a remitted part nothing changes: a genuine overpayment still becomes credit or a refund.
     Editing a draft counts the draft's own link as payable. The MCP runs the same check before its
@@ -3490,7 +3495,10 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     `422 ETGO_PaymentInRemittance`: the remittance owns it until it is collected, reactivated or
     returned.
   - **`invoicePayments`** rows carry `remittanceId` / `remittanceDocumentNo` for every payment a
-    remittance created (remitted, collected or returned; through `REM_RemittanceLine.FIN_Payment_ID`).
+    remittance created (remitted, collected or returned; through `REM_RemittanceLine.FIN_Payment_ID`),
+    plus `remittanceStatus` (`REM_REMITTANCE.REMITTANCE_STATUS`) and `remittanceStatusLabel`, its
+    name in the request language worded as the remittance window words it (catalog keys
+    `ETGO_RemittanceStatus_<code>`; REM's own `REM_RemittanceStatus` names exist in English only).
   - **No flag gate, on purpose.** None of this reads `sepa-remittances`: a `REM_SENT` payment exists
     only where a remittance was confirmed, i.e. where the flag was on (or in Classic, which shares
     the double-collection risk). Gating the guards would only re-open the double collection for a

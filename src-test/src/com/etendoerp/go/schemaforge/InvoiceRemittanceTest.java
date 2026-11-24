@@ -54,6 +54,8 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.module.remittance.Remittance;
 import org.openbravo.module.remittance.RemittanceLine;
 
+import com.etendoerp.go.common.NeoCurrencyFormatConfig;
+
 /**
  * Unit tests for {@link InvoiceRemittance}: what a confirmed remittance means on the invoice side —
  * the payable and remitted amounts of an installment, the remittance a payment came from, and the
@@ -328,7 +330,8 @@ class InvoiceRemittanceTest {
     assertEquals("EUR", error.getString(InvoiceRemittance.KEY_CURRENCY));
     assertAmount("60.00", error.get(InvoiceRemittance.KEY_REMITTED_AMOUNT));
     String message = error.getString("message");
-    assertTrue(message.contains("REM-0042") && message.contains("40.00"), message);
+    assertTrue(message.contains("REM-0042") && message.contains(money("40", "00")), message);
+    assertFalse(error.getBoolean(InvoiceRemittance.KEY_FULLY_REMITTED));
   }
 
   @Test
@@ -341,9 +344,61 @@ class InvoiceRemittanceTest {
 
     for (NeoResponse response : List.of(zero, small)) {
       assertEquals(422, response.getHttpStatus());
-      assertAmount("0", error(response).get(InvoiceRemittance.KEY_PAYABLE_AMOUNT));
-      assertAmount("100.00", error(response).get(InvoiceRemittance.KEY_REMITTED_AMOUNT));
+      JSONObject error = error(response);
+      assertAmount("0", error.get(InvoiceRemittance.KEY_PAYABLE_AMOUNT));
+      assertAmount("100.00", error.get(InvoiceRemittance.KEY_REMITTED_AMOUNT));
+      // BUG-2: the fully-remitted wording, which names no "you can only register 0.00".
+      assertTrue(error.getBoolean(InvoiceRemittance.KEY_FULLY_REMITTED));
+      assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE,
+          error.getJSONArray("messageKeys").getString(0));
+      assertEquals(InvoiceRemittance.MSG_INVOICE_FULLY_IN_REMITTANCE,
+          error.getJSONArray("messageKeys").getString(1));
+      String message = error.getString("message");
+      assertTrue(message.contains("REM-0042"), message);
+      assertFalse(message.contains("register"), message);
+      // Neutral for sales and purchases alike (no "collected" / "paid").
+      assertTrue(message.contains("settled"), message);
     }
+  }
+
+  // ─── formatMoney / remittanceStatusLabel ───────────────────────────────────
+
+  @Test
+  void formatMoneyGroupsWithTheInstanceSeparatorsAndPlacesTheSymbol() {
+    Currency euro = mock(Currency.class);
+    when(euro.getStandardPrecision()).thenReturn(2L);
+    when(euro.getSymbol()).thenReturn("€");
+    when(euro.isCurrencySymbolAtTheRight()).thenReturn(true);
+    Currency dollar = mock(Currency.class);
+    when(dollar.getStandardPrecision()).thenReturn(2L);
+    when(dollar.getSymbol()).thenReturn("$");
+    when(dollar.isCurrencySymbolAtTheRight()).thenReturn(false);
+    Currency noSymbol = mock(Currency.class);
+    when(noSymbol.getStandardPrecision()).thenReturn(0L);
+    when(noSymbol.getISOCode()).thenReturn("JPY");
+    String group = NeoCurrencyFormatConfig.fromRuntime().getThousandsSeparator();
+
+    assertEquals("1" + group + money("234", "50") + "\u00A0€",
+        InvoiceRemittance.formatMoney(new BigDecimal("1234.5"), euro));
+    assertEquals("$1" + group + money("234", "50"),
+        InvoiceRemittance.formatMoney(new BigDecimal("1234.5"), dollar));
+    assertEquals("1" + group + "235\u00A0JPY",
+        InvoiceRemittance.formatMoney(new BigDecimal("1234.5"), noSymbol));
+    assertEquals(money("0", "00"), InvoiceRemittance.formatMoney(null, null));
+  }
+
+  @Test
+  void remittanceStatusLabelWordsTheStatusAsTheRemittanceWindow() {
+    // No request language in a unit test: the English catalog.
+    assertEquals("Pending to send", InvoiceRemittance.remittanceStatusLabel("PR"));
+    assertEquals("Sent to bank", InvoiceRemittance.remittanceStatusLabel("SB"));
+    assertEquals("ZZ", InvoiceRemittance.remittanceStatusLabel("ZZ"));
+    assertNull(InvoiceRemittance.remittanceStatusLabel(null));
+  }
+
+  /** {@code integer + decimal separator + fraction}, as {@code formatMoney} writes it here. */
+  private static String money(String integer, String fraction) {
+    return integer + NeoCurrencyFormatConfig.fromRuntime().getDecimalSeparator() + fraction;
   }
 
   @Test
@@ -388,7 +443,7 @@ class InvoiceRemittanceTest {
     // 399.6 at precision 0 rounds HALF_UP to 400; no precision falls back to 2 decimals.
     assertTrue(jpyMessage.contains(" 400"), jpyMessage);
     assertFalse(jpyMessage.contains("399"), jpyMessage);
-    assertTrue(defaultMessage.contains("12.35"), defaultMessage);
+    assertTrue(defaultMessage.contains(money("12", "35")), defaultMessage);
   }
 
   @Test
@@ -438,7 +493,7 @@ class InvoiceRemittanceTest {
 
     assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE, thrown.getMessageKey());
     assertTrue(thrown.getMessage().contains("REM-0042"), thrown.getMessage());
-    assertTrue(thrown.getMessage().contains("40.00"), thrown.getMessage());
+    assertTrue(thrown.getMessage().contains(money("40", "00")), thrown.getMessage());
     // The same 422 answer as registerPayment, extra keys included.
     assertEquals(422, thrown.getResponse().getHttpStatus());
     assertEquals("REM-0042", thrown.getResponse().getBody().getJSONObject("error")

@@ -19,11 +19,15 @@ package com.etendoerp.go.schemaforge;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
+import java.text.DecimalFormat;
+import java.text.DecimalFormatSymbols;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.criterion.Restrictions;
 import org.openbravo.dal.core.OBContext;
@@ -37,6 +41,9 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.module.remittance.Remittance;
 import org.openbravo.module.remittance.RemittanceLine;
+import org.openbravo.module.remittance.utility.RemittanceStatusUtil;
+
+import com.etendoerp.go.common.NeoCurrencyFormatConfig;
 
 /**
  * ETP-6247 — what a confirmed remittance means on the invoice side, in one place.
@@ -86,6 +93,13 @@ public final class InvoiceRemittance {
   /** Refusal of a registration over the payable amount of a remitted installment. */
   public static final String MSG_INVOICE_IN_REMITTANCE = "ETGO_InvoiceInRemittance";
 
+  /**
+   * The wording of that refusal when nothing is left to register (the whole installment is
+   * remitted). Published in {@code messageKeys} after {@value #MSG_INVOICE_IN_REMITTANCE}, which
+   * stays first so a client keyed on it keeps working.
+   */
+  public static final String MSG_INVOICE_FULLY_IN_REMITTANCE = "ETGO_InvoiceFullyInRemittance";
+
   /** Refusal of a reactivation or removal of a remitted payment. */
   public static final String MSG_PAYMENT_IN_REMITTANCE = "ETGO_PaymentInRemittance";
 
@@ -99,9 +113,15 @@ public final class InvoiceRemittance {
   public static final String KEY_REMITTED_AMOUNT = "remittedAmount";
   /** ISO code of the invoice currency, so a client formats the two amounts itself. */
   public static final String KEY_CURRENCY = "currency";
+  /** {@code true} when nothing is left to register: the whole installment is remitted. */
+  public static final String KEY_FULLY_REMITTED = "fullyRemitted";
 
   private static final int SC_UNPROCESSABLE = 422;
   private static final int DEFAULT_PRECISION = 2;
+  private static final String STATUS_LABEL_PREFIX = "ETGO_RemittanceStatus_";
+  private static final String NBSP = "\u00A0";
+  private static final String DEFAULT_THOUSANDS = ".";
+  private static final String DEFAULT_DECIMAL = ",";
 
   private InvoiceRemittance() {
   }
@@ -217,6 +237,38 @@ public final class InvoiceRemittance {
     }
   }
 
+  /**
+   * The remittance's status code ({@code REM_REMITTANCE.REMITTANCE_STATUS}: {@code PE}, {@code PR},
+   * {@code SB}, {@code CT}, {@code PT}, {@code CP}, {@code PP}, {@code AN}).
+   *
+   * @param remittance the remittance, may be {@code null}
+   * @return the code, or {@code null}
+   */
+  public static String remittanceStatus(Remittance remittance) {
+    Object status = remittance == null ? null
+        : remittance.get(RemittanceStatusUtil.PROPERTY_REMITTANCE_STATUS);
+    return status == null ? null : status.toString();
+  }
+
+  /**
+   * The name of a remittance status in the request language, worded as the SPA's remittance window
+   * words it ({@code remittanceStatus<Code>}: «Pendiente de envío» for {@code PR}), from the
+   * {@code ETGO_RemittanceStatus_<code>} catalog keys of {@link NeoMessageText}. Not the
+   * {@code REM_RemittanceStatus} list names: REM ships them in English only («Processed») and they
+   * would contradict the window. An unknown code is answered as is.
+   *
+   * @param status the status code, may be {@code null}
+   * @return the label, the code itself when unknown, or {@code null} for {@code null}
+   */
+  public static String remittanceStatusLabel(String status) {
+    if (StringUtils.isBlank(status)) {
+      return status;
+    }
+    String key = STATUS_LABEL_PREFIX + status;
+    String label = NeoMessageText.text(key);
+    return label == null || key.equals(label) ? status : label;
+  }
+
   // ─── refusals ──────────────────────────────────────────────────────────────
 
   /**
@@ -294,19 +346,26 @@ public final class InvoiceRemittance {
   }
 
   /**
-   * The 422 {@value #MSG_INVOICE_IN_REMITTANCE} answer: the text names the remittance and the
-   * payable amount; the body adds {@value #KEY_REMITTANCE_ID},
+   * The 422 {@value #MSG_INVOICE_IN_REMITTANCE} answer. The text names the remittance and, when
+   * part of the installment is still free, the amount that can be registered, formatted as money
+   * ({@link #formatMoney}); when nothing is free it is the {@value #MSG_INVOICE_FULLY_IN_REMITTANCE}
+   * wording, which names no amount. {@code messageKeys} always starts with
+   * {@value #MSG_INVOICE_IN_REMITTANCE}. The body adds {@value #KEY_REMITTANCE_ID},
    * {@value #KEY_REMITTANCE_DOCUMENT_NO}, {@value #KEY_PAYABLE_AMOUNT},
-   * {@value #KEY_REMITTED_AMOUNT} and {@value #KEY_CURRENCY}.
+   * {@value #KEY_REMITTED_AMOUNT}, {@value #KEY_CURRENCY} and {@value #KEY_FULLY_REMITTED}.
    */
   private static NeoResponse remittedInstallmentResponse(FIN_PaymentSchedule schedule,
       FIN_Payment remittedPayment, BigDecimal payable, BigDecimal remitted) {
     Remittance remittance = remittanceOf(remittedPayment);
     String documentNo = remittanceDocumentNo(remittance, remittedPayment);
-    NeoResponse response = NeoMessageText.error(SC_UNPROCESSABLE, MSG_INVOICE_IN_REMITTANCE,
-        documentNo, format(payable, schedule));
+    boolean fully = payable.signum() == 0;
+    NeoResponse response = fully
+        ? NeoMessageText.error(SC_UNPROCESSABLE, MSG_INVOICE_FULLY_IN_REMITTANCE, documentNo)
+        : NeoMessageText.error(SC_UNPROCESSABLE, MSG_INVOICE_IN_REMITTANCE, documentNo,
+            formatMoney(payable, currencyOf(schedule)));
     putDetails(response, remittance, documentNo, payable, remitted);
     putCurrency(response, currencyOf(schedule));
+    putFullyRemitted(response, fully);
     return response;
   }
 
@@ -356,13 +415,47 @@ public final class InvoiceRemittance {
     return payment == null ? "" : StringUtils.defaultString(payment.getDocumentNo());
   }
 
-  /** The amount at the invoice currency's precision, plain (no grouping), for the message. */
-  private static String format(BigDecimal amount, FIN_PaymentSchedule schedule) {
-    Currency currency = currencyOf(schedule);
+  /**
+   * The amount as money for a message an API or MCP caller reads as is: the currency's precision
+   * (half up), the instance-wide thousands and decimal separators the SPA's {@code formatCurrency}
+   * also reads ({@link NeoCurrencyFormatConfig}, served at {@code /sws/neo/currency-format}), and
+   * the currency symbol on the side {@code C_Currency.IsSymbolRightSide} says — after a no-break
+   * space on the right, glued on the left, as the SPA renders it. Falls back to the ISO code when
+   * the currency has no symbol (after the amount), and to the bare number without a currency.
+   * Total.
+   */
+  static String formatMoney(BigDecimal amount, Currency currency) {
     int precision = currency == null || currency.getStandardPrecision() == null
         ? DEFAULT_PRECISION
         : currency.getStandardPrecision().intValue();
-    return amount.setScale(precision, RoundingMode.HALF_UP).toPlainString();
+    String number = groupedNumber(amount == null ? BigDecimal.ZERO : amount, precision);
+    String symbol = currency == null ? null : StringUtils.trimToNull(currency.getSymbol());
+    if (symbol == null) {
+      String isoCode = currency == null ? null : StringUtils.trimToNull(currency.getISOCode());
+      return isoCode == null ? number : number + NBSP + isoCode;
+    }
+    return Boolean.TRUE.equals(currency.isCurrencySymbolAtTheRight())
+        ? number + NBSP + symbol
+        : symbol + number;
+  }
+
+  private static String groupedNumber(BigDecimal amount, int precision) {
+    String grouping = DEFAULT_THOUSANDS;
+    String decimal = DEFAULT_DECIMAL;
+    try {
+      NeoCurrencyFormatConfig config = NeoCurrencyFormatConfig.fromRuntime();
+      grouping = config.getThousandsSeparator();
+      decimal = config.getDecimalSeparator();
+    } catch (RuntimeException e) {
+      log.debug("No currency format config, using the defaults: {}", e.getMessage());
+    }
+    DecimalFormatSymbols symbols = new DecimalFormatSymbols(Locale.ROOT);
+    symbols.setGroupingSeparator(grouping.charAt(0));
+    symbols.setDecimalSeparator(decimal.charAt(0));
+    DecimalFormat format = new DecimalFormat(
+        precision > 0 ? "#,##0." + "0".repeat(precision) : "#,##0", symbols);
+    format.setRoundingMode(RoundingMode.HALF_UP);
+    return format.format(amount.setScale(precision, RoundingMode.HALF_UP));
   }
 
   private static Currency currencyOf(FIN_PaymentSchedule schedule) {
@@ -378,6 +471,19 @@ public final class InvoiceRemittance {
               : currency.getISOCode());
     } catch (Exception e) {
       log.debug("Could not attach the currency to the refusal: {}", e.getMessage());
+    }
+  }
+
+  private static void putFullyRemitted(NeoResponse response, boolean fully) {
+    try {
+      JSONObject error = response.getBody().getJSONObject("error");
+      error.put(KEY_FULLY_REMITTED, fully);
+      if (fully) {
+        error.put(NeoProcessService.MESSAGE_KEYS, new JSONArray()
+            .put(MSG_INVOICE_IN_REMITTANCE).put(MSG_INVOICE_FULLY_IN_REMITTANCE));
+      }
+    } catch (Exception e) {
+      log.debug("Could not mark the refusal as fully remitted: {}", e.getMessage());
     }
   }
 
