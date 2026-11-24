@@ -23,7 +23,6 @@ import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
@@ -112,7 +111,7 @@ import com.etendoerp.go.schemaforge.util.StructuredAddressComposer.ComposedAddre
  * {@code SalesOrderLineHandler} for the same choice).
  */
 @NeoExtension(spec = "bp-location", entity = "bpLocation")
-public class BpLocationHandler implements NeoHandler {
+public class BpLocationHandler implements StructuredAddressCustomization {
 
   private static final Logger log = LogManager.getLogger(BpLocationHandler.class);
 
@@ -214,38 +213,6 @@ public class BpLocationHandler implements NeoHandler {
   private String pendingBuildingName;
   private String pendingAddress1;
   private String pendingAddress2;
-
-  /**
-   * ETP-5806 CP-13 (QA finding) — the structured-address fields this handler requires from the
-   * caller, so {@code etendo_schema(view:"create")} lists them under {@code required} instead of
-   * under an {@code optional} group whose own hint says they are "accepted but not needed".
-   *
-   * <p>Neither {@code EM_OBSEPA_StrtNm} nor {@code C_Location.City} is NOT NULL in AD, so the
-   * generic rule cannot see this mandatoriness: it is the composer's product rule, and only a
-   * customization can declare it. The set is empty while {@code structured-address-for-sepa} is off
-   * for the caller's account, which republishes the pre-ETP-5806 (country-only) contract unchanged.
-   *
-   * @return the caller-required create fields; never {@code null}
-   */
-  @Override
-  public Set<String> callerRequiredCreateFields() {
-    return StructuredAddressComposer.callerRequiredFields(GoAccountResolver.currentAccountEmail());
-  }
-
-  /**
-   * ETP-5806 CP-13 (QA finding) — {@code buildingNumber}, which this handler resolves itself: a
-   * blank or omitted value becomes {@code "s/n"}
-   * ({@link StructuredAddressComposer#effectiveBuildingNumber}). Declaring it here is what moves it
-   * to {@code optional} carrying {@code serverDefaulted: true} — "mandatory in Etendo but the
-   * server already has a value, so do not ask the user" — rather than leaving it indistinguishable
-   * from a field nobody needs.
-   *
-   * @return the server-resolved create fields; never {@code null}
-   */
-  @Override
-  public Set<String> serverResolvedCreateFields() {
-    return StructuredAddressComposer.serverDefaultedFields(GoAccountResolver.currentAccountEmail());
-  }
 
   @Override
   public NeoResponse handle(NeoContext context) {
@@ -486,7 +453,7 @@ public class BpLocationHandler implements NeoHandler {
   private static NeoResponse validateStructuredAddress(String streetName, String buildingNumber,
       String buildingName, String cityName, String countryId) {
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-        streetName, buildingNumber, cityName, countryId);
+        streetName, cityName, countryId);
     if (!missing.isEmpty()) {
       return NeoResponse.error(400, "Missing required field(s): " + String.join(", ", missing));
     }

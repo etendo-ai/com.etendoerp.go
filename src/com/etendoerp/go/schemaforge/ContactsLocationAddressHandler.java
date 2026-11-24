@@ -79,7 +79,7 @@ import com.etendoerp.go.schemaforge.util.StructuredAddressComposer.ComposedAddre
  * resolution.
  */
 @NeoExtension(spec = "contacts", entity = "locationAddress")
-public class ContactsLocationAddressHandler implements NeoHandler {
+public class ContactsLocationAddressHandler implements StructuredAddressCustomization {
 
   private static final Logger log = LogManager.getLogger(ContactsLocationAddressHandler.class);
   private static final String FIELD_SHIP_TO_ADDRESS = "shipToAddress";
@@ -148,38 +148,6 @@ public class ContactsLocationAddressHandler implements NeoHandler {
   /** DAL property holding the parent Business Partner FK on C_BPartner_Location. */
   private static final String FIELD_BUSINESS_PARTNER =
       org.openbravo.model.common.businesspartner.Location.PROPERTY_BUSINESSPARTNER;
-
-  /**
-   * ETP-5806 CP-13 (QA finding) — the structured-address fields this handler requires from the
-   * caller, so {@code etendo_schema(view:"create")} lists them under {@code required} instead of
-   * under an {@code optional} group whose own hint says they are "accepted but not needed".
-   *
-   * <p>Neither {@code EM_OBSEPA_StrtNm} nor {@code C_Location.City} is NOT NULL in AD, so the
-   * generic rule cannot see this mandatoriness: it is the composer's product rule, and only a
-   * customization can declare it. The set is empty while {@code structured-address-for-sepa} is off
-   * for the caller's account, which republishes the pre-ETP-5806 (country-only) contract unchanged.
-   *
-   * @return the caller-required create fields; never {@code null}
-   */
-  @Override
-  public Set<String> callerRequiredCreateFields() {
-    return StructuredAddressComposer.callerRequiredFields(GoAccountResolver.currentAccountEmail());
-  }
-
-  /**
-   * ETP-5806 CP-13 (QA finding) — {@code buildingNumber}, which this handler resolves itself: a
-   * blank or omitted value becomes {@code "s/n"}
-   * ({@link StructuredAddressComposer#effectiveBuildingNumber}). Declaring it here is what moves it
-   * to {@code optional} carrying {@code serverDefaulted: true} — "mandatory in Etendo but the
-   * server already has a value, so do not ask the user" — rather than leaving it indistinguishable
-   * from a field nobody needs.
-   *
-   * @return the server-resolved create fields; never {@code null}
-   */
-  @Override
-  public Set<String> serverResolvedCreateFields() {
-    return StructuredAddressComposer.serverDefaultedFields(GoAccountResolver.currentAccountEmail());
-  }
 
   @Override
   public NeoResponse handle(NeoContext ctx) {
@@ -455,13 +423,11 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       return countryId == null ? NeoResponse.error(400, "Missing required field: country (C_Country_ID)") : null;
     }
     String streetNameForValidation = readAlias(body, KEYS_STREET_NAME);
-    // ETP-5806 follow-up (QA finding) — a blank/omitted Building Number with a present Street Name
-    // falls back to "s/n" instead of being reported as missing. See
-    // StructuredAddressComposer#effectiveBuildingNumber.
+    // ETP-5806 CP-13 — Building Number is not part of this check at all: a blank/omitted value
+    // becomes "s/n" (StructuredAddressComposer#effectiveBuildingNumber) before it is persisted, so
+    // it is never something the caller still has to supply.
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(
         streetNameForValidation,
-        StructuredAddressComposer.effectiveBuildingNumber(streetNameForValidation,
-            readAlias(body, KEYS_BUILDING_NUMBER)),
         nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
         countryId);
     if (!missing.isEmpty()) {
@@ -516,7 +482,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     // decides the one boolean lives in that method instead of in this already-busy one.
     boolean partial = StructuredAddressComposer.requiresMergeOnUpdate(ctx.getHttpMethod(),
         structuredAddressEnabled, readAlias(body, KEYS_STREET_NAME),
-        readAlias(body, KEYS_BUILDING_NUMBER), nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
+        nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
         nullIfEmpty(body.optString(FIELD_COUNTRY, null)));
 
     OBContext.setAdminMode(true);
@@ -643,12 +609,11 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       return null;
     }
     String streetNameForValidation = readAlias(body, KEYS_STREET_NAME);
-    // ETP-5806 follow-up (QA finding) — same "s/n" fallback as create. See
-    // StructuredAddressComposer#effectiveBuildingNumber.
+    // ETP-5806 CP-13 — Building Number is not part of this check at all: a blank/omitted value
+    // becomes "s/n" (StructuredAddressComposer#effectiveBuildingNumber) before it is persisted, so
+    // it is never something the caller still has to supply.
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(
         streetNameForValidation,
-        StructuredAddressComposer.effectiveBuildingNumber(streetNameForValidation,
-            readAlias(body, KEYS_BUILDING_NUMBER)),
         nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
         effectiveCountryForValidation);
     if (!missing.isEmpty()) {
@@ -685,7 +650,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       return null;
     }
     JSONObject locationJson = dataArr.getJSONObject(0);
-    String geoLocId = nullIfEmpty(locationJson.optString("locationAddress", null));
+    String geoLocId = nullIfEmpty(locationJson.optString(FIELD_LOCATION_ADDRESS, null));
     if (geoLocId == null) {
       return null;
     }
@@ -1137,7 +1102,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       throws Exception {
     JSONObject locationJson = new JSONObject();
     locationJson.put("id",              bpLoc.getId());
-    locationJson.put("locationAddress", geoLoc.getId());
+    locationJson.put(FIELD_LOCATION_ADDRESS, geoLoc.getId());
     locationJson.put("name",            bpLoc.getName() != null ? bpLoc.getName() : JSONObject.NULL);
     // JSON booleans, as a read through the default CRUD returns them (ETP-6012); the form accepts both.
     locationJson.put(FIELD_SHIP_TO_ADDRESS,    Boolean.TRUE.equals(bpLoc.isShipToAddress()));

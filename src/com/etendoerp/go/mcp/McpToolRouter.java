@@ -1659,7 +1659,7 @@ public class McpToolRouter {
     // are published read-only, so view:"create" stops offering them as values a caller may set.
     // After both appendVirtualFields calls, so the wrapper path and the direct table walk are
     // covered by the one overlay. No-op for every entity without these columns.
-    McpSchemaFieldBuilder.applyComposerOwnedVisibility(fieldsArray);
+    McpSchemaResponseHints.applyComposerOwnedVisibility(fieldsArray);
     McpSchemaFieldBuilder.applyPreconditionRequirements(fieldsArray, requiredWhenByField);
     // ETP-5473: what the entity's customization refuses a create without, although AD and
     // etendo_defaults do not say so. Flagged on the full array so every view agrees.

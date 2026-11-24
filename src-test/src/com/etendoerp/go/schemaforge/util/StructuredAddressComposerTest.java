@@ -200,13 +200,13 @@ class StructuredAddressComposerTest {
     @Test
     void nothingMissingWhenAllFourArePresent() {
       List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-          "Gran Via", "45", "Madrid", "ES");
+          "Gran Via", "Madrid", "ES");
       assertTrue(missing.isEmpty());
     }
 
     @Test
     void reportsEachFieldMissingInStableOrder() {
-      List<String> missing = StructuredAddressComposer.missingMandatoryFields(null, "", " ", null);
+      List<String> missing = StructuredAddressComposer.missingMandatoryFields(null, " ", null);
       assertEquals(List.of("streetName", "cityName", "country"), missing);
     }
 
@@ -220,21 +220,21 @@ class StructuredAddressComposerTest {
     @Test
     void buildingNumberIsNeverReportedMissingEvenWithoutAStreetName() {
       List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-          null, null, "Madrid", "ES");
+          null, "Madrid", "ES");
       assertEquals(List.of("streetName"), missing);
     }
 
     @Test
     void onlyCountryMissing() {
       List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-          "Gran Via", "45", "Madrid", null);
+          "Gran Via", "Madrid", null);
       assertEquals(List.of("country"), missing);
     }
 
     @Test
     void whitespaceOnlyValueCountsAsMissing() {
       List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-          "   ", "45", "Madrid", "ES");
+          "   ", "Madrid", "ES");
       assertEquals(List.of("streetName"), missing);
     }
   }

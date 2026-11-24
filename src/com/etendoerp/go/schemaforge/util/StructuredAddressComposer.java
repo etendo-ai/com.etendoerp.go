@@ -174,7 +174,7 @@ public final class StructuredAddressComposer {
    *     off, so the pre-ETP-5806 (country-only) mandatoriness is published unchanged
    */
   public static Set<String> callerRequiredFields(String accountEmail) {
-    return isEnabled(accountEmail) ? Set.of("streetName", "cityName") : Set.of();
+    return isEnabled(accountEmail) ? Set.of(FIELD_STREET_NAME, "cityName") : Set.of();
   }
 
   /**
@@ -285,6 +285,9 @@ public final class StructuredAddressComposer {
   /** The fallback value used for Building Number when it is blank and Street Name is present. */
   private static final String EMPTY_BUILDING_NUMBER_FALLBACK = "s/n";
 
+  /** Published payload key of the Street Name field — see {@link #callerRequiredFields}. */
+  private static final String FIELD_STREET_NAME = "streetName";
+
   /**
    * The effective Building Number to validate and persist (ETP-5806 follow-up, QA finding): when
    * {@code buildingNumber} is blank but {@code streetName} is present, the field is not treated as
@@ -340,22 +343,21 @@ public final class StructuredAddressComposer {
    * each other; this one is the one that was wrong. {@code etendo_schema} publishes the matching
    * truth through {@link #serverDefaultedFields} ({@code optional} + {@code serverDefaulted:true}).
    *
-   * <p>Callers should still pass the result of {@link #effectiveBuildingNumber} rather than the raw
-   * payload value, because the same effective value is what gets persisted — but this method no
-   * longer depends on it.
+   * <p>The Building Number parameter this method used to take is gone with the check: it was the
+   * only reason callers had to resolve {@link #effectiveBuildingNumber} before validating, and
+   * keeping an argument nothing reads is how the rule gets reintroduced by someone restoring a
+   * "missing" check for it.
    *
    * @param streetName     Street Name ({@code EM_OBSEPA_StrtNm}), may be {@code null}/blank
-   * @param buildingNumber the <b>effective</b> Building Number — see {@link
-   *     #effectiveBuildingNumber} — accepted for call-site symmetry and deliberately not validated
    * @param cityName       City Name, may be {@code null}/blank
    * @param countryId      Country id, may be {@code null}/blank
    * @return the missing field names (payload keys), in a stable order; empty when none are missing
    */
-  public static List<String> missingMandatoryFields(String streetName, String buildingNumber,
-      String cityName, String countryId) {
+  public static List<String> missingMandatoryFields(String streetName, String cityName,
+      String countryId) {
     List<String> missing = new ArrayList<>();
     if (StringUtils.isBlank(streetName)) {
-      missing.add("streetName");
+      missing.add(FIELD_STREET_NAME);
     }
     if (StringUtils.isBlank(cityName)) {
       missing.add("cityName");
@@ -380,7 +382,7 @@ public final class StructuredAddressComposer {
       String buildingName) {
     List<String> tooLong = new ArrayList<>();
     if (streetName != null && streetName.length() > STREET_NAME_MAX_LENGTH) {
-      tooLong.add("streetName");
+      tooLong.add(FIELD_STREET_NAME);
     }
     if (buildingNumber != null && buildingNumber.length() > BUILDING_NUMBER_MAX_LENGTH) {
       tooLong.add("buildingNumber");
@@ -412,12 +414,16 @@ public final class StructuredAddressComposer {
    * it already satisfies every mandatory field, so this returns {@code false} and the merge is
    * skipped exactly as before.
    *
+   * <p>Building Number is not a parameter: it stopped being one the moment
+   * {@link #missingMandatoryFields} stopped asking for it (ETP-5806 CP-13), and a body carrying
+   * only a Building Number has never been self-sufficient anyway — its missing street already
+   * forces the merge.
+   *
    * @param httpMethod               the request's HTTP method
    * @param structuredAddressEnabled whether {@code structured-address-for-sepa} is on for the
    *                                 caller's account; with it off, only a PATCH merges
    * @param streetName               the raw body value, before any merge — see
    *                                 {@code ContactsLocationAddressHandler#readAlias}
-   * @param buildingNumber           the raw body value, before any merge
    * @param cityName                 the raw body value, before any merge
    * @param countryId                the raw body value, before any merge — NOT falling back to
    *                                 the stored record's own country, unlike
@@ -427,15 +433,14 @@ public final class StructuredAddressComposer {
    * @return {@code true} when the stored record should be merged into the body first
    */
   public static boolean requiresMergeOnUpdate(String httpMethod, boolean structuredAddressEnabled,
-      String streetName, String buildingNumber, String cityName, String countryId) {
+      String streetName, String cityName, String countryId) {
     if ("PATCH".equals(httpMethod)) {
       return true;
     }
     if (!structuredAddressEnabled) {
       return false;
     }
-    return !missingMandatoryFields(streetName, effectiveBuildingNumber(streetName, buildingNumber),
-        cityName, countryId).isEmpty();
+    return !missingMandatoryFields(streetName, cityName, countryId).isEmpty();
   }
 
   private static String append(String base, String separator, String part) {

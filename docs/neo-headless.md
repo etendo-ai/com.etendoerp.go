@@ -6276,14 +6276,16 @@ as the `maxLength` note above, one field over. None of `EM_OBSEPA_StrtNm`, `EM_O
 `cityName` under `optional` beneath a hint reading *"accepted but not needed"* — while
 `etendo_create bp-location {cityName, country}` came back `400 Missing required field(s):
 streetName`. The schema published the flag-OFF truth to an account the flag was ON for, on both
-specs (`bp-location`, `contacts/locationAddress`) and in both views. Each of the 3 handlers now
-declares the contract through the existing customization hooks, so nothing identity-shaped enters a
+specs (`bp-location`, `contacts/locationAddress`) and in both views. The 3 handlers that wrap a
+`C_Location` now declare the contract through the existing customization hooks — as default methods
+on the `StructuredAddressCustomization` mixin they each `implement`, so the declaration is written
+once, stays visible in every handler's own class declaration, and nothing identity-shaped enters a
 generic service:
 
 | Field | Published, flag ON | Declared by |
 |---|---|---|
-| `streetName`, `cityName` | `required` (`userRequired: true`) | `NeoHandler#callerRequiredCreateFields()` → `StructuredAddressComposer.callerRequiredFields` |
-| `buildingNumber` | `optional` + **`serverDefaulted: true`** | `NeoHandler#serverResolvedCreateFields()` → `StructuredAddressComposer.serverDefaultedFields` |
+| `streetName`, `cityName` | `required` (`userRequired: true`) | `StructuredAddressCustomization#callerRequiredCreateFields()` → `StructuredAddressComposer.callerRequiredFields` |
+| `buildingNumber` | `optional` + **`serverDefaulted: true`** | `StructuredAddressCustomization#serverResolvedCreateFields()` → `StructuredAddressComposer.serverDefaultedFields` |
 | `buildingName` | `optional` | nothing — genuinely optional |
 | `country` | `required` | its AD column, which IS mandatory |
 
@@ -6295,7 +6297,9 @@ With the flag OFF both declarations are empty, so the pre-ETP-5806 (country-only
 republished byte-for-byte.
 
 Two consequences recorded with it:
-- **`missingMandatoryFields` no longer names `buildingNumber`.** It used to, in the one case a blank
+- **`missingMandatoryFields` no longer takes or names `buildingNumber`.** The parameter went with
+  the check — it was the only reason a caller had to resolve `effectiveBuildingNumber` before
+  validating, and `requiresMergeOnUpdate` lost it for the same reason. It used to, in the one case a blank
   Street Name suppresses the fallback, so a create missing only the street answered `400 Missing
   required field(s): streetName, buildingNumber` while the same create *with* a street and *without*
   a number succeeded at `201` and persisted `"s/n"`. The two answers contradicted each other; the
