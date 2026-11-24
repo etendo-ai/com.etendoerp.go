@@ -320,6 +320,47 @@ public class NeoReferenceSelectorValidationTest {
     assertEquals(PARTNER_ID, refused.value());
   }
 
+  /** A stored row of a client the caller cannot read is treated as missing: nothing is revalidated. */
+  @Test
+  public void testAStoredRowOfAnUnreadableClientIsTreatedAsMissing() throws Exception {
+    BaseOBObject stored = storedOrder();
+    BaseOBObject oldPartner = mock(BaseOBObject.class);
+    when(oldPartner.getId()).thenReturn("BP-OLD");
+    when(stored.get(PARTNER)).thenReturn(oldPartner);
+    org.openbravo.model.ad.domain.Validation rule = validation(
+        "C_BPartner_Location.C_BPartner_ID=@C_BPartner_ID@");
+    when(columnOf(ADDRESS_COLUMN).getValidation()).thenReturn(rule);
+    offers(Boolean.TRUE);
+    selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), eq(ADDRESS),
+        anyString(), any())).thenReturn(java.util.Optional.of(Boolean.FALSE));
+
+    try (MockedStatic<TenantOwnership> tenancy = mockStatic(TenantOwnership.class)) {
+      tenancy.when(() -> TenantOwnership.belongsToReadableClient(any())).thenReturn(false);
+
+      // Were the stored order read, its stored address would be revalidated and refused
+      // (see testChangingTheControllingFieldRevalidatesTheStoredDependent).
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(null, tab, ORDER_ID, null,
+          new JSONObject().put(PARTNER, PARTNER_ID)));
+    }
+  }
+
+  /** The stored parent of another client is not read either: its fields never reach the selector. */
+  @Test
+  public void testAParentOfAnUnreadableClientContributesNoFields() throws Exception {
+    try (LineFixture line = new LineFixture();
+        MockedStatic<TenantOwnership> tenancy = mockStatic(TenantOwnership.class)) {
+      BaseOBObject header = dal.get(LineFixture.HEADER_ENTITY, LineFixture.HEADER_ID);
+      tenancy.when(() -> TenantOwnership.belongsToReadableClient(any())).thenReturn(true);
+      tenancy.when(() -> TenantOwnership.belongsToReadableClient(header)).thenReturn(false);
+      offers(Boolean.TRUE);
+
+      NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
+          LineFixture.HEADER_ID, new JSONObject().put(LineFixture.BIN, LineFixture.BIN_ID));
+
+      assertNull(contextFor(LineFixture.BIN).get("M_Warehouse_ID"));
+    }
+  }
+
   /**
    * The tab's literal auxiliary inputs reach the selector: Sales Quotation's {@code isQuotation=Y}
    * is what lets the quotation document type through rule 133 (ETP-6381).
