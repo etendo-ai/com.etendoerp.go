@@ -27,6 +27,7 @@ import javax.servlet.http.HttpServletResponse;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.base.HttpBaseServlet;
@@ -43,12 +44,12 @@ import com.etendoerp.go.schemaforge.util.NeoImageHelper;
  * The customer portal's API, at {@code /sws/portal/*} (ETP-5267, link model ETP-6209).
  *
  * <pre>
- * GET  /sws/portal/me[/{token}]                 the link's state, and who it speaks for when valid
+ * GET  /sws/portal/me[/[{clientId}/]{token}]    the link's state, and who it speaks for when valid
  * POST /sws/portal/renew                        email a new link for an expired one
  * GET  /sws/portal/logo                         the issuing company's logo
  * GET  /sws/portal/home?months=                balances, tiles, recent, paid this year, chart
  * GET  /sws/portal/search?q=                    documents of every kind matching q
- * GET  /sws/portal/documents?type=&amp;group=…      one document kind, filtered and paged
+ * GET  /sws/portal/documents?type=&amp;subtype=&amp;group=…  one document kind, filtered and paged
  * GET  /sws/portal/documents/{kind}/{id}[/pdf]  one document's detail, or its printable
  * </pre>
  *
@@ -154,6 +155,11 @@ public class PortalServlet extends HttpBaseServlet {
   private static final String HEADER_CACHE_CONTROL = "Cache-Control";
   /** The portal token's own header, independent of the app's session credential scheme. */
   static final String HEADER_PORTAL_TOKEN = "X-Portal-Token";
+  /**
+   * The tenant id of the portal URL ({@code /portal/{AD_Client_ID}}, ETP-6209 QA CP-43), sent by
+   * the SPA beside {@value #HEADER_PORTAL_TOKEN}. Optional; checked against the token's client.
+   */
+  static final String HEADER_PORTAL_CLIENT = "X-Portal-Client";
   private static final String BEARER_PREFIX = "Bearer ";
   private static final String CONTENT_TYPE_JSON = "application/json";
   /** {@code HttpServletResponse} has no constant for 429. */
@@ -179,6 +185,7 @@ public class PortalServlet extends HttpBaseServlet {
   private static final String RENEWAL_RECENTLY_SENT = "recentlySent";
   private static final String FIELD_TENANT_NAME = "tenantName";
   private static final String FIELD_HAS_LOGO = "hasLogo";
+  private static final String FIELD_CLIENT_ID = "clientId";
 
   private final transient PortalLinkService linkService = new PortalLinkService();
   private final transient PortalDecisionEntry decisionEntry = new PortalDecisionEntry(linkService);
@@ -298,10 +305,10 @@ public class PortalServlet extends HttpBaseServlet {
    *
    * <pre>
    * 401 {"error": "This link is no longer valid"}          unknown, pending, deactivated (as MVP)
-   * 200 {"state": "valid", businessPartnerName, email, tenantName, hasLogo,
+   * 200 {"state": "valid", clientId, businessPartnerName, email, tenantName, hasLogo,
    *      entryDocument: {kind, id} | null, entryKind?}  entryKind only when entryDocument is null
-   * 200 {"state": "expired", tenantName, hasLogo}          the page then calls POST /renew
-   * 200 {"state": "unavailable", tenantName, hasLogo}      blocked, inactive or plan expired
+   * 200 {"state": "expired", clientId, tenantName, hasLogo}       the page then calls POST /renew
+   * 200 {"state": "unavailable", clientId, tenantName, hasLogo}   blocked, inactive or plan expired
    * </pre>
    *
    * <p>{@code email} is the customer's address the portal already uses for them: the first valid To
@@ -318,7 +325,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    PortalLinkService.Validation validation = linkService.validate(resolveToken(request));
+    PortalLinkService.Validation validation = linkService.validate(resolveToken(request), resolveClient(request));
     Optional<PortalLink> resolved = validation.getLink();
     if (validation.getState() == PortalLinkService.State.INVALID || !resolved.isPresent()) {
       rejectInvalidLink(response);
@@ -327,6 +334,9 @@ public class PortalServlet extends HttpBaseServlet {
     PortalLink link = resolved.get();
     JSONObject body = new JSONObject();
     body.put(FIELD_TENANT_NAME, StringUtils.defaultString(link.getClientName()));
+    // CP-43: the tenant id, so the page can show /portal/{clientId} (no token) even when it was
+    // opened from a link in the MVP shape /portal/{token}. Not a secret; grants nothing alone.
+    body.put(FIELD_CLIENT_ID, StringUtils.defaultString(link.getClientId()));
     // Whether there is a logo to fetch, so the page never requests one that does not exist and
     // never has to hide a broken image. The bytes come from GET /logo, not inlined here: a base64
     // logo would bloat every /me response.
@@ -371,7 +381,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    PortalLinkService.RenewalOutcome outcome = linkService.renew(resolveToken(request));
+    PortalLinkService.RenewalOutcome outcome = linkService.renew(resolveToken(request), resolveClient(request));
     if (outcome == PortalLinkService.RenewalOutcome.INVALID) {
       rejectInvalidLink(response);
       return;
@@ -417,7 +427,7 @@ public class PortalServlet extends HttpBaseServlet {
       throws IOException, JSONException {
     // Any sent link, expired or closed included: the "this link expired" page shows whose portal
     // it is too, and a company's logo is no secret.
-    Optional<PortalLink> link = linkService.findSentLink(resolveToken(request));
+    Optional<PortalLink> link = linkService.findSentLink(resolveToken(request), resolveClient(request));
     if (!link.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -516,7 +526,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = linkService.validate(resolveToken(request)).getSession();
+    Optional<PortalSession> session = validSession(request);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -527,12 +537,14 @@ public class PortalServlet extends HttpBaseServlet {
 
   /**
    * Part C: asks to accept or reject a quotation of the session's scope; the confirmation goes by
-   * email to the first To of the link's root send.
+   * email to every To of the quotation's original send (QA CP-45), and only when that send
+   * reached the email the portal was accessed with (QA CP-49).
    *
    * <pre>
-   * 200 {"state": "sent", "email": "julia@example.com"}
+   * 200 {"state": "sent", "email": "julia@example.com", "confirmationRecipients": [...]}
    * 404                                      not in scope (as every other read)
-   * 409 {"error": "not_pending" | "expired" | "no_recipient" | "accept_unavailable"}
+   * 409 {"error": "not_pending" | "expired" | "no_recipient" | "not_recipient"
+   *      | "accept_unavailable"}                not_recipient: never sent to this email (CP-49)
    * 422 {"error": "invalid_reason"}          a reject without a valid reason / "Otros" text
    * 429 {"error": "cooldown"}                a request for this quotation went out recently
    * 503                                      the email could not be sent
@@ -544,7 +556,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = linkService.validate(resolveToken(request)).getSession();
+    Optional<PortalSession> session = validSession(request);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -558,6 +570,9 @@ public class PortalServlet extends HttpBaseServlet {
         JSONObject sent = new JSONObject();
         sent.put(FIELD_STATE, "sent");
         sent.put("email", StringUtils.defaultString(result.getEmail()));
+        // QA CP-45: every address the confirmation went to (the To of the original send).
+        sent.put(PortalDocumentsEndpoint.CONFIRMATION_RECIPIENTS,
+            new JSONArray(result.getRecipients()));
         sendJson(response, HttpServletResponse.SC_OK, sent);
         return;
       case NOT_FOUND:
@@ -598,7 +613,8 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    sendDecision(response, decisionService.view(request.getHeader(HEADER_DECISION_TOKEN)));
+    sendDecision(response, decisionService.view(request.getHeader(HEADER_DECISION_TOKEN),
+        resolveClient(request)));
   }
 
   /**
@@ -616,7 +632,7 @@ public class PortalServlet extends HttpBaseServlet {
       return;
     }
     sendConfirmation(response,
-        decisionService.confirm(request.getHeader(HEADER_DECISION_TOKEN)));
+        decisionService.confirm(request.getHeader(HEADER_DECISION_TOKEN), resolveClient(request)));
   }
 
   private void sendDecision(HttpServletResponse response, PortalDecisionService.View view)
@@ -679,7 +695,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = linkService.validate(resolveToken(request)).getSession();
+    Optional<PortalSession> session = validSession(request);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -695,13 +711,13 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = linkService.validate(resolveToken(request)).getSession();
+    Optional<PortalSession> session = validSession(request);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
     }
     JSONObject body = PortalDocumentsEndpoint.list(session.get(), request.getParameter("type"),
-        request.getParameter("group"), request.getParameter("status"), request.getParameter("dateFrom"),
+        request.getParameter("subtype"), request.getParameter("group"), request.getParameter("status"), request.getParameter("dateFrom"),
         request.getParameter("dateTo"), request.getParameter("q"),
         request.getParameter(PARAM_LIMIT), request.getParameter(PARAM_OFFSET));
     if (body == null) {
@@ -722,7 +738,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = linkService.validate(resolveToken(request)).getSession();
+    Optional<PortalSession> session = validSession(request);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -805,11 +821,43 @@ public class PortalServlet extends HttpBaseServlet {
     }
     String path = StringUtils.defaultString(request.getPathInfo());
     if (path.startsWith(PATH_ME + "/")) {
-      return StringUtils.trimToNull(path.substring(PATH_ME.length() + 1));
+      // /me/{token} (MVP shape) or /me/{clientId}/{token} (CP-43): the token is the last segment.
+      String rest = path.substring(PATH_ME.length() + 1);
+      return StringUtils.trimToNull(rest.substring(rest.lastIndexOf('/') + 1));
     }
     String header = StringUtils.trimToNull(request.getHeader(HEADER_AUTHORIZATION));
     if (header != null && StringUtils.startsWithIgnoreCase(header, BEARER_PREFIX)) {
       return StringUtils.trimToNull(header.substring(BEARER_PREFIX.length()));
+    }
+    return null;
+  }
+
+  /**
+   * The session of the request's token and tenant id, when the link is valid; empty for every
+   * other state, which the data endpoints all answer as an invalid link.
+   */
+  private Optional<PortalSession> validSession(HttpServletRequest request) {
+    return linkService.validate(resolveToken(request), resolveClient(request)).getSession();
+  }
+
+  /**
+   * Reads the tenant id the portal URL carried ({@code /portal/{AD_Client_ID}/{token}}, ETP-6209
+   * QA CP-43): the {@value #HEADER_PORTAL_CLIENT} header first, then the first segment of
+   * {@code /me/{clientId}/{token}}. {@code null} when absent — a link in the MVP shape
+   * {@code /portal/{token}} carries none and is validated by its token alone. When present it must
+   * match the token's own client ({@link PortalLinkService#validate(String, String)}); a mismatch
+   * answers exactly as an unknown token.
+   */
+  static String resolveClient(HttpServletRequest request) {
+    String header = StringUtils.trimToNull(request.getHeader(HEADER_PORTAL_CLIENT));
+    if (header != null) {
+      return header;
+    }
+    String path = StringUtils.defaultString(request.getPathInfo());
+    if (path.startsWith(PATH_ME + "/")) {
+      String rest = path.substring(PATH_ME.length() + 1);
+      int slash = rest.indexOf('/');
+      return slash > 0 ? StringUtils.trimToNull(rest.substring(0, slash)) : null;
     }
     return null;
   }

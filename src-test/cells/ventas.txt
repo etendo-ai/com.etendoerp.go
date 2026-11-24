@@ -6,8 +6,9 @@
 # Tests comunes a ventas y compras (src-test/cells/compartidos/ventas-compras.txt)
 @incluye ventas-compras
 
-# --- con mocks (59)
+# --- con mocks (60)
 com.etendoerp.go.portal.PortalContactShareTest
+com.etendoerp.go.portal.PortalCurrencyTotalsTest
 com.etendoerp.go.portal.PortalDecisionEntryTest
 com.etendoerp.go.portal.PortalDecisionServiceTest
 com.etendoerp.go.portal.PortalDocumentLinksTest

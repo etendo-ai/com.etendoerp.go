@@ -95,6 +95,9 @@ public class PortalDocumentsEndpointTest {
   private MockedStatic<PortalDocumentQuery> query;
   private MockedStatic<PortalDocumentLinks> links;
   private MockedStatic<PortalPrintable> printables;
+  private MockedStatic<PortalCurrencyTotals> currencyTotals;
+  /** The session's company-currency converter; answers no converted total unless a test says so. */
+  private PortalCurrencyTotals converter;
   private OBDal obDal;
   private Session session;
   /** Rows the detail's line, tax and instalment queries answer, by a fragment of their HQL. */
@@ -102,7 +105,7 @@ public class PortalDocumentsEndpointTest {
   private final Query emptyQuery = mock(Query.class);
 
   @Before
-  public void setUp() {
+  public void setUp() throws Exception {
     obDal = mock(OBDal.class);
     obDalStatic = mockStatic(OBDal.class);
     obDalStatic.when(OBDal::getInstance).thenReturn(obDal);
@@ -129,10 +132,15 @@ public class PortalDocumentsEndpointTest {
     // No server-side render unless a test says so.
     printables = mockStatic(PortalPrintable.class);
     links = mockStatic(PortalDocumentLinks.class);
+    converter = mock(PortalCurrencyTotals.class);
+    when(converter.convert(any())).thenReturn(JSONObject.NULL);
+    currencyTotals = mockStatic(PortalCurrencyTotals.class);
+    currencyTotals.when(() -> PortalCurrencyTotals.of(any())).thenReturn(converter);
   }
 
   @After
   public void tearDown() {
+    currencyTotals.close();
     printables.close();
     links.close();
     query.close();
@@ -185,6 +193,64 @@ public class PortalDocumentsEndpointTest {
     assertEquals(2, totals.length());
     assertEquals("USD", totals.getJSONObject(1).getString("currency"));
     assertEquals(2L, totals.getJSONObject(1).getLong("count"));
+  }
+
+  /**
+   * QA CP-47: the list's grand totals, one per currency, are folded into the company currency by
+   * the session's converter; a kind without amounts (a shipment) has no converted total and never
+   * asks for one.
+   */
+  @Test
+  public void theListsConvertedTotalFoldsTheGrandTotalsAndAShipmentHasNone() throws Exception {
+    query.when(() -> PortalDocumentQuery.totals(any(), eq(PortalDocumentKind.INVOICE), any()))
+        .thenReturn(Arrays.asList(
+            new Object[] { "EUR", 3L, new BigDecimal("100"), new BigDecimal("121") },
+            new Object[] { "USD", 2L, new BigDecimal("50"), new BigDecimal("60.5") }));
+    query.when(() -> PortalDocumentQuery.totals(any(), eq(PortalDocumentKind.SHIPMENT), any()))
+        .thenReturn(Collections.singletonList(new Object[] { null, 4L, null, null }));
+    JSONObject converted = new JSONObject().put("amount", "176.18").put("currency", "EUR")
+        .put("approximate", true);
+    when(converter.convert(any())).thenReturn(converted);
+
+    JSONObject invoices = PortalDocumentsEndpoint.list(SESSION, "invoice", null, null, null, null,
+        null, null);
+
+    ArgumentCaptor<Map> byIso = ArgumentCaptor.forClass(Map.class);
+    verify(converter).convert(byIso.capture());
+    Map<String, BigDecimal> expected = new java.util.LinkedHashMap<>();
+    expected.put("EUR", new BigDecimal("121"));
+    expected.put("USD", new BigDecimal("60.5"));
+    assertEquals(expected, byIso.getValue());
+    assertEquals(converted.toString(), invoices.getJSONObject("convertedTotal").toString());
+
+    org.mockito.Mockito.clearInvocations(converter);
+    JSONObject shipments = PortalDocumentsEndpoint.list(SESSION, "shipment", null, null, null,
+        null, null, null);
+
+    assertTrue(shipments.isNull("convertedTotal"));
+    verify(converter, never()).convert(any());
+  }
+
+  /**
+   * QA CP-16: the invoices' "tipo" quick filter reaches the query as the credit-note flag —
+   * {@code creditNote} or {@code invoice}, case and blanks ignored — and on any other kind, or with
+   * any other value, it narrows nothing.
+   */
+  @Test
+  public void theSubtypeIsTheCreditNoteFilterOfInvoicesOnly() throws Exception {
+    // Columns: type, subtype, the filter's creditNote.
+    Object[][] cases = { { "invoice", "creditNote", Boolean.TRUE },
+        { "invoice", " CREDITNOTE ", Boolean.TRUE }, { "invoice", "invoice", Boolean.FALSE },
+        { "invoice", "other", null }, { "invoice", null, null },
+        { "order", "creditNote", null } };
+    for (Object[] c : cases) {
+      query.clearInvocations();
+
+      PortalDocumentsEndpoint.list(SESSION, (String) c[0], (String) c[1], null, null, null, null,
+          null, null, null);
+
+      assertEquals(c[0] + "/" + c[1], c[2], capturedFilter().creditNote);
+    }
   }
 
   @Test
@@ -412,10 +478,19 @@ public class PortalDocumentsEndpointTest {
     Order quotation = order("Q-1", "OB");
     query.when(() -> PortalDocumentQuery.findInScope(SESSION, PortalDocumentKind.QUOTATION,
         "Q-1")).thenReturn(quotation);
+    // QA CP-45: the quotation's original send, which reached the session's email (in CC here);
+    // its invalid address is dropped.
+    NativeQuery sends = mock(NativeQuery.class);
+    when(sends.setParameter(anyString(), any())).thenReturn(sends);
+    when(sends.list()).thenReturn(Collections.singletonList(new Object[] { "LOG-1",
+        " juan@example.com , not-an-address", "a@customer.test", "Presupuesto #Q-1" }));
+    when(session.createNativeQuery(argThat(sql -> sql != null
+        && sql.contains("etgo_email_send_log")))).thenReturn(sends);
     // Columns: why the decision is blocked (null: it is not), canDecide, blockedReason.
     Object[][] cases = { { null, true, null },
         { PortalDecisionService.Blocked.EXPIRED, false, "expired" },
-        { PortalDecisionService.Blocked.NOT_PENDING, false, "not_pending" } };
+        { PortalDecisionService.Blocked.NOT_PENDING, false, "not_pending" },
+        { PortalDecisionService.Blocked.NOT_RECIPIENT, false, "not_recipient" } };
     // No stored printable: the detail's hasPdf must not reach the real attachment lookup.
     try (MockedStatic<AnonymousAttachmentStreamer> stored =
         mockStatic(AnonymousAttachmentStreamer.class)) {
@@ -424,13 +499,14 @@ public class PortalDocumentsEndpointTest {
             PortalDecisionService.class, (service, context) -> {
               when(service.blockedReason(any(), any()))
                   .thenReturn((PortalDecisionService.Blocked) c[0]);
-              when(service.confirmationRecipient(any())).thenReturn(" juan@example.com ");
             })) {
 
-          JSONObject decision = PortalDocumentsEndpoint.detail(SESSION, "quotation", "Q-1")
-              .getJSONObject("decision");
+          JSONObject detail = PortalDocumentsEndpoint.detail(SESSION, "quotation", "Q-1");
+          JSONObject decision = detail.getJSONObject("decision");
 
           assertEquals(c[1], decision.getBoolean("canDecide"));
+          // The list row's flag, on the detail too (QA CP-49).
+          assertEquals(c[1], detail.getBoolean("canDecide"));
           if (c[2] == null) {
             assertTrue(decision.isNull("blockedReason"));
           } else {
@@ -438,11 +514,17 @@ public class PortalDocumentsEndpointTest {
           }
           assertEquals(PortalDecisionService.ACCEPT_AVAILABLE,
               decision.getBoolean("acceptAvailable"));
-          // The popups name the recipient in full (trimmed), and only when the customer can decide.
+          // The popups name the recipients in full (trimmed), and only when the customer can
+          // decide: the first To as `email`, then every valid To of the original send, never its
+          // CC (CP-45 as revised).
           if (Boolean.TRUE.equals(c[1])) {
             assertEquals("juan@example.com", decision.getString("email"));
+            JSONArray recipients = decision.getJSONArray("confirmationRecipients");
+            assertEquals(1, recipients.length());
+            assertEquals("juan@example.com", recipients.getString(0));
           } else {
             assertFalse(decision.has("email"));
+            assertFalse(decision.has("confirmationRecipients"));
           }
           verify(decisions.constructed().get(0)).blockedReason(SESSION, quotation);
         }
@@ -479,6 +561,37 @@ public class PortalDocumentsEndpointTest {
     assertEquals(0, BigDecimal.ZERO.compareTo(new BigDecimal(usd.getString("overdue"))));
     assertTrue(usd.isNull("overdueSince"));
     assertEquals(0L, usd.getLong("overdueCount"));
+  }
+
+  /**
+   * QA CP-47: «Tu saldo» and «Pagado este año» as one amount each in the company currency, folded
+   * from the same per-currency figures the page already receives.
+   */
+  @Test
+  public void homeFoldsTheBalanceAndThePaidThisYearIntoTheCompanyCurrency() throws Exception {
+    query.when(() -> PortalDocumentQuery.outstandingByCurrency(SESSION)).thenReturn(Arrays.asList(
+        new Object[] { "EUR", new BigDecimal("300"), 4L },
+        new Object[] { "USD", new BigDecimal("80"), 1L }));
+    query.when(() -> PortalDocumentQuery.paidSince(eq(SESSION), any())).thenReturn(
+        Collections.singletonList(new Object[] { "EUR", new BigDecimal("500"), 3L }));
+    JSONObject balance = new JSONObject().put("amount", "372.40").put("currency", "EUR")
+        .put("approximate", true);
+    JSONObject paid = new JSONObject().put("amount", "500.00").put("currency", "EUR")
+        .put("approximate", false);
+    when(converter.convert(any())).thenReturn(balance, paid);
+
+    JSONObject home = PortalDocumentsEndpoint.home(SESSION);
+
+    ArgumentCaptor<Map> byIso = ArgumentCaptor.forClass(Map.class);
+    verify(converter, times(2)).convert(byIso.capture());
+    Map<String, BigDecimal> outstanding = new java.util.LinkedHashMap<>();
+    outstanding.put("EUR", new BigDecimal("300"));
+    outstanding.put("USD", new BigDecimal("80"));
+    assertEquals(outstanding, byIso.getAllValues().get(0));
+    assertEquals(Collections.singletonMap("EUR", new BigDecimal("500")),
+        byIso.getAllValues().get(1));
+    assertEquals(balance.toString(), home.getJSONObject("convertedBalance").toString());
+    assertEquals(paid.toString(), home.getJSONObject("convertedPaidThisYear").toString());
   }
 
   @Test
@@ -612,21 +725,34 @@ public class PortalDocumentsEndpointTest {
     assertTrue(body.isNull("group"));
   }
 
+  /** A quotation row names the order made from it and, QA CP-49, whether it can be decided now. */
   @Test
-  public void aQuotationRowNamesTheOrderMadeFromIt() throws Exception {
+  public void aQuotationRowNamesTheOrderMadeFromItAndWhetherItCanBeDecided() throws Exception {
     Order quotation = order("Q-1", "OB");
+    Order notSentToThisEmail = order("Q-2", "OB");
+    List<BaseOBObject> page = Arrays.<BaseOBObject>asList(quotation, notSentToThisEmail);
     query.when(() -> PortalDocumentQuery.list(any(), eq(PortalDocumentKind.QUOTATION), any(),
-        anyInt(), anyInt())).thenReturn(Collections.<BaseOBObject>singletonList(quotation));
+        anyInt(), anyInt())).thenReturn(page);
     Map<String, String[]> orders = new HashMap<>();
     orders.put("Q-1", new String[] { "ORD-9", "PV-0009" });
     query.when(() -> PortalDocumentQuery.ordersOfQuotations(eq(SESSION), any()))
         .thenReturn(orders);
+    java.util.Set<String> decidable = new java.util.HashSet<>(Collections.singletonList("Q-1"));
 
-    JSONObject row = PortalDocumentsEndpoint.list(SESSION, "quotation", null, null, null, null,
-        null, null).getJSONArray("documents").getJSONObject(0);
+    try (MockedConstruction<PortalDecisionService> decisions = mockConstruction(
+        PortalDecisionService.class,
+        (service, context) -> when(service.decidableIds(any(), any())).thenReturn(decidable))) {
+      JSONArray rows = PortalDocumentsEndpoint.list(SESSION, "quotation", null, null, null, null,
+          null, null).getJSONArray("documents");
 
-    assertEquals("ORD-9", row.getString("orderId"));
-    assertEquals("PV-0009", row.getString("orderNo"));
+      JSONObject row = rows.getJSONObject(0);
+      assertEquals("ORD-9", row.getString("orderId"));
+      assertEquals("PV-0009", row.getString("orderNo"));
+      assertTrue(row.getBoolean("canDecide"));
+      assertFalse(rows.getJSONObject(1).getBoolean("canDecide"));
+      verify(decisions.constructed().get(0)).decidableIds(SESSION, Arrays.asList(quotation,
+          notSentToThisEmail));
+    }
   }
 
   @Test

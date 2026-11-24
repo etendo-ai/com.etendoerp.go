@@ -47,6 +47,7 @@ import org.openbravo.model.ad.access.User;
 
 import com.etendoerp.go.portal.PortalDocumentKind;
 import com.etendoerp.go.portal.PortalLinkService;
+import com.etendoerp.go.schemaforge.email.render.EmailContent;
 
 /**
  * Unit tests for {@link DefaultDocumentSendEmailContract#resolve}, covering ETP-4717's reopened
@@ -57,6 +58,8 @@ import com.etendoerp.go.portal.PortalLinkService;
  * declaring a {@code portalDocumentKind()} mints pending and confirms on delivery (ETP-6209).
  *
  * @covers com.etendoerp.go.schemaforge.email.DefaultDocumentSendEmailContract
+ * @covers com.etendoerp.go.schemaforge.email.DocumentSendPortalLink
+ * @covers com.etendoerp.go.schemaforge.email.DocumentSendCopy
  */
 public class DefaultDocumentSendEmailContractTest {
 
@@ -72,7 +75,7 @@ public class DefaultDocumentSendEmailContractTest {
    * rather than as the whole body: the layout owns the markup around it, and pinning that here
    * would make every layout tweak fail a contract test. {@code EmailLayoutTest} pins the markup.
    */
-  private static final String DEFAULT_COPY = "Le enviamos su Documento "
+  private static final String DEFAULT_COPY = "Te enviamos tu Documento "
       + "<strong>" + DOCUMENT_NUMBER + "</strong>.";
 
   @Test
@@ -82,9 +85,9 @@ public class DefaultDocumentSendEmailContractTest {
     // Regression guard: an untouched send must stay byte-identical to pre-fix behavior.
     assertTrue("expected the default copy in body: " + body, body.contains(DEFAULT_COPY));
     assertTrue("expected the document link in body: " + body, body.contains(DOWNLOAD_LINK));
-    // ETP-6209: the Etendo footer belongs to portal emails only; without a portal link, none.
-    assertFalse("no Etendo footer without a portal link: " + body,
-        body.contains("Creado con Etendo"));
+    // ETP-6209: the etendo.ai footer belongs to portal emails only; without a portal link, none.
+    assertFalse("no etendo.ai footer without a portal link: " + body,
+        body.contains("Creado con"));
   }
 
   @Test
@@ -352,7 +355,7 @@ public class DefaultDocumentSendEmailContractTest {
         .orElseThrow(() -> new AssertionError("document not resolved"));
 
     assertEquals("Documento #doc-1 — Cliente", defaults.getSubject());
-    assertEquals("Hola, **Cliente**:\n\nLe enviamos su Documento **doc-1**.",
+    assertEquals("Hola, **Cliente**:\n\nTe enviamos tu Documento **doc-1**.",
         defaults.getMessage());
     assertEquals(RECIPIENT_EMAIL, defaults.getBaseRecipient());
     assertEquals(10, defaults.getMaxRecipients());
@@ -377,7 +380,7 @@ public class DefaultDocumentSendEmailContractTest {
         () -> new AssertionError("document not resolved"));
 
     assertEquals("Documento #doc-1", defaults.getSubject());
-    assertEquals("Le enviamos su Documento **doc-1**.", defaults.getMessage());
+    assertEquals("Te enviamos tu Documento **doc-1**.", defaults.getMessage());
     assertNull("an invalid contact address is not a base recipient", defaults.getBaseRecipient());
   }
 
@@ -402,7 +405,7 @@ public class DefaultDocumentSendEmailContractTest {
 
     assertEquals("Documento #doc-1 — Cliente", request.getData().getString("subject"));
     String body = request.getData().getString("body");
-    assertTrue(body, body.contains("Hola, <strong>Cliente</strong>:<br><br>Le enviamos su "
+    assertTrue(body, body.contains("Hola, <strong>Cliente</strong>:<br><br>Te enviamos tu "
         + "Documento <strong>doc-1</strong>."));
     assertTrue(body, body.contains(DOWNLOAD_LINK));
   }
@@ -506,17 +509,24 @@ public class DefaultDocumentSendEmailContractTest {
     assertFalse("no download button next to the portal one: " + body,
         body.contains("Descargar documento"));
     assertFalse("the download link is not offered: " + body, body.contains(DOWNLOAD_LINK));
-    // ETP-6209: an email that reaches the customer through the portal closes with the Etendo footer.
-    assertTrue(body, body.contains("Creado con Etendo"));
-    // The intro is a plain sentence; the only link is the button.
-    assertTrue(body, body.contains("<strong>portal de cliente</strong>. El enlace es válido"
-        + " durante 48 horas."));
-    // The layout's "copy this link" fallback under the button is a link too; the intro is not.
-    int intro = body.indexOf("<strong>portal de cliente</strong>");
+    // ETP-6209: an email that reaches the customer through the portal closes with the etendo.ai
+    // footer, its link tagged as the document send's.
+    assertTrue(body, body.contains("Creado con&nbsp;<a "));
+    assertTrue(body, body.contains("utm_content=mail_envio_documento"));
+    // QA CP-48: the card design of the decision confirmations — the document as the headline, the
+    // «tú» letter as its body, the «Datos del documento» box.
+    assertTrue(body, body.contains(">Documento doc-1</h1>"));
+    assertTrue(body, body.contains(DEFAULT_COPY));
+    assertTrue(body, body.contains(">Datos del documento<"));
+    // The intro is the plain line above the button (its bold markers dropped); the only link is
+    // the button.
+    int intro = body.indexOf("en tu portal de cliente. El enlace es válido durante 48 horas.");
+    assertTrue(body, intro > 0);
     String introParagraph = body.substring(body.lastIndexOf("<p", intro),
         body.indexOf("</p>", intro));
     assertFalse("no inline anchor in the intro: " + introParagraph,
         introParagraph.contains("<a "));
+    assertFalse(body, body.contains("<strong>portal de cliente</strong>"));
     // Pending until the email is delivered.
     verify(portalLinks, never()).confirm(any(), any(), anyInt());
   }
@@ -545,6 +555,92 @@ public class DefaultDocumentSendEmailContractTest {
       }
     }.onDelivered(deliveredSend(recipients, "LINK-3"), "LOG-3");
     verifyNoInteractions(undeclared);
+  }
+
+  /**
+   * The SENT answer says what the email carried (ETP-6209 QA, MCP parity): a send that minted a
+   * portal link carries the portal, one that did not (flag off, minting failed) the PDF link; a
+   * contract without a portal kind adds nothing to the answer.
+   */
+  @Test
+  public void deliveredFactsSayWhetherThisSendCarriedThePortalLink() throws Exception {
+    EmailRecipientSet recipients = EmailRecipientSet.of(
+        Collections.singletonList(RECIPIENT_EMAIL), Collections.emptyList());
+    DefaultDocumentSendEmailContract portal = portalContract(mock(PortalLinkService.class));
+
+    assertTrue(portal.deliveredFacts(deliveredSend(recipients, "LINK-1"))
+        .getBoolean(DocumentSendPortalLink.FACT_PORTAL_LINK));
+    assertFalse(portal.deliveredFacts(deliveredSend(recipients, null))
+        .getBoolean(DocumentSendPortalLink.FACT_PORTAL_LINK));
+    assertNull("no portal kind, no facts",
+        contract(CONTRACT_NAME).deliveredFacts(deliveredSend(recipients, "LINK-1")));
+  }
+
+  /**
+   * ETP-6209 QA: the customer-facing sends address the customer as «tú»; the supplier-facing ones
+   * keep the formal wording through their own catalog key, which never leaks the Spanish copy into
+   * an English email.
+   */
+  @Test
+  public void supplierSendsKeepTheFormalBodyAndCustomerSendsUseTheSharedOne() {
+    // Columns: contract, language, expected start of the body sentence.
+    String[][] cases = {
+        { "purchase-order-send", "es_ES", "Le enviamos su " },
+        { "return-to-vendor-send", "es_ES", "Le enviamos su " },
+        { "return-to-vendor-shipment-send", "es_ES", "Le enviamos su " },
+        { "sales-order-send", "es_ES", "Te enviamos tu " },
+        { "purchase-order-send", "en_US", "Please find your " },
+        { "return-to-vendor-shipment-send", "en_US", "Please find your " },
+    };
+    for (String[] c : cases) {
+      String message = new DefaultDocumentSendEmailContract(c[0], "Documento",
+          recordId -> Optional.of(new EmailDocumentRecord(null, RECIPIENT_EMAIL, RECORD_ID,
+              DOCUMENT_NUMBER, null, DOWNLOAD_LINK, "client-1")))
+          .sendDefaults(RECORD_ID, c[1]).orElseThrow(() -> new AssertionError(c[0])).getMessage();
+
+      assertTrue(c[0] + "/" + c[1] + ": " + message, message.startsWith(c[2]));
+      assertTrue(c[0] + "/" + c[1] + ": " + message, message.contains("**" + DOCUMENT_NUMBER
+          + "**"));
+    }
+  }
+
+  /**
+   * The card's «Datos del documento» box (QA CP-48): company, number and the amount; a document
+   * with no amount (a goods shipment) shows its first fact instead, so the box keeps three.
+   */
+  @Test
+  public void theCardSummaryIsCompanyNumberAndAmountOrTheFirstFactWithoutOne() {
+    PortalLinkService.MintedLink link = mock(PortalLinkService.MintedLink.class);
+    when(link.getClientName()).thenReturn("Acme");
+    EmailDocumentDetail date = EmailDocumentDetail.date("document.detail.date", august26());
+    EmailDocumentDetail total = EmailDocumentDetail.text("document.detail.total",
+        "2.431,37\u00A0€");
+    // Columns: the resolver's details, the expected third column.
+    Object[][] cases = {
+        { Arrays.asList(date, total), "Importe=2.431,37\u00A0€" },
+        { Collections.singletonList(date), "Fecha=26/08/2026" },
+        { Collections.emptyList(), null },
+    };
+    for (Object[] c : cases) {
+      @SuppressWarnings("unchecked")
+      List<EmailDocumentDetail> details = (List<EmailDocumentDetail>) c[0];
+      EmailDocumentRecord document = new EmailDocumentRecord("Cliente", RECIPIENT_EMAIL,
+          RECORD_ID, DOCUMENT_NUMBER, null, DOWNLOAD_LINK, "client-1").withDetails(details);
+      EmailContent.Builder content = EmailContent.builder();
+
+      DocumentSendPortalLink.appendCardSummary(content, link, document, "es_ES");
+
+      List<String> columns = new java.util.ArrayList<>();
+      for (EmailContent.Detail detail : content.build().getDetails()) {
+        columns.add(detail.getLabel() + "=" + detail.getValue());
+      }
+      List<String> expected = new java.util.ArrayList<>(Arrays.asList("Empresa=Acme",
+          "Nº=" + DOCUMENT_NUMBER));
+      if (c[1] != null) {
+        expected.add((String) c[1]);
+      }
+      assertEquals(String.valueOf(c[0]), expected, columns);
+    }
   }
 
   private static DefaultDocumentSendEmailContract portalContract(PortalLinkService portalLinks) {

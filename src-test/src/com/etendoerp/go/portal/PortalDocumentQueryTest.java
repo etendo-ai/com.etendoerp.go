@@ -48,8 +48,11 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.MockedStatic;
+import org.openbravo.base.model.Entity;
+import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.structure.BaseOBObject;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.common.enterprise.DocumentType;
 import org.openbravo.model.common.invoice.Invoice;
 import org.openbravo.model.common.order.Order;
 import org.openbravo.model.materialmgmt.transaction.ShipmentInOut;
@@ -63,6 +66,7 @@ import org.openbravo.model.materialmgmt.transaction.ShipmentInOut;
  * parameters that were bound.
  *
  * @covers com.etendoerp.go.portal.PortalDocumentQuery
+ * @covers com.etendoerp.go.portal.PortalDocumentKind
  */
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public class PortalDocumentQueryTest {
@@ -201,6 +205,49 @@ public class PortalDocumentQueryTest {
 
     assertEquals(1, shipments.size());
     assertEquals(Arrays.asList(null, 4L, null, null), Arrays.asList(shipments.get(0)));
+  }
+
+  /**
+   * The invoices' "tipo" quick filter (ETP-6209 QA CP-16): credit notes only, invoices only (the
+   * negated condition) or both; the localization's rectificative flag joins the condition only
+   * where that module declares it, and the filter never narrows another kind.
+   */
+  @Test
+  public void theCreditNoteFilterNarrowsInvoicesOnlyAndUsesTheRectificativeFlagWhenInstalled() {
+    String categories = "e.transactionDocument.documentCategory in ('ARC', 'ARI_RM')";
+    String flag = "coalesce(e.transactionDocument.etsgIsRectificative, false) = true";
+    // Columns: kind, creditNote filter, rectificative flag installed, expected fragment (null: no
+    // credit-note condition at all), whether the flag is part of it.
+    Object[][] cases = {
+        { PortalDocumentKind.INVOICE, Boolean.TRUE, true, " and (" + categories + " or ", true },
+        { PortalDocumentKind.INVOICE, Boolean.TRUE, false, " and (" + categories + ")", false },
+        { PortalDocumentKind.INVOICE, Boolean.FALSE, false, " and not (" + categories + ")",
+            false },
+        { PortalDocumentKind.INVOICE, null, true, null, false },
+        { PortalDocumentKind.ORDER, Boolean.TRUE, true, null, false },
+    };
+    for (Object[] c : cases) {
+      built.clear();
+      Entity documentType = mock(Entity.class);
+      when(documentType.hasProperty("etsgIsRectificative")).thenReturn((Boolean) c[2]);
+      ModelProvider provider = mock(ModelProvider.class);
+      when(provider.getEntity(DocumentType.ENTITY_NAME)).thenReturn(documentType);
+      try (MockedStatic<ModelProvider> model = mockStatic(ModelProvider.class)) {
+        model.when(ModelProvider::getInstance).thenReturn(provider);
+
+        PortalDocumentQuery.list(SESSION, (PortalDocumentKind) c[0], new PortalDocumentQuery.Filter(
+            null, null, null, null, null, null, (Boolean) c[1]), 0, 10);
+      }
+
+      String hql = built.values().iterator().next();
+      String label = c[0] + "/" + c[1] + "/flag " + c[2] + ": " + hql;
+      if (c[3] == null) {
+        assertFalse(label, hql.contains("documentCategory"));
+      } else {
+        assertTrue(label, hql.contains((String) c[3]));
+      }
+      assertEquals(label, c[4], hql.contains(flag));
+    }
   }
 
   @Test

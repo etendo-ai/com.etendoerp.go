@@ -373,7 +373,8 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
   }
 
   private String buildDefaultMessage(EmailDocumentRecord document, String language) {
-    String body = EmailMessages.get("document.body", language, documentTypeLabel(language),
+    String body = EmailMessages.get(DocumentSendCopy.bodyKey(name, language), language,
+        documentTypeLabel(language),
         document.getDocumentNumber());
     String recipientName = StringUtils.trimToNull(document.getRecipientName());
     return recipientName == null ? body
@@ -490,9 +491,7 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
           buildTemplateData(document.get(), downloadLink.get(),
               DocumentSendPortalLink.callToAction(portalLink.orElse(null), downloadLink.get(),
                   language),
-              language, messageEdits, replyTo,
-              DocumentSendPortalLink.withParagraph(extraParagraphHtml.orElse(null),
-                  portalLink.orElse(null), language)),
+              language, messageEdits, replyTo, extraParagraphHtml),
           replyTo).withSendCorrelationId(portalLink.map(PortalLinkService.MintedLink::getId)
               .orElse(null)));
     } catch (JSONException e) {
@@ -572,6 +571,28 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
   }
 
   /**
+   * {@inheritDoc}
+   *
+   * <p>For a contract that declares a portal document kind: {@code portalLink} says whether the
+   * email that left carried the customer portal link (one was minted for this send) or, as without
+   * a link, the PDF download link (ETP-6209: the MCP reports what was actually sent, never what the
+   * flag would suggest — minting can still return nothing, e.g. with no app base URL).</p>
+   */
+  @Override
+  public JSONObject deliveredFacts(EmailSendContext context) {
+    if (!portalDocumentKind().isPresent() || context == null) {
+      return null;
+    }
+    try {
+      return new JSONObject().put(DocumentSendPortalLink.FACT_PORTAL_LINK,
+          context.getProviderRequest() != null
+              && context.getProviderRequest().getSendCorrelationId() != null);
+    } catch (JSONException e) {
+      return null;
+    }
+  }
+
+  /**
    * The portal link service this contract mints and confirms links with. Overridable so a unit
    * test can exercise the send without the DAL.
    *
@@ -642,7 +663,14 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
   private EmailContent buildContent(EmailDocumentRecord document, DocumentSendPortalLink.CallToAction cta,
       String language, Optional<EmailMessageEdits> messageEdits, String replyTo,
       Optional<String> extraParagraphHtml) {
-    EmailContent.Builder content = EmailContent.builder();
+    // ETP-6209 QA CP-48 — an email that carries a portal link uses the card design of the portal
+    // decision confirmations (logo, card with the document's data, the portal button, the footer).
+    // Branches only on whether a link was minted, never on which contract this is; without a link
+    // the letter below is unchanged.
+    PortalLinkService.MintedLink portalLink = cta.getPortalLink();
+    EmailContent.Builder content = portalLink == null ? EmailContent.builder()
+        : DocumentSendPortalLink.cardBuilder(portalLink, EmailMessages.get("document.card.title",
+            language, documentTypeLabel(language), document.getDocumentNumber()), language);
     // toHtmlBody() has already escaped the operator's text and turned newlines into <br>.
     String override = messageEdits.map(EmailMessageEdits::toHtmlBody).orElse(null);
     if (override != null) {
@@ -659,14 +687,20 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
         content.greetingHtml(EmailEscape.applyBold(EmailMessages.get("document.greeting", language,
             EmailEscape.escapeHtml(recipientName))));
       }
-      content.paragraphHtml(EmailEscape.applyBold(EmailMessages.get("document.body", language,
+      content.paragraphHtml(EmailEscape.applyBold(EmailMessages.get(
+          DocumentSendCopy.bodyKey(name, language), language,
           EmailEscape.escapeHtml(documentTypeLabel(language)),
           EmailEscape.escapeHtml(document.getDocumentNumber()))));
     }
     // After the body, before the summary block: the extra copy is context about the document, so it
     // reads with the sentence above it rather than after the facts table.
     extraParagraphHtml.ifPresent(content::paragraphHtml);
-    appendDetails(content, document, language);
+    if (portalLink == null) {
+      appendDetails(content, document, language);
+    } else {
+      DocumentSendPortalLink.appendCardSummary(content, portalLink, document, language);
+      content.ctaNote(DocumentSendPortalLink.ctaNote(portalLink, language));
+    }
     content.cta(cta.getLabel(), cta.getUrl())
         .linkFallbackText(EmailMessages.get("link.fallback", language));
     // A document email is the one place where answering reaches a person, so it closes by saying
@@ -678,7 +712,7 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
     } else {
       content.signature(EmailMessages.get("signature", language));
     }
-    // ETP-6209 — the "Creado con Etendo" footer goes only on an email that reaches the customer
+    // ETP-6209 — the «Creado con etendo.ai» footer goes only on an email that reaches the customer
     // through the portal. No portal link (flag off, or a contract with no portal kind): no footer,
     // so those emails are byte-identical to before.
     if (cta.isPortal()) {

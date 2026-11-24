@@ -92,8 +92,8 @@ class PortalContactShareTest {
   void setUp() {
     policy = mockStatic(PortalLinkPolicy.class);
     policy.when(PortalLinkPolicy::isLinkEnabled).thenReturn(true);
-    policy.when(() -> PortalLinkPolicy.buildLink(anyString()))
-        .thenAnswer(inv -> Optional.of("https://app.test/portal/" + inv.getArgument(0)));
+    policy.when(() -> PortalLinkPolicy.buildLink(any(), anyString()))
+        .thenAnswer(inv -> Optional.of("https://app.test/portal/" + inv.getArgument(1)));
     obContext = mockStatic(OBContext.class);
     ownership = mockStatic(TenantOwnership.class);
     documents = mockStatic(PortalDocumentQuery.class);

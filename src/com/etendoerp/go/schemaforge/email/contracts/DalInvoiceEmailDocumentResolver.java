@@ -66,7 +66,9 @@ final class DalInvoiceEmailDocumentResolver implements EmailDocumentRecordResolv
         Arrays.asList(
             EmailDocumentDetail.date("document.detail.date", invoice.getInvoiceDate()),
             EmailDocumentDetail.date("document.detail.dueDate", invoice.getETGODueDate()),
-            EmailDocumentDetail.text("document.detail.total", amount)))
+            EmailDocumentDetail.text("document.detail.total",
+                DalEmailContractDataResolver.formatDisplayAmount(invoice.getGrandTotalAmount(),
+                    invoice.getCurrency()))))
         .withDocumentStatus(invoice.getDocumentStatus()));
   }
 }

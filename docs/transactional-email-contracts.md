@@ -358,7 +358,7 @@ link we mailed.
 | `return-to-vendor-send` | `custom` | `C_BPartner.EM_Etgo_Email`, falling back to active contact email, resolved from the vendor-return business partner | `version`, `recordId` |
 | `return-material-receipt-send` | `custom` | `C_BPartner.EM_Etgo_Email`, falling back to active contact email, resolved from the return receipt business partner | `version`, `recordId` |
 | `return-to-vendor-shipment-send` | `custom` | `C_BPartner.EM_Etgo_Email`, falling back to active contact email, resolved from the return shipment business partner | `version`, `recordId` |
-| `portal-quotation-decision-confirm` | `custom` | The **first To** stored on the root `ETGO_Portal_Link` row of the session's link — never CC, never an address from the caller | `linkId`, `recordId` (the quotation), `tenantId`, `language`, `decision`, `reasonCode`?, `reasonText`?. Only inside `PortalDecisionScope` (set by `PortalDecisionService#request`); else 403. Mints the `ETGO_PORTAL_DECISION` row in `resolve`, usable from `onDelivered`. Card design and Etendo footer (see *Portal email design* below). Its button names the decision ("Confirmar rechazo" / "Confirmar aceptación", `confirm.cta.<DECISION>`) and is the confirmation itself: the landing auto-submits the confirm POST on open, a bare GET applies nothing |
+| `portal-quotation-decision-confirm` | `custom` | **Every To of the quotation's original send, never its CC** (QA CP-45 as revised): the newest `sales-quotation-send` row of `ETGO_EMAIL_SEND_LOG` with status `SENT` that reached the To/CC of the session's link (`PortalQuotationSends`) — never an address from the caller. Its own subject (`confirm.subject.<DECISION>`), a standalone email: no "Re:" until the gateway carries `In-Reply-To`/`References` | `linkId`, `recordId` (the quotation), `tenantId`, `language`, `decision`, `reasonCode`?, `reasonText`?. Only inside `PortalDecisionScope` (set by `PortalDecisionService#request`); else 403. Mints the `ETGO_PORTAL_DECISION` row in `resolve`, usable from `onDelivered`. Card design and etendo.ai footer (see *Portal email design* below). Its button names the decision ("Confirmar rechazo" / "Confirmar aceptación", `confirm.cta.<DECISION>`) and is the confirmation itself: the landing auto-submits the confirm POST on open, a bare GET applies nothing |
 | `portal-quotation-decision-notice` | `custom` | The ETGO_ACCOUNT email of the user who created the decision's root link (the sender of the quotation) | `decisionId`, `recordId`, `tenantId`, `language`. Only inside `PortalDecisionScope`, after the confirmation's commit |
 | `portal-link-renewal` | `custom` | The To and CC stored on the expired `ETGO_Portal_Link` row named by `linkId` — never the person who opened the link | `linkId`, `recordId` (the document), `tenantId`, `language`. Accepted only inside `PortalRenewalScope` (set by `PortalLinkService#renew`); any other caller gets 403 |
 
@@ -374,7 +374,7 @@ return contracts) the email is byte-identical to before. The base class only ask
 was declared and whether a link was minted; it names no window or table.
 The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-portal.md`.
 
-### Portal email design: the decision card and the Etendo footer (ETP-6209)
+### Portal email design: the decision card and the etendo.ai footer (ETP-6209)
 
 - **`portal-quotation-decision-confirm` uses the card design** (Figma): issuer avatar + "Confirmación
   pendiente" badge, title and subtitle per decision, a "Datos del presupuesto" box with three
@@ -399,19 +399,28 @@ The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-po
     initials avatar.
   - The "¿El botón no funciona?" block is centred; the "¿No reconoces esta solicitud?" block is
     left-aligned, as in the design.
-- **The "Creado con Etendo" footer** (`EmailFooter`, copy `footer.*`) closes the emails our
-  customers' customers receive through the portal: both decision confirmations, the
-  `portal-link-renewal`, and the four portal document sends **only when a portal link was minted**
+- **The «Creado con etendo.ai» footer** (`EmailFooter`, copy `footer.prefix`) closes the emails
+  our customers' customers receive through the portal: both decision confirmations, the
+  `portal-link-renewal`, and the sales document sends **only when a portal link was minted**
   (`CallToAction#isPortal`). Flag off, purchase/return sends, account emails and the seller's
-  `portal-quotation-decision-notice` render byte-identical: the footer exists only when the
-  content asks for it. The icon is the hosted `EmailLayout.LOGO_URL` (the lime Etendo tile) on a
-  lime cell, so it still reads with images blocked.
-- **Footer URLs are provisional.** `EmailFooter.PRICING_URL` is `https://etendo.ai`.
-  `EmailFooter.PRIVACY_URL` is empty, so the "Política de cookies y privacidad" row is **not
-  rendered** (a privacy link to the home page would mislead); setting marketing's real URL there
-  brings it back, copy `footer.privacy` is kept. Marketing will send the final ones plus a UTM per piece: fill
-  `EmailFooter.Piece`'s tracking query (`DOCUMENT_SEND`, `LINK_RENEWAL`, `DECISION_ACCEPT`,
-  `DECISION_REJECT`); `EmailFooter.link` appends it to every footer link, no contract changes.
+  `portal-quotation-decision-notice` carry none: the footer exists only when the content asks for
+  it.
+- **Footer design (marketing / legal spec, ETP-6209 QA).** One small centred line: «Creado con» /
+  «Built with» and the brand `etendo.ai` as a plain link. No button, no «Conoce más», no social, no
+  privacy link (dropped from the spec). The spec wants the horizontal etendo.ai logo after «Creado
+  con»; no such asset is published where an email can load it (the app's public assets hold the
+  square icon and the old "Etendo" wordmark), so the brand is text until marketing publishes one.
+- **Footer link.** `https://etendo.ai/` with the email's UTM, declared per `EmailFooter.Piece`
+  (each contract passes its own piece; the layout names no contract):
+  `utm_source=portal_clientes&utm_medium=email&utm_campaign=portal_clientes&utm_content=` +
+  `mail_envio_documento` (`DOCUMENT_SEND`), `mail_reenvio_enlace` (`LINK_RENEWAL`),
+  `mail_aceptacion` (`DECISION_ACCEPT`), `mail_rechazo` (`DECISION_REJECT`).
+- **No tracking in the markup.** None of these emails adds an open pixel, and every link points
+  straight at its target (no click-redirect wrapping). The only images are the issuer's logo
+  (`/sws/portal/public-logo/…`, which records nothing) and, in the letter design, the Etendo
+  header icon. SES open/click tracking would come from an SES configuration set, which the gateway
+  Lambda does not pass (`send_email` without `ConfigurationSetName`); a default configuration set
+  on the sending identity is infra configuration, outside this repo.
 
 - **One link per send.** `PortalLinkService#mintForSend` inserts an `ETGO_Portal_Link` row in
   `resolve()` with `SENT_AT` null (pending) and the email's To and CC. The link id travels as

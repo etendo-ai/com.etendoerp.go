@@ -250,22 +250,35 @@ A customer can accept or reject a quotation of their scope, confirmed by email. 
   rule). Decidable = `UE` only
   (`QuotationDecisions.isDecidable`, PO answer Q3) and not expired (no `ValidUntil` = not expired). Reject
   needs one of `PRICE`, `DELIVERY`, `PAYMENT_TERMS`, `OTHER_SUPPLIER`, `NOT_NEEDED`, `OTHER` (text
-  required). Answers `{state:"sent", email}`, 404 out of scope, 409 `not_pending` /
-  `expired` / `no_recipient` / `accept_unavailable`, 422 `invalid_reason`, 429 `cooldown`, 503.
-- **Recipient:** the confirmation goes to the **first To of the link's root send** only, never CC.
-  No To: the detail's `decision.canDecide` is false with `blockedReason: "no_recipient"`. When the
-  quotation can be decided, the detail's `decision` also carries `email` (as the request's
-  answer), so the SPA's accept / reject popups name it before anything is sent. The address is
-  shown in full, not masked: a product decision following the Figma design.
+  required). Answers `{state:"sent", email, confirmationRecipients}` (the To of the original send), 404 out of scope, 409
+  `not_pending` / `expired` / `no_recipient` / `not_recipient` / `accept_unavailable`, 422
+  `invalid_reason`, 429 `cooldown`, 503.
+- **Only a quotation sent to the accessing email (QA CP-49, `PortalQuotationSends`).** The
+  accessing email is the To + CC of the email that carried the session's link (who of them opened
+  it cannot be known). The quotation's sends are its `ETGO_EMAIL_SEND_LOG` rows of contract
+  `sales-quotation-send` with status `SENT` (app or MCP). The session may decide only when at
+  least one address is in both (case-insensitive); otherwise `blockedReason: "not_recipient"` and
+  the request answers 409 `not_recipient`. Reading stays allowed. `canDecide` is on the detail
+  (top level and in `decision`) and on every quotation row of `GET /documents` (not on `/home`
+  recent nor `/search` rows).
+- **Recipients (QA CP-45, as revised by the PO):** the newest such send is the *original send*.
+  The confirmation goes to **every To of it, never its CC** (replacing "first To only"). It is a
+  **standalone email with its own subject** («Confirma la aceptación / el rechazo del presupuesto
+  …»): no "Re:", no thread, until the gateway can carry `In-Reply-To`/`References` (the Lambda
+  sends through SES `send_email`, which cannot carry custom headers, and Etendo does not store the
+  provider's `messageId`; follow-up with infra). The detail's `decision` carries `email` (first To)
+  and `confirmationRecipients` (every To) so the popups name them before anything is sent, as the
+  request's 200 does; shown in full, a product decision following the Figma.
 - **`ETGO_PORTAL_DECISION`** (native SQL, no AD registration): one row per request, the SHA-256 of
   a 256-bit token, `STATUS` `PENDING` / `CONFIRMED` / `VOIDED` / `NOT_APPLIED`, `SENT_AT` (a row is
   usable only once its email left). Single use, never expires.
-- **The confirmation email's design** (card per the Figma, Etendo footer, the Motivo column and
+- **The confirmation email's design** (card per the Figma, etendo.ai footer, the Motivo column and
   why the avatar is the company's initials) is in `transactional-email-contracts.md` → *Portal
   email design*.
 - **One step from the email (call with the PO).** The confirmation email's button is explicit
   ("Confirmar rechazo" / "Confirmar aceptación", `portal-quotation-decision.confirm.cta.<DECISION>`)
-  and opens the landing (`/portal/decision/<token>` in the SPA), whose script sends
+  and opens the landing (`/portal/<AD_Client_ID>/decision/<token>` in the SPA since QA CP-43;
+  the MVP shape `/portal/decision/<token>` keeps working), whose script sends
   **`POST /decisions/confirm`** on load and shows the result ("Has rechazado el presupuesto …",
   already applied, superseded, no longer pending, expired). **A bare GET of the link applies
   nothing:** a scanner that does not run the page's script never reaches the POST. The token
@@ -276,7 +289,7 @@ A customer can accept or reject a quotation of their scope, confirmed by email. 
   decision (a re-opened link answers `confirmed` with `appliedNow: false`, and sends no second
   notice or KPI event). **Accepted trade-off (PO, one-step flow):** a mail scanner that executes
   the page's JavaScript could confirm a pending decision. The token is single-use, and the email
-  only ever reaches the quotation's main recipient (the first To of the original send).
+  only ever reaches the To recipients of the quotation's original send.
   **Into the portal (PO).** After the confirmation, whatever its state (applied now, answered
   before, superseded, no longer pending, expired), `PortalDecisionEntry` mints a new portal link
   for the customer, like a renewal: same tenant, Business Partner, recipients and language as the
@@ -408,3 +421,37 @@ note is an `invoice` (the portal kinds do not tell it apart). The newer `entry_d
 `schemaforge/AnonymousAttachmentStreamerTest`, and
 `schemaforge/email/contracts/PortalLinkRenewalEmailContractTest`. The feature's test list is kept in
 the functional repo's `flags-registry.json` (`bp-self-service-portal`).
+
+## QA 24/11 changes (ETP-6209)
+
+- **URL shape (CP-43).** Every portal URL a customer receives is
+  `<app>/portal/<AD_Client_ID>/<token>` (`PortalLinkPolicy#buildLink`), the decision confirmation
+  `<app>/portal/<AD_Client_ID>/decision/<token>`. The SPA replaces the address with
+  `/portal/<AD_Client_ID>` before any third-party tag reads it, and sends the tenant id in
+  **`X-Portal-Client`** beside `X-Portal-Token` (`/me/<clientId>/<token>` is also accepted). When
+  present it must match the token's client; a mismatch answers exactly as an unknown token (401),
+  so it is no oracle. Absent (MVP-shape links) validates the token alone. `/me` (every state) and
+  the confirm answer carry `clientId`. No log, usage event or KPI payload carries the token or a
+  portal URL.
+- **Multi-currency totals (CP-47, `PortalCurrencyTotals`).** `GET /documents` adds
+  `convertedTotal`, `GET /home` adds `convertedBalance` (outstanding) and `convertedPaidThisYear`,
+  each `{amount, currency, approximate}` in the company currency (the link organization's, then
+  its legal entity's, then the tenant's), folded by the app's own `NeoCurrencyTotals` with today's
+  `C_Conversion_Rate` (core `FinancialUtils#getConversionRate`, from the link's organization up to
+  `0`). `approximate` is true when a foreign amount was converted. `null` when there is nothing to
+  total or a rate is missing (the page then keeps the per-currency figures, which stay in the
+  payload).
+- **Invoices' "tipo" quick filter (CP-16).** `GET /documents?type=invoice&subtype=invoice|creditNote`
+  (absent or unknown: both). A credit note is the row's `isCreditNote` rule, as an HQL condition
+  (`PortalDocumentKind#creditNoteCondition`). Status labels are the SPA's (the API sends codes).
+- **Document email design (CP-48).** A sales document email that carries a portal link uses the
+  confirmation's card (`EmailCardLayout`): the company's logo or initials, a title naming the
+  document, the operator's message, a «Datos del documento» box (Empresa · Nº · Importe, or the
+  first date for a shipment), the portal sentence above the button, the reply note and the
+  «Creado con etendo.ai» footer (see `transactional-email-contracts.md` → *Portal email design*). Without a link the letter design is unchanged.
+- **Amounts in emails (CP-44).** The summary's total of every document email is formatted with
+  the instance separators and the currency symbol (`EmailAmountFormat`, "2.431,37 €"); the plain
+  value still travels to the gateway as `amount`.
+- **Customer email footer.** «Creado con etendo.ai», a plain link to the etendo.ai home page with
+  a per-email UTM; see `transactional-email-contracts.md` → *Portal email design*.
+

@@ -270,6 +270,9 @@ class McpDocumentEmailToolTest {
           edits.getString("message"));
       assertFalse(command.has("recipientEdits"), "the contact is the recipient: nothing to edit");
       assertEquals("purchase-order-send:PO1:send:v1", command.getString("idempotencyKey"));
+      // No portalLink fact in the SENT answer (a purchase document has no portal): the PDF link.
+      assertTrue(result.getString("detail").endsWith("It carries a link to the document's PDF."),
+          result.getString("detail"));
     }
 
     @Test
@@ -1228,8 +1231,13 @@ class McpDocumentEmailToolTest {
           return portalLinks;
         }
       };
-      sendThroughTheMcp(contract);
+      JSONObject result = sendThroughTheMcp(contract);
 
+      // ETP-6209 QA (MCP parity): the agent is told what the email really carried.
+      assertTrue(result.getString("detail").contains("link to the customer portal"),
+          result.getString("detail"));
+      assertTrue(result.getString("detail").contains("it has no direct PDF link"),
+          result.getString("detail"));
       verify(portalLinks).mintForSend(eq(PortalDocumentKind.INVOICE), eq(RECORD), any(), any(),
           eq("es_ES"), eq(INVOICE_SPEC + "-send"));
       assertEquals(1, delivered.size());
@@ -1249,7 +1257,12 @@ class McpDocumentEmailToolTest {
         access.when(() -> NeoAccessHelper.canWriteSpec(any())).thenReturn(true);
         policy.when(PortalLinkPolicy::isLinkEnabled).thenReturn(false);
 
-        sendThroughTheMcp(new SalesInvoiceSendEmailContract(invoiceResolver()));
+        JSONObject result = sendThroughTheMcp(
+            new SalesInvoiceSendEmailContract(invoiceResolver()));
+
+        // A portal contract that minted nothing reports the PDF link it actually sent.
+        assertTrue(result.getString("detail").endsWith("It carries a link to the document's PDF."),
+            result.getString("detail"));
 
         policy.verify(PortalLinkPolicy::isLinkEnabled);
         portalDal.verifyNoInteractions();
@@ -1261,7 +1274,8 @@ class McpDocumentEmailToolTest {
     }
 
     /** Runs the MCP tool against the real email service, over a registry of {@code contract}. */
-    private void sendThroughTheMcp(DefaultDocumentSendEmailContract contract) throws Exception {
+    private JSONObject sendThroughTheMcp(DefaultDocumentSendEmailContract contract)
+        throws Exception {
       EmailContractRegistry registry = new EmailContractRegistry() {
         @Override
         public Optional<EmailContract> find(String name) {
@@ -1293,6 +1307,7 @@ class McpDocumentEmailToolTest {
           .put("id", RECORD).put("to", new JSONArray(Arrays.asList(BASE))));
 
       assertTrue(result.optBoolean("sent"), result.toString());
+      return result;
     }
 
     private EmailDocumentRecordResolver invoiceResolver() {

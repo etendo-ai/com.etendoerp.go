@@ -130,7 +130,7 @@ public class PortalServletTest {
       renewLimiter = limiters.constructed().get(1);
       dataLimiter = limiters.constructed().get(2);
     }
-    when(linkService.validate(any()))
+    when(linkService.validate(any(), any()))
         .thenReturn(new PortalLinkService.Validation(PortalLinkService.State.INVALID, null));
   }
 
@@ -143,30 +143,46 @@ public class PortalServletTest {
     obContext.close();
   }
 
+  /**
+   * The token, and since QA CP-43 the tenant of the portal URL: the token from its header, the
+   * last segment of {@code /me/[{clientId}/]{token}} or a bearer header; the tenant from
+   * {@code X-Portal-Client}, else the first segment of {@code /me/{clientId}/{token}}, else none
+   * (a link in the MVP shape {@code /portal/{token}}).
+   */
   @Test
-  public void tokenIsReadFromThePortalHeaderThenTheMePathThenABearerHeader() throws Exception {
-    // Columns: X-Portal-Token, path, Authorization, token the service is asked about.
+  public void tokenAndTenantAreReadFromTheirHeadersThenTheMePath() throws Exception {
+    // Columns: X-Portal-Token, X-Portal-Client, path, Authorization, token and tenant the service
+    // is asked about.
     String[][] cases = {
-        { "portal-tok", "/me/path-tok", "Bearer go-session-jwt", "portal-tok" },
+        { "portal-tok", null, "/me/path-tok", "Bearer go-session-jwt", "portal-tok", null },
         // A signed-in GO user's own bearer JWT never stands in for the link's token.
-        { "portal-tok", "/me", "Bearer go-session-jwt", "portal-tok" },
-        { null, "/me/path-tok", "Bearer go-session-jwt", "path-tok" },
-        { null, "/me", "Bearer legacy-tok", "legacy-tok" },
-        { null, "/me", "Basic dXNlcjpwYXNz", null },
-        { null, "/me", null, null },
+        { "portal-tok", null, "/me", "Bearer go-session-jwt", "portal-tok", null },
+        { null, null, "/me/path-tok", "Bearer go-session-jwt", "path-tok", null },
+        { null, null, "/me", "Bearer legacy-tok", "legacy-tok", null },
+        { null, null, "/me", "Basic dXNlcjpwYXNz", null, null },
+        { null, null, "/me", null, null, null },
+        { null, null, "/me/CLIENT-1/path-tok", null, "path-tok", "CLIENT-1" },
+        { null, " CLIENT-H ", "/me/CLIENT-1/path-tok", null, "path-tok", "CLIENT-H" },
+        { null, "  ", "/me/CLIENT-1/path-tok", null, "path-tok", "CLIENT-1" },
+        { "portal-tok", "CLIENT-H", "/me", null, "portal-tok", "CLIENT-H" },
     };
     for (String[] c : cases) {
-      HttpServletRequest request = request("GET", c[1]);
+      HttpServletRequest request = request("GET", c[2]);
       when(request.getHeader(PortalServlet.HEADER_PORTAL_TOKEN)).thenReturn(c[0]);
-      when(request.getHeader("Authorization")).thenReturn(c[2]);
+      when(request.getHeader(PortalServlet.HEADER_PORTAL_CLIENT)).thenReturn(c[1]);
+      when(request.getHeader("Authorization")).thenReturn(c[3]);
       clearInvocations(linkService);
 
       servlet.service(request, new Call().response);
 
       ArgumentCaptor<String> token = ArgumentCaptor.forClass(String.class);
-      verify(linkService).validate(token.capture());
-      assertEquals(Arrays.toString(c), c[3], token.getValue());
+      ArgumentCaptor<String> tenant = ArgumentCaptor.forClass(String.class);
+      verify(linkService).validate(token.capture(), tenant.capture());
+      assertEquals(Arrays.toString(c), c[4], token.getValue());
+      assertEquals(Arrays.toString(c), c[5], tenant.getValue());
     }
+    // Only /me carries the tenant in its path.
+    assertNull(PortalServlet.resolveClient(request("GET", "/documents/CLIENT-1/x")));
   }
 
   @Test
@@ -186,7 +202,7 @@ public class PortalServletTest {
 
   @Test
   public void eachEndpointAnswers429OnlyWhenItsOwnRateLimiterRefuses() throws Exception {
-    when(linkService.renew(any())).thenReturn(PortalLinkService.RenewalOutcome.SENT);
+    when(linkService.renew(any(), any())).thenReturn(PortalLinkService.RenewalOutcome.SENT);
 
     // Only the /me limiter refuses: /me is throttled, /renew is served.
     when(meLimiter.tryAcquire(anyString())).thenReturn(false);
@@ -196,7 +212,7 @@ public class PortalServletTest {
     servlet.service(request("POST", "/renew"), renew.response);
     assertEquals(429, me.status());
     assertEquals(HttpServletResponse.SC_OK, renew.status());
-    verify(linkService, never()).validate(any());
+    verify(linkService, never()).validate(any(), any());
 
     // Only the /renew limiter refuses: /renew is throttled, /me is served.
     when(meLimiter.tryAcquire(anyString())).thenReturn(true);
@@ -209,7 +225,7 @@ public class PortalServletTest {
     assertEquals("an invalid token, not a throttled request",
         HttpServletResponse.SC_UNAUTHORIZED, meAgain.status());
     assertEquals(429, renewAgain.status());
-    verify(linkService, never()).renew(any());
+    verify(linkService, never()).renew(any(), any());
 
     // Only the data limiter refuses: every data read is throttled, /me and /renew are served.
     when(renewLimiter.tryAcquire(anyString())).thenReturn(true);
@@ -220,7 +236,7 @@ public class PortalServletTest {
       servlet.service(request("GET", path), data.response);
       assertEquals(path, 429, data.status());
     }
-    verify(linkService, never()).validate(any());
+    verify(linkService, never()).validate(any(), any());
     Call meServed = new Call();
     servlet.service(request("GET", "/me"), meServed.response);
     Call renewServed = new Call();
@@ -231,7 +247,7 @@ public class PortalServletTest {
 
   @Test
   public void everyResponseIsMarkedNoStore() throws Exception {
-    when(linkService.renew(any())).thenReturn(PortalLinkService.RenewalOutcome.SENT);
+    when(linkService.renew(any(), any())).thenReturn(PortalLinkService.RenewalOutcome.SENT);
     String[][] cases = { { "GET", "/me" }, { "PUT", "/me" }, { "GET", "/nowhere" },
         { "POST", "/renew" }, { "GET", "/home" }, { "GET", "/documents" } };
     for (String[] c : cases) {
@@ -357,7 +373,7 @@ public class PortalServletTest {
         mockStatic(PortalDocumentsEndpoint.class);
         MockedStatic<PortalDocumentQuery> documents = mockStatic(PortalDocumentQuery.class)) {
       for (PortalLinkService.Validation validation : notValid) {
-        when(linkService.validate(any())).thenReturn(validation);
+        when(linkService.validate(any(), any())).thenReturn(validation);
         for (String path : DATA_PATHS) {
           Call call = new Call();
 
@@ -380,9 +396,11 @@ public class PortalServletTest {
         mockStatic(PortalDocumentsEndpoint.class)) {
       JSONObject page = new JSONObject().put("totalCount", 0);
       endpoint.when(() -> PortalDocumentsEndpoint.list(any(), any(), any(), any(), any(), any(),
-          any(), any(), any())).thenReturn(page);
+          any(), any(), any(), any())).thenReturn(page);
       HttpServletRequest request = request("GET", "/documents");
       when(request.getParameter("type")).thenReturn("invoice");
+      // QA CP-16: the invoices' "tipo" quick filter travels as ?subtype=.
+      when(request.getParameter("subtype")).thenReturn("creditNote");
       when(request.getParameter("group")).thenReturn("pending");
       // Nothing a caller sends can widen the scope: there is no parameter for it to come from.
       when(request.getParameter("clientId")).thenReturn("CLIENT-2");
@@ -394,7 +412,7 @@ public class PortalServletTest {
       assertEquals(HttpServletResponse.SC_OK, call.status());
       ArgumentCaptor<PortalSession> scope = ArgumentCaptor.forClass(PortalSession.class);
       endpoint.verify(() -> PortalDocumentsEndpoint.list(scope.capture(), eq("invoice"),
-          eq("pending"), any(), any(), any(), any(), any(), any()));
+          eq("creditNote"), eq("pending"), any(), any(), any(), any(), any(), any()));
       assertEquals(CLIENT_ID, scope.getValue().getClientId());
       assertEquals(BP_ID, scope.getValue().getBusinessPartnerId());
     }
@@ -587,6 +605,8 @@ public class PortalServletTest {
             409, "not_pending" },
         { PortalDecisionService.RequestOutcome.BLOCKED, PortalDecisionService.Blocked.EXPIRED,
             409, "expired" },
+        { PortalDecisionService.RequestOutcome.BLOCKED,
+            PortalDecisionService.Blocked.NOT_RECIPIENT, 409, "not_recipient" },
         { PortalDecisionService.RequestOutcome.ACCEPT_UNAVAILABLE, null, 409,
             "accept_unavailable" },
         { PortalDecisionService.RequestOutcome.INVALID_REASON, null, 422, "invalid_reason" },
@@ -597,7 +617,7 @@ public class PortalServletTest {
     for (Object[] c : cases) {
       PortalDecisionService.RequestResult result = new PortalDecisionService.RequestResult(
           (PortalDecisionService.RequestOutcome) c[0], (PortalDecisionService.Blocked) c[1],
-          "julia@example.com");
+          "julia@example.com", Arrays.asList("julia@example.com", "boss@example.com"));
       when(decisionService.request(any(), any(), any(), any(), any())).thenReturn(result);
       Call call = new Call();
 
@@ -609,6 +629,9 @@ public class PortalServletTest {
       if (c[3] == null) {
         assertEquals("sent", body.getString("state"));
         assertEquals("julia@example.com", body.getString("email"));
+        // QA CP-45: every address the confirmation went to.
+        assertEquals("[\"julia@example.com\",\"boss@example.com\"]",
+            body.getJSONArray("confirmationRecipients").toString());
       } else {
         assertEquals(c[3], body.getString("error"));
       }
@@ -643,9 +666,9 @@ public class PortalServletTest {
     when(quotation.getDocumentNo()).thenReturn("PR-0042");
     when(linkService.findLink(LINK_ID)).thenReturn(Optional.of(link(new Date(0L),
         new Date(1L), true)));
-    when(decisionService.view("dec-tok")).thenReturn(new PortalDecisionService.View(
+    when(decisionService.view("dec-tok", null)).thenReturn(new PortalDecisionService.View(
         PortalDecisionService.State.PENDING, decision, quotation));
-    when(decisionService.confirm("dec-tok")).thenReturn(new PortalDecisionService.View(
+    when(decisionService.confirm("dec-tok", null)).thenReturn(new PortalDecisionService.View(
         PortalDecisionService.State.CONFIRMED, decision, quotation, true));
 
     Call view = new Call();
@@ -665,7 +688,7 @@ public class PortalServletTest {
     assertEquals("PR-0042", confirmed.getString("documentNo"));
     assertEquals("Acme", confirmed.getString("tenantName"));
     // The portal token plays no part: the decision token travels in its own header.
-    verify(linkService, never()).validate(any());
+    verify(linkService, never()).validate(any(), any());
   }
 
   @Test
@@ -674,14 +697,15 @@ public class PortalServletTest {
     PortalDecisionService.Decision decision = quotationDecision();
     PortalDecisionService.View confirmed = new PortalDecisionService.View(
         PortalDecisionService.State.CONFIRMED, decision, null, true);
-    when(decisionService.view(DECISION_TOKEN)).thenReturn(confirmed);
+    when(decisionService.view(DECISION_TOKEN, null)).thenReturn(confirmed);
     // Columns: what confirm answers, whether the answer leads into the portal.
     Object[][] cases = {
         { confirmed, true },
         { PortalDecisionService.View.closedForCustomer(decision, null), false },
     };
     for (Object[] c : cases) {
-      when(decisionService.confirm(DECISION_TOKEN)).thenReturn((PortalDecisionService.View) c[0]);
+      when(decisionService.confirm(DECISION_TOKEN, null))
+          .thenReturn((PortalDecisionService.View) c[0]);
       Call confirm = new Call();
 
       servlet.service(decisionCall("POST", "/decisions/confirm", DECISION_TOKEN),
@@ -709,20 +733,25 @@ public class PortalServletTest {
 
   @Test
   public void anUnknownDecisionTokenGetsTheInvalidLinkAnswer() throws Exception {
-    when(decisionService.view(any())).thenReturn(new PortalDecisionService.View(
+    when(decisionService.view(any(), any())).thenReturn(new PortalDecisionService.View(
         PortalDecisionService.State.INVALID, null, null));
-    when(decisionService.confirm(any())).thenReturn(new PortalDecisionService.View(
+    when(decisionService.confirm(any(), any())).thenReturn(new PortalDecisionService.View(
         PortalDecisionService.State.INVALID, null, null));
 
     for (String[] route : new String[][] { { "GET", "/decisions/view" },
         { "POST", "/decisions/confirm" } }) {
       Call call = new Call();
+      HttpServletRequest request = decisionCall(route[0], route[1], "nope");
+      // QA CP-43: the landing's tenant travels with the token, for the service to check.
+      when(request.getHeader(PortalServlet.HEADER_PORTAL_CLIENT)).thenReturn("CLIENT-9");
 
-      servlet.service(decisionCall(route[0], route[1], "nope"), call.response);
+      servlet.service(request, call.response);
 
       assertEquals(route[1], HttpServletResponse.SC_UNAUTHORIZED, call.status());
       assertEquals(INVALID_BODY, call.body.toString());
     }
+    verify(decisionService).view("nope", "CLIENT-9");
+    verify(decisionService).confirm("nope", "CLIENT-9");
   }
 
   @Test
@@ -778,6 +807,8 @@ public class PortalServletTest {
         JSONObject body = new JSONObject(call.body.toString());
         assertEquals("valid", body.getString("state"));
         assertEquals("julia@example.com", body.getString("email"));
+        // QA CP-43: the tenant, so the page can show /portal/{clientId} without the token.
+        assertEquals(CLIENT_ID, body.getString("clientId"));
         if (inScope) {
           assertEquals("INV-1", body.getJSONObject("entryDocument").getString("id"));
           assertEquals("INVOICE", body.getJSONObject("entryDocument").getString("kind"));
@@ -795,7 +826,7 @@ public class PortalServletTest {
   @Test
   public void theLogoIsTheIssuingOrganizationsOnMeAndOnLogo() throws Exception {
     validLink();
-    when(linkService.findSentLink(any())).thenReturn(Optional.of(link(new Date(0L),
+    when(linkService.findSentLink(any(), any())).thenReturn(Optional.of(link(new Date(0L),
         new Date(System.currentTimeMillis() + 3_600_000L), true)));
     try (MockedStatic<PortalDocumentQuery> documents = mockStatic(PortalDocumentQuery.class)) {
       servlet.service(request("GET", "/me"), new Call().response);
@@ -818,7 +849,7 @@ public class PortalServletTest {
         new PortalLinkService.Validation(PortalLinkService.State.INVALID, null));
     try (MockedStatic<PortalDocumentQuery> documents = mockStatic(PortalDocumentQuery.class)) {
       for (PortalLinkService.Validation answer : answers) {
-        when(linkService.validate(any())).thenReturn(answer);
+        when(linkService.validate(any(), any())).thenReturn(answer);
 
         servlet.service(request("GET", "/me"), new Call().response);
       }
@@ -876,7 +907,7 @@ public class PortalServletTest {
   private void validLink() {
     Date sentAt = new Date(System.currentTimeMillis() - 60_000L);
     Date expiresAt = new Date(System.currentTimeMillis() + 3_600_000L);
-    when(linkService.validate(any())).thenReturn(new PortalLinkService.Validation(
+    when(linkService.validate(any(), any())).thenReturn(new PortalLinkService.Validation(
         PortalLinkService.State.VALID, link(sentAt, expiresAt, true)));
   }
 

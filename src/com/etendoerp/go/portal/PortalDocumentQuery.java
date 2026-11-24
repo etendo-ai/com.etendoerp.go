@@ -144,6 +144,8 @@ final class PortalDocumentQuery {
   /** {@code M_InOut.MovementType} of a customer shipment (outbound). */
   private static final String CUSTOMER_SHIPMENT = "C-";
 
+  /** Joins the conditions of a list query's {@code where}. */
+  private static final String AND = " and ";
   private static final String P_CLIENT = "clientId";
   private static final String P_BPARTNER = "bpartnerId";
   private static final String P_STATUSES = "statuses";
@@ -164,6 +166,11 @@ final class PortalDocumentQuery {
     final String search;
     final Group group;
     final Date today;
+    /**
+     * Invoices only (ETP-6209 QA CP-16, the app's "tipo" quick filter): {@code TRUE} credit notes
+     * only, {@code FALSE} invoices only, {@code null} both.
+     */
+    final Boolean creditNote;
 
     Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search) {
       this(statuses, dateFrom, dateToExclusive, search, null, null);
@@ -171,6 +178,14 @@ final class PortalDocumentQuery {
 
     Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search, Group group,
         Date today) {
+      this(statuses, dateFrom, dateToExclusive, search, group, today, null);
+    }
+
+    // One value per list filter of the HTTP route.
+    @SuppressWarnings("java:S107")
+    Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search, Group group,
+        Date today, Boolean creditNote) {
+      this.creditNote = creditNote;
       this.statuses = statuses;
       this.dateFrom = dateFrom;
       this.dateToExclusive = dateToExclusive;
@@ -468,7 +483,7 @@ final class PortalDocumentQuery {
         .append(" and e.active = true")
         .append(" and e.salesTransaction = true")
         .append(" and e.documentStatus in (:").append(P_STATUSES).append(')')
-        .append(" and ").append(discriminator(kind));
+        .append(AND).append(discriminator(kind));
     if (filter.dateFrom != null) {
       where.append(" and e.").append(kind.getDateProperty()).append(" >= :").append(P_FROM);
     }
@@ -476,7 +491,11 @@ final class PortalDocumentQuery {
       where.append(" and e.").append(kind.getDateProperty()).append(" < :").append(P_TO);
     }
     if (filter.group != null && filter.group.condition != null) {
-      where.append(" and ").append(filter.group.condition);
+      where.append(AND).append(filter.group.condition);
+    }
+    if (filter.creditNote != null && kind == PortalDocumentKind.INVOICE) {
+      where.append(Boolean.TRUE.equals(filter.creditNote) ? AND : AND + "not ")
+          .append(PortalDocumentKind.creditNoteCondition("e.transactionDocument"));
     }
     if (filter.search != null) {
       where.append(" and (lower(e.documentNo) like :").append(P_SEARCH)
