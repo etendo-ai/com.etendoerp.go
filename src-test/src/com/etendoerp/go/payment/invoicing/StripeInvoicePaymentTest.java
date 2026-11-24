@@ -33,6 +33,7 @@ import org.junit.jupiter.api.Test;
  * current and the older Stripe API shapes.
  *
  * @covers com.etendoerp.go.payment.invoicing.StripeInvoicePayment
+ * @covers com.etendoerp.go.payment.invoicing.StripeInvoiceTaxes
  */
 class StripeInvoicePaymentTest {
 
@@ -196,7 +197,7 @@ class StripeInvoicePaymentTest {
   /** A business from another EU country: no VAT, and the reason says why. */
   @Test
   void aReverseChargeIsKeptWithItsReason() throws Exception {
-    JSONArray taxes = StripeInvoicePayment.taxesOf(new JSONObject("{\"total_taxes\":["
+    JSONArray taxes = StripeInvoiceTaxes.taxesOf(new JSONObject("{\"total_taxes\":["
         + "{\"amount\":0,\"taxable_amount\":2500,\"taxability_reason\":\"reverse_charge\"}"
         + "]}"), 2);
 
@@ -207,7 +208,7 @@ class StripeInvoicePaymentTest {
   /** Older API versions break the tax down in {@code total_tax_amounts}. */
   @Test
   void theOlderTaxBreakdownIsReadToo() throws Exception {
-    JSONArray taxes = StripeInvoicePayment.taxesOf(new JSONObject("{\"total_tax_amounts\":["
+    JSONArray taxes = StripeInvoiceTaxes.taxesOf(new JSONObject("{\"total_tax_amounts\":["
         + "{\"amount\":525,\"taxable_amount\":2500,\"inclusive\":false,"
         + "\"taxability_reason\":\"standard_rated\",\"tax_rate\":\"txr_1\"}]}"), 2);
 
@@ -222,14 +223,14 @@ class StripeInvoicePaymentTest {
 
     assertEquals(0, payment.taxes().length());
     assertNull(payment.taxBase(), "an invoice that does not state it has no base");
-    assertNull(StripeInvoicePayment.rateOf(BigDecimal.ONE, BigDecimal.ZERO));
-    assertNull(StripeInvoicePayment.rateOf(null, BigDecimal.TEN));
+    assertNull(StripeInvoiceTaxes.rateOf(BigDecimal.ONE, BigDecimal.ZERO));
+    assertNull(StripeInvoiceTaxes.rateOf(null, BigDecimal.TEN));
   }
 
   /** Before the checkout asked for an address, Stripe only knew the country. */
   @Test
   void billingDetailsWithoutAddressOrTaxIdKeepWhatThereIs() throws Exception {
-    JSONObject billing = StripeInvoicePayment.billingDetailsOf(new JSONObject(
+    JSONObject billing = StripeInvoiceTaxes.billingDetailsOf(new JSONObject(
         "{\"customer_name\":\"Fiscal Tester\",\"customer_tax_ids\":[],"
             + "\"customer_address\":{\"country\":\"ES\",\"line1\":null}}"));
 

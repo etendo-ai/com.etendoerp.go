@@ -64,7 +64,7 @@ final class FiscalSnapshot {
    * The snapshot of a payment.
    *
    * @param checkout    what the buyer typed at the checkout ({@link
-   *     StripeInvoicePayment#billingDetailsOf}); null for a payment recorded before it was kept
+   *     StripeInvoiceTaxes#billingDetailsOf}); null for a payment recorded before it was kept
    * @param environment the tenant's company ({@link PaymentLedgerStore#fiscalData}), used only
    *     when the checkout told nothing; null while the environment does not exist
    * @param checkoutCountryName the name of the checkout's country, or null
