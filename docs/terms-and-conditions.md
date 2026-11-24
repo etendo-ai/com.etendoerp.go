@@ -45,7 +45,7 @@ label they stored.
 
 The register dialog downloads the `.docx` from `GET /sws/go/terms/document` the first time it opens
 and converts it to HTML in the browser with mammoth (`fetchTermsDocumentHtml` in
-`@etendosoftware/etendo-go-core`, loaded only then). Bold, italics, lists and tables are kept;
+`@etendo-ai/etendo-go-core`, loaded only then). Bold, italics, lists and tables are kept;
 colours, fonts and page layout are not. A table whose rows Word marks all as header rows ("Repeat
 as header row") keeps only the first one as the header.
 

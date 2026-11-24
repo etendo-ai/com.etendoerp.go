@@ -1402,7 +1402,7 @@ pay that cost on the two-hour cadence of §5.15.
 (found in its frontend work); the fix belongs to schema_forge_core.
 Was §4.20 (ticket created 2026-10-24, Martin Taal).
 
-The SPA's generic import (`ImportDialog` in `@etendosoftware/app-shell-core`) writes through
+The SPA's generic import (`ImportDialog` in `@etendo-ai/app-shell-core`) writes through
 `/sws/neo/batch`, so a create of a capped entity **is** refused: 403 `QUOTA_EXCEEDED` (or 500
 `QUOTA_CHECK_FAILED`) at `error.detail.error` of the batch failure envelope, and nothing of that
 batch is saved. The refusal itself is correct; only its message is lost. The row message is decided
