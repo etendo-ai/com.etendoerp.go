@@ -41,7 +41,8 @@ import org.openbravo.model.common.invoice.InvoiceTax;
  *   <li><b>Any write</b> is refused when the invoice is not a draft, is processed, or was already
  *       sent to SII ({@code aeatsiiIssent}) — the backend form of the SPA's
  *       {@code siiFieldReadOnly} plus its draft check ({@code useSifFieldPatcher.js}).</li>
- *   <li><b>Múltiple DUA</b> = Y with invoice type F5 or LC: the row must carry DUA and Fecha DUA.
+ *   <li><b>Múltiple DUA</b> = Y on an import ("Importación con DUA" checked, or invoice type F5 /
+ *       LC): the row must carry DUA and Fecha DUA.
  *       Classic only fails at send time (its {@code InvoiceTaxEventHandler} check never throws);
  *       GO refuses the save instead.</li>
  * </ul>
@@ -172,10 +173,14 @@ public class PurchaseInvoiceTaxExtension implements NeoHandler {
         || Boolean.TRUE.equals(invoice.isAeatsiiIssent());
   }
 
-  /** Múltiple DUA with an import key (F5 / LC): each tax line carries its own DUA. */
+  /**
+   * Múltiple DUA on an import — the "Importación con DUA" check (independent of SII) or an SII
+   * import key (F5 / LC, Classic's rule): each tax line carries its own DUA.
+   */
   static boolean requiresLineDua(Invoice invoice) {
     return Boolean.TRUE.equals(invoice.isAeatsiiMultiDua())
-        && PurchaseInvoiceSiiDeferredVat.isImportKey(invoice.getAeatsiiClaveTipoFc());
+        && (PurchaseInvoiceImportDua.isImportDua(invoice)
+            || PurchaseInvoiceSiiDeferredVat.isImportKey(invoice.getAeatsiiClaveTipoFc()));
   }
 
   /**

@@ -218,6 +218,16 @@ public class PurchaseInvoiceTaxExtensionTest {
     assertNull(extension.handle(crud("POST", null, newRow())));
   }
 
+  @Test
+  public void multiDuaWithTheImportCheckRequiresLineDuaWithoutAnSiiType() throws Exception {
+    when(invoice.isAeatsiiMultiDua()).thenReturn(true);
+    when(invoice.getAeatsiiClaveTipoFc()).thenReturn(null);
+    when(invoice.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn(true);
+
+    assertRefused(extension.handle(crud("POST", null, newRow())), 400,
+        PurchaseInvoiceTaxExtension.MSG_DUA_REQUIRED);
+  }
+
   // ── a sent or processed draft is locked too ──────────────────────────────────────────────
 
   @Test

@@ -7161,7 +7161,7 @@ Not declared in `responseEnrichedFields()`, like the other detail-only keys (§4
 
 A single-record `GET` of `purchase-invoice/header` carries `hasManualTaxLines` (boolean): whether the invoice has at least one active `C_InvoiceTax` row with `Recalculate = 'N'` — Classic's way of declaring an import with DUA (`PurchaseInvoiceManualTaxLines`, called explicitly by the `@NeoExtension(spec="purchase-invoice", entity="header")` customization; declared in its `responseEnrichedFields`). Fail-safe `false` on a DB error. Lists do not carry it.
 
-Why: a customs / forwarder import invoice (SII `F5`) usually has **no invoice lines**, only manual tax lines, and the core completes it — `C_Invoice_Post`'s `@InvoicesNeedLines@` check passes with an invoice line **or** a tax line. Nothing in NEO refuses that completion on any channel (REST single, batch, MCP all reach the same core process; `InvoiceCompletionLineGuard` only inspects existing lines). The only block was the SPA's Confirm button (`draftMode.disableWhenEmpty`); behind the `sii-import-dua` flag the purchase-invoice window lets it through when this field is true. No backend flag: the field is read-only and the completion rule is the core's.
+Why: a customs / forwarder import invoice (an import with DUA: header check `etgoImportDua`, SII `F5` when the organization files SII) usually has **no invoice lines**, only manual tax lines, and the core completes it — `C_Invoice_Post`'s `@InvoicesNeedLines@` check passes with an invoice line **or** a tax line. Nothing in NEO refuses that completion on any channel (REST single, batch, MCP all reach the same core process; `InvoiceCompletionLineGuard` only inspects existing lines). The only block was the SPA's Confirm button (`draftMode.disableWhenEmpty`); behind the `sii-import-dua` flag the purchase-invoice window lets it through when the import check (`etgoImportDua`, below) is on and this field is true. No backend flag: the field is read-only and the completion rule is the core's.
 
 ##### Deferred VAT of an import — `siiDeferredVat` (ETP-6284)
 
@@ -7171,7 +7171,7 @@ GET /sws/neo/purchase-invoice/header/{id}/action/siiDeferredVat
 
 A read-only GET action of the purchase-invoice header (`PurchaseInvoiceSiiDeferredVat`, called first thing in `PurchaseInvoiceHeaderHandler.handle`, before any guard with side effects; declared in `actionContracts()` as a `read` contract with `httpMethod: GET`, so MCP agents reach it through `etendo_action`). It follows the established GET-action pattern (`currencyOptions`). The body is `{ "deferredVat": true|false }` at the top level (no `response.data` wrapper).
 
-`deferredVat` is `true` when the invoice is sent to SII (purchase invoice with `aeatsiiClaveTipoFc`, organization with an SII configuration with `AcogidaAlSII='Y'` and an adoption date, not left out by `SIIUtils.notSendingByDateCause`), its type is F5 or LC, the organization declares IVA, and `SIIUtils.isDeferredVATInvoice` classifies it as deferred VAT (`false` when the partner address has no location, or the SII module throws) — the rule the Classic send uses to pick `createDeferredVATInvoicesRegistry`. The SPA uses it to offer the compensatory import-tax line. An unknown or invisible invoice (read with the caller's access) is a 404, any other method a 405. Same answer on REST and MCP.
+`deferredVat` is `true` when the invoice has the "Importación con DUA" check on (`etgoImportDua`, below) and `SIIUtils.isDeferredVATInvoice` classifies its supplier address as deferred VAT — outside the EU, or Spain with region 35 / 38 / 51 / 52 (Canarias, Ceuta, Melilla); `false` when the partner address has no location, or the SII module throws. That method reads only the partner address — the rule the Classic send uses to pick `createDeferredVATInvoicesRegistry` — so the answer does **not** depend on the SII configuration (no adoption, adoption date, IVA/IGIC tax type or invoice type check since ETP-6284's redesign): an organization that imports but does not file SII from Etendo gets the same answer. The action keeps its historic `sii` name. The SPA uses it to offer the compensatory import-tax line. An unknown or invisible invoice (read with the caller's access) is a 404, any other method a 405. Same answer on REST and MCP.
 
 ##### Tax lines of a purchase invoice — guards (ETP-6284)
 
@@ -7188,11 +7188,24 @@ gated.
 | any (POST/PUT/PATCH/DELETE) | the invoice is not `DR`, is `Processed`, or `aeatsiiIssent = 'Y'` (backend form of the SPA's `siiFieldReadOnly` + draft check) | 409 `ETGO_PurchaseInvoiceTaxLocked` |
 | PUT/PATCH/DELETE | the row has `Recalculate = 'Y'` (automatic, derived from the invoice lines) | 409 `ETGO_PurchaseInvoiceTaxAutomatic` |
 | POST | `recalculate` forced to `false` (every created row is a manual import-tax line) | — |
-| POST/PUT/PATCH | invoice `aeatsiiMultiDua = 'Y'` and key F5/LC, and the row would end without `aeatsiiDua` or `aeatsiiFechaDua` (body value when sent, else the stored one) | 400 `ETGO_PurchaseInvoiceTaxDuaRequired` |
+| POST/PUT/PATCH | invoice `aeatsiiMultiDua = 'Y'` on an import (check `etgoImportDua` on, or SII key F5/LC), and the row would end without `aeatsiiDua` or `aeatsiiFechaDua` (body value when sent, else the stored one) | 400 `ETGO_PurchaseInvoiceTaxDuaRequired` |
 
 The parent of a create is `parentId` (SPA) or the `invoice` link (an agent; id or `{id}`). Nothing checks the sign of the base or the rate: the SPA's compensatory rows (negative base, tax amount 0, a `…=0%` import tax) are accepted, and on a multi-DUA invoice they carry the DUA of the group they compensate. The DUA rule is stricter than Classic on purpose: Classic's `InvoiceTaxEventHandler` check never throws, so a missing DUA there only surfaces at send time (a row without DUA is silently left out of the send).
 
 `ETGO_SF_ENTITY.AGENT_PROMPT` of `header` and `tax` tells agents how to register an import with DUA (single vs multiple DUA, manual rows). **Declare the same text in `decisions.json`** (`entities.header.agentPrompt`, `entities.tax.agentPrompt`): `push-to-neo` writes the entity prompt unconditionally and would clear it otherwise.
+
+##### "Importación con DUA" check of a purchase invoice — `etgoImportDua` (ETP-6284)
+
+`C_Invoice.EM_Etgo_Import_Dua` (YesNo, default `N`, owned by com.etendoerp.go; header field `etgoImportDua`) marks a purchase invoice as an **import with DUA, independently of SII**: the SPA shows the DUA and import-tax cards in the Lines tab while it is on, for any organization. SII keeps reading DUA, Fecha DUA, Múltiple DUA and the manual tax lines from the Classic `EM_Aeatsii_*` columns; for an organization in SII the SPA's SIF tab sets `aeatsiiClaveTipoFc = F5` when the check is on (the user may pick LC).
+
+`PurchaseInvoiceImportDua.checkHeaderWrite`, called explicitly by the `@NeoExtension(spec="purchase-invoice", entity="header")` customization right after the posting gate, on every channel (REST single, batch, MCP):
+
+| Header write | Rule | Answer |
+|---|---|---|
+| POST/PUT/PATCH sending `etgoImportDua = true` | the `sii-import-dua` flag is off for the account | 403 `feature_disabled` (`ETGO_SiiImportDuaDisabled`) |
+| POST/PUT/PATCH | after the write `etgoImportDua = Y`, `aeatsiiMultiDua` not `Y`, and `aeatsiiDua` or `aeatsiiFechaDua` empty (body value when sent, else the stored one) | 400 `ETGO_PurchaseInvoiceImportDuaRequired` |
+
+The DUA rule is the one Classic (`FacturasEventHandler.checkDUAFields`) applies to F5 / LC only; with the check it holds without SII. It also guards a completion (the docAction write reads the stored values). The column is read by property name (`invoice.get("etgoImportDua")`), so the code compiles before the entities are regenerated; a runtime without the column reads it as off.
 
 ##### Every SII record of an invoice — `aeatsiiFacturaIds` (ETP-6284)
 

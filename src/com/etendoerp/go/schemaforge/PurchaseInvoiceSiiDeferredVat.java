@@ -27,7 +27,6 @@ import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.common.invoice.Invoice;
-import org.openbravo.module.sii.data.AEATSIIConfig;
 import org.openbravo.module.sii.utils.SIIUtils;
 
 import com.etendoerp.go.schemaforge.util.NeoActionContract;
@@ -38,10 +37,14 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  *
  * <pre>GET /sws/neo/purchase-invoice/header/{id}/action/siiDeferredVat</pre>
  *
- * <p>Body: {@code {deferredVat}}. {@code true} when the invoice is sent to SII
- * ({@link #applicableConfig}), its SII invoice type is F5 or LC, the organization declares IVA, and
- * {@link SIIUtils#isDeferredVATInvoice} classifies it as deferred VAT — the same rule the Classic
- * send uses to pick the deferred-VAT registry builder. Read-only; works on a draft.
+ * <p>Body: {@code {deferredVat}}. {@code true} when the invoice is marked as an import with DUA
+ * ({@link PurchaseInvoiceImportDua#isImportDua}, column {@code EM_Etgo_Import_Dua}) and its supplier
+ * is outside the EU or in Canarias, Ceuta or Melilla — the address rule of
+ * {@link SIIUtils#isDeferredVATInvoice}, which the Classic send uses to pick the deferred-VAT
+ * registry builder. It does NOT depend on the SII configuration (adoption, tax type, invoice type):
+ * an organization that imports but does not file SII from Etendo gets the same answer. That method
+ * reads only the partner address; it never touches {@code AEATSIIConfig}. Read-only; works on a
+ * draft. The action keeps its historic {@code sii} name, which the SPA and agents already call.
  *
  * <p>Called explicitly by {@link PurchaseInvoiceHeaderHandler}, never from shared code.
  */
@@ -58,8 +61,9 @@ final class PurchaseInvoiceSiiDeferredVat {
 
   /** Published for agents next to the header's other actions; served over GET only. */
   static final NeoActionContract CONTRACT = NeoActionContract.read(ACTION_NAME,
-      "Whether this purchase invoice is an import (F5/LC) of deferred VAT, sent to SII by an IVA "
-          + "organization: {deferredVat}. When true, each import tax needs a compensatory manual "
+      "Whether this purchase invoice is an import with DUA (etgoImportDua=true) of deferred VAT, "
+          + "i.e. its supplier is outside the EU or in Canarias, Ceuta or Melilla: {deferredVat}. "
+          + "Independent of SII. When true, each import tax needs a compensatory manual "
           + "tax row (the matching '=0%' import tax, base = minus that tax's base, tax amount 0). "
           + "Read-only; works on a draft.")
       .withIdDescription("the id of the purchase invoice")
@@ -104,50 +108,18 @@ final class PurchaseInvoiceSiiDeferredVat {
     }
   }
 
-  /** F5/LC, sent to SII by an IVA organization, and deferred VAT for the SII module. */
+  /** Marked as an import with DUA and a supplier address of deferred VAT. No SII config needed. */
   static boolean isDeferredVatImport(Invoice invoice) {
     OBContext.setAdminMode(true);
     try {
-      AEATSIIConfig config = applicableConfig(invoice);
-      return config != null && isImportKey(invoice.getAeatsiiClaveTipoFc()) && isIvaOrg(config)
-          && isDeferredVat(invoice);
+      return invoice != null && PurchaseInvoiceImportDua.isImportDua(invoice) && isDeferredVat(invoice);
     } finally {
       OBContext.restorePreviousMode();
     }
   }
 
-  /**
-   * The SII configuration the send would use, or {@code null} when the invoice is not sent to SII:
-   * a sales invoice, no SII invoice type, an organization that is not in SII (or has no adoption
-   * date), or an invoice older than the adoption year ({@link SIIUtils#notSendingByDateCause}).
-   */
-  static AEATSIIConfig applicableConfig(Invoice invoice) {
-    if (invoice == null || Boolean.TRUE.equals(invoice.isSalesTransaction())
-        || StringUtils.isBlank(invoice.getAeatsiiClaveTipoFc())) {
-      return null;
-    }
-    AEATSIIConfig config = SIIUtils.getSiiConfigFromOrg(invoice.getOrganization());
-    if (config == null || !Boolean.TRUE.equals(config.isAcogidaAlSII())
-        || config.getFechaAcogidaSII() == null) {
-      return null;
-    }
-    try {
-      if (invoice.getAccountingDate() != null && SIIUtils.notSendingByDateCause(config, invoice)) {
-        return null;
-      }
-    } catch (RuntimeException e) {
-      log.debug("Could not apply the SII adoption-date rule to invoice {}: {}", invoice.getId(),
-          e.getMessage());
-    }
-    return config;
-  }
-
   static boolean isImportKey(String key) {
     return KEY_F5.equals(key) || KEY_LC.equals(key);
-  }
-
-  static boolean isIvaOrg(AEATSIIConfig config) {
-    return config != null && SIIUtils.getIvaTaxType().equals(config.getTaxtype());
   }
 
   private static boolean isDeferredVat(Invoice invoice) {
