@@ -1414,6 +1414,44 @@ values, the not-active-tracked exemption, no-session fail-open), the wiring case
 `NeoWritePreflightTest` (422 on an inactive reference, not re-checked once ownership already
 refused).
 
+#### A write only SETS a reference the app would offer (ETP-6176)
+
+> Unnumbered, like the ownership and activeness checks it follows.
+
+**The rule.** If the app allows it, the API allows it; if not, not. A write that SETS a reference is
+accepted only when the selector the SPA shows for that field, opened on the same record, would list
+that id (`NeoReferenceSelectorValidation`, run through `NeoSelectorService.offersValue`; a
+`SELECTOR` customization is asked first, `NeoCustomizedSelectorCheck`, ETP-6377). It runs after
+ownership and activeness in `NeoWritePreflight` (REST single and `/batch`) and in the MCP write
+router.
+
+**Fail closed.** A selector that cannot answer (error, unverifiable) refuses the write, exactly like
+one that answered and did not list the id.
+
+**The refusal.** REST and MCP answer **422** `REFERENCE_NOT_ALLOWED` (`NeoInvalidReferenceResponse`,
+`McpNotOfferedReference`) with `field`, `value`, `detail` and a `hint` to query the selector again
+with the record's current context.
+
+**Which fields.** Only references the request sets: a stored value the request does not touch is not
+re-validated, unless the selector reads a field the update changes. Then the stored dependent is
+revalidated (a new business partner re-checks the stored address), and an untouched reference whose
+context did not change is skipped, so legacy data does not start failing.
+
+**The context** is the merged record: the parent, overlaid by the stored row, overlaid by the
+incoming values, plus the tab's literal auxiliary inputs (ETP-6381).
+
+**An update is judged under the STORED parent.** When the record exists and has a stored link to
+its parent, that parent decides the context, whatever `parentId` or the link value of the body say.
+On a create the order is: explicit `parentId`, then the link value of the body.
+
+**`.id` spelling.** A body key `<reference>.id` is treated as `<reference>`, as
+`NeoReferenceOwnership` already does, so it cannot skip the selector check.
+
+**Stored-row reads are client-scoped.** The stored record and the parent are loaded only when they
+belong to a client the caller may read; otherwise they read as missing.
+
+Tests: `NeoReferenceSelectorValidationTest`.
+
 #### 4.3.9 Document actions over REST: refusal and idempotency (ETP-5783)
 
 `POST /sws/neo/{spec}/{entity}/{id}/action/documentAction` with `{"docAction":"CO"}` runs the
@@ -10053,6 +10091,18 @@ without `name` (caught by `ContactSepaMandateIntegrationTest.aCreateInADataEnvel
 and let an envelope create skip the tax id check. Still top level only, unchanged by ETP-6175: the
 `searchKey` placeholder (an envelope create must send `searchKey`), the email/web/phone format checks
 and the contact-type rules.
+
+**Envelope writes and the format / type rules (ETP-6176).** The email/web/phone format checks and
+the contact-type rules (and the `ContactTypeTelemetry` snapshot they take) read the same inner
+section (`ContactIdentityRules.persistedSection`), so an envelope write can no longer store a
+malformed email or a contact with no type. The `searchKey` placeholder, the pre-create
+billing-default strip and the org-currency injection still read and write the top level.
+
+**Stored-row reads are client-scoped (ETP-6176).** The pre-hook reads of the stored contact an update
+targets (tax id and its key, email/web/phone, the identity columns, `ContactTypeRules`' contact types
+and category, and the category's types) used to go to `c_bpartner` / `c_bp_group` by the id the
+request carries with no client filter. They now use `TenantOwnership.prepareByIdForReadableClients`
+(`... AND ad_client_id = ANY(<readable clients>)`): another tenant's row reads as a missing one.
 
 **KPI telemetry (ETP-5908), goods shipment.** `GoodsShipmentHeaderHandler` emits
 `backend_goods_shipment_completed` when a sales shipment is completed through `documentAction`, only
