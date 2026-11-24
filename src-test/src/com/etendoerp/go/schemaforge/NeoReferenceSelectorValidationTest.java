@@ -265,18 +265,33 @@ public class NeoReferenceSelectorValidationTest {
     }
   }
 
-  /** An explicit {@code parentId} still names the parent over the link value the body sets. */
+  /** An explicit {@code parentId} and a different link value in the body are refused. */
   @Test
-  public void testExplicitParentIdWinsOverTheLinkValue() throws Exception {
+  public void testParentIdDisagreeingWithTheLinkValueIsRefused() throws Exception {
     try (LineFixture line = new LineFixture()) {
       offers(Boolean.TRUE);
 
-      NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
-          LineFixture.HEADER_ID, new JSONObject().put(LineFixture.LINK, "OTHER-HEADER")
-              .put(LineFixture.BIN, LineFixture.BIN_ID));
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(null, line.tab, null, LineFixture.HEADER_ID,
+              new JSONObject().put(LineFixture.LINK, "OTHER-HEADER")
+                  .put(LineFixture.BIN, LineFixture.BIN_ID));
+
+      assertEquals(LineFixture.LINK, refused.fieldName());
+      assertEquals("OTHER-HEADER", refused.value());
+    }
+  }
+
+  /** An explicit {@code parentId} equal to the link value is judged under that parent. */
+  @Test
+  public void testParentIdEqualToTheLinkValueIsValidated() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      offers(Boolean.TRUE);
+
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
+          LineFixture.HEADER_ID, new JSONObject().put(LineFixture.LINK, LineFixture.HEADER_ID)
+              .put(LineFixture.BIN, LineFixture.BIN_ID)));
 
       assertEquals(LineFixture.WAREHOUSE_ID, contextFor(LineFixture.BIN).get("M_Warehouse_ID"));
-      Mockito.verify(dal, never()).get(LineFixture.HEADER_ENTITY, "OTHER-HEADER");
     }
   }
 
@@ -350,21 +365,6 @@ public class NeoReferenceSelectorValidationTest {
         .put(PARTNER, JSONObject.NULL).put(PARTNER + ".id", PARTNER_ID));
     assertEquals(PARTNER + ".id", nullValue.fieldName());
     assertEquals(PARTNER_ID, nullValue.value());
-  }
-
-  /** On create an explicit parentId wins over the link value, whose header is never read. */
-  @Test
-  public void testOnCreateAnExplicitParentIdWinsOverTheBodyLink() throws Exception {
-    try (LineFixture line = new LineFixture()) {
-      offers(Boolean.TRUE);
-
-      NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
-          LineFixture.HEADER_ID, new JSONObject().put(LineFixture.LINK, "OTHER-HEADER")
-              .put(LineFixture.BIN, LineFixture.BIN_ID));
-
-      assertEquals(LineFixture.WAREHOUSE_ID, contextFor(LineFixture.BIN).get("M_Warehouse_ID"));
-      Mockito.verify(dal, never()).get(LineFixture.HEADER_ENTITY, "OTHER-HEADER");
-    }
   }
 
   /** With no stored parent, no parentId and no link value there is no parent: no parent fields. */

@@ -208,6 +208,11 @@ public final class NeoReferenceSelectorValidation {
   private static RefusedReference firstRefused(SFEntity sfEntity, Tab adTab, Entity written,
       String recordId, String parentId, JSONObject requestFields, String[] current) {
     BaseOBObject stored = StringUtils.isBlank(recordId) ? null : load(written, recordId);
+    RefusedReference disagreement = parentDisagreement(adTab, written, stored, parentId,
+        requestFields);
+    if (disagreement != null) {
+      return disagreement;
+    }
     Set<String> changed = changedKeys(written, stored, requestFields);
     Map<String, String> context = null;
     for (Property property : written.getProperties()) {
@@ -414,13 +419,34 @@ public final class NeoReferenceSelectorValidation {
       publish(context, written, flat(stored));
     }
     publish(context, written, requestFields);
-    if (parentLink != null && storedId(stored, parentLink.getName()) != null) {
-      // An update is judged under the stored parent: the request's link value must not replace it.
+    if (parentLink != null
+        && (storedId(stored, parentLink.getName()) != null || StringUtils.isNotBlank(parentId))) {
+      // The stored parent (update) or the explicit parentId (create) decides the context: the
+      // request's link value must not replace it.
       publishValue(context, parentLink, effectiveParent);
     }
     addAuxiliaryLiterals(adTab, context);
     addWindowDirection(adTab, context);
     return context;
+  }
+
+  /**
+   * Fail closed: a create whose explicit {@code parentId} and link-to-parent value name different
+   * parents. Persistence takes one of them and this check judges the other.
+   */
+  private static RefusedReference parentDisagreement(Tab adTab, Entity written,
+      BaseOBObject stored, String parentId, JSONObject requestFields) {
+    Property link = parentLink(adTab, written);
+    if (stored != null || link == null || StringUtils.isBlank(parentId)
+        || !requestFields.has(link.getName())) {
+      return null;
+    }
+    String sent = idText(requestFields.opt(link.getName()));
+    if (sent == null || Objects.equals(sent, parentId)) {
+      return null;
+    }
+    log.warn("Refused a NEO write: parentId and '{}' name different parents", link.getName());
+    return new RefusedReference(link.getName(), link.getTargetEntity().getName(), sent, false);
   }
 
   private static String effectiveParent(Entity written, Property parentLink, String parentId,
