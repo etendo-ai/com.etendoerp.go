@@ -20,7 +20,9 @@ package com.etendoerp.go.schemaforge;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
@@ -461,6 +463,60 @@ public class BpLocationHandler implements NeoHandler {
       return NeoResponse.error(400, "Field(s) exceed maximum length: " + String.join(", ", tooLong));
     }
     return null;
+  }
+
+  /**
+   * ETP-5806 QA pass 3 — what this handler writes itself for the create-body keys it removed, so
+   * {@code etendo_create}'s {@code adjustedFields} reports the truth.
+   *
+   * <p><b>The bug this closes.</b> {@code prepareStructuredAddress} removes the 3 structured keys
+   * from the body once it has read them, precisely so this handler is their only writer
+   * ({@link #removeStructuredAddressKeys}). {@code McpSupersededReconciler} computes
+   * {@code adjustedFields} by diffing the body before the pre-hook against the body handed to
+   * persistence, so every MCP create answered
+   * {@code "streetName": {"sent": "Calle Retest P3", "persisted": null}} for values that WERE
+   * saved a moment later by {@link #persistPendingFields}. With {@code adjustedFieldsHint} telling
+   * the agent that {@code persisted} is what was stored, that reads as data loss — the same
+   * "applied but reported as not applied" shape as CP-12g. {@code contacts/locationAddress} never
+   * showed it because its handler short-circuits generic CRUD entirely and never reaches this
+   * diagnostic; an update never showed it because the reconciler runs on create only.
+   *
+   * <p><b>The two legacy address lines are declared too</b>, not just the 3 structured fields:
+   * {@link #persistPendingFields} overwrites {@code Address1}/{@code Address2} with the composed
+   * value whatever the body carried, so a caller that managed to send one of them would otherwise
+   * be told its own text was persisted. Every spelling is declared, because the lookup is by the
+   * key the caller actually sent and the channel decides which one that is
+   * (see {@link #KEYS_STREET_NAME}).
+   *
+   * <p>This does NOT silence the diagnostic: a value this handler genuinely rewrote is still
+   * reported, now with what was really stored — a blank Building Number saved as {@code "s/n"}
+   * still comes back as an adjustment, which is exactly the signal an agent needs.
+   *
+   * @param context the create context; unused — the values come from the pre-hook's own record of
+   *                what it resolved, which is what persistence will use
+   * @return the declared values, or empty when this request has no pending write (flag off, or a
+   *     verb this handler does not intercept)
+   */
+  @Override
+  public Map<String, Object> deferredCreateValues(NeoContext context) {
+    if (!hasPendingWrite) {
+      return Map.of();
+    }
+    Map<String, Object> values = new LinkedHashMap<>();
+    declareAll(values, KEYS_STREET_NAME, pendingStreetName);
+    declareAll(values, KEYS_BUILDING_NUMBER, pendingBuildingNumber);
+    declareAll(values, KEYS_BUILDING_NAME, pendingBuildingName);
+    values.put(FIELD_ADDRESS_LINE_1, pendingAddress1);
+    values.put(FIELD_ADDRESS_LINE_2, pendingAddress2);
+    return values;
+  }
+
+  /** Maps every spelling of one logical field to the single value this handler will persist. */
+  private static void declareAll(Map<String, Object> values, List<String> aliases,
+      String persisted) {
+    for (String alias : aliases) {
+      values.put(alias, persisted);
+    }
   }
 
   @Override

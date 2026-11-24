@@ -7942,9 +7942,32 @@ between the caller's values as the pre-hook receives them (snapshot taken in `ha
 before the CREATE pre-hook dispatch, `McpSupersededReconciler.snapshotCallerValues`) and the body it
 leaves, so representation changes made earlier (type coercion, an identifier resolved to an id) are
 never reported. Fields the caller did not send (a placeholder the pre-hook replaced, a
-`taxCategory` it injected) are never reported. A key the pre-hook removed reports `persisted: null`.
+`taxCategory` it injected) are never reported. A key the pre-hook removed reports `persisted: null`
+**unless the customization declared what it will persist for it** — see *Deferred writes* below.
 Equality is text, number or Yes/No flag. `adjustedFieldsHint` accompanies it; the key is absent when
 nothing was adjusted.
+
+**Deferred writes (ETP-5806 QA pass 3).** "The key left the body" and "the value was dropped" are
+not the same thing. A pre-hook that removes a key *because it has taken over the write* — it
+validates the value, remembers it, and its post-hook persists it directly via DAL — was reported as
+having discarded it. Live case: every MCP `etendo_create` on `bp-location` answered
+`"streetName": {"sent": "Calle Retest P3", "persisted": null}` for the three structured address
+fields it had just saved correctly, because `BpLocationHandler.prepareStructuredAddress` strips them
+on purpose so it is their only writer. Since `adjustedFieldsHint` presents `persisted` as what was
+stored, an agent reads that as data loss and retries or reports it — the same "applied but reported
+as not applied" failure as CP-12g, which QA classified as blocking. `contacts/locationAddress` never
+showed it (its handler short-circuits generic CRUD, so this diagnostic never runs for it) and an
+update never showed it (the reconciler is create-only), which is why it survived earlier passes.
+
+`NeoHandler.deferredCreateValues(NeoContext)` (default: empty) closes it: the customization maps
+each key it removed to the value it will persist for it, and the reconciler uses that as the
+`persisted` value. The body always wins — a declaration can only answer for a key that is gone —
+and a removed key nobody declared still reports `persisted: null`, the honest answer for a genuine
+drop. It corrects the diagnostic rather than silencing it: a value the customization really did
+rewrite is still reported, now with what was actually stored (a blank Building Number saved as
+`"s/n"` comes back as an adjustment with `persisted: "s/n"`). Declare **every spelling** of a
+removed key — the lookup is by the key the caller sent, and the channel decides which one that is.
+Shared code names no entity and no field; an exception counts as "none".
 
 **`supersededDefaults`** (callout vs sent, recorded before the pre-hook) is then reconciled:
 
@@ -13511,6 +13534,12 @@ wrapper fields. A new generic extension point lets the customization say so:
   pre-hook ran (so it may look at the final body); it silences a diagnostic and changes no value;
   an exception counts as "none". First user: `ProductDefaultsHandler` (`taxCategory` for a valid
   `productType`, `stocked`/`returnable` for S, E, R).
+- `NeoHandler#deferredCreateValues(NeoContext)` (ETP-5806 QA pass 3) — key → the value the
+  customization will itself persist for a create-body key its pre-hook **removed**, so
+  `adjustedFields` reports what was really saved instead of `persisted: null` (§4.12.14). Read once
+  by the MCP create path, after the pre-hook ran; it corrects a diagnostic and writes nothing; an
+  exception counts as "none". First user: `BpLocationHandler` (the 3 structured SEPA fields under
+  every spelling, plus the composed `addressLine1`/`addressLine2`).
 - `SalesQuotationLineHandler` and `SalesOrderLineHandler` both declare
   `OrderLineDiscountSupport.SERVER_RESOLVED_CREATE_FIELDS` = `tax`, `lineNetAmount` (ETP-5528, QA
   observation: the create view listed `lineNetAmount` as required although every create without it

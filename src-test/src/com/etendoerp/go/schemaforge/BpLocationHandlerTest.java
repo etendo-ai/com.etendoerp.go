@@ -142,6 +142,78 @@ class BpLocationHandlerTest {
       flags.close();
     }
 
+    /**
+     * ETP-5806 QA pass 3 (repro): every MCP {@code etendo_create} on this spec answered
+     * {@code "streetName": {"sent": "Calle Retest P3", "persisted": null}} in
+     * {@code adjustedFields}, for the 3 values it had just saved correctly.
+     *
+     * <p>The cause is not persistence timing: {@code McpSupersededReconciler} computes
+     * {@code adjustedFields} by diffing the body the pre-hook received against the body handed to
+     * persistence, and {@code prepareStructuredAddress} REMOVES the 3 keys on purpose so this
+     * handler is their only writer. A removed key read as "the pre-hook dropped your value", and
+     * {@code adjustedFieldsHint} presents {@code persisted} as what was stored — so an agent
+     * concluded street, number and building were lost. {@code deferredCreateValues} is what lets
+     * the generic reconciler see the real value.
+     */
+    @Test
+    void deferredCreateValuesDeclaresWhatTheHandlerWillPersist() throws Exception {
+      JSONObject body = new JSONObject();
+      body.put("streetName", "Calle Retest P3");
+      body.put("buildingNumber", "9");
+      body.put("buildingName", "Torre P3");
+      body.put("cityName", "Madrid");
+      body.put("country", "106");
+
+      NeoContext ctx = buildCrudContext("POST", null, body);
+      assertNull(handler.handle(ctx));
+      // The pre-hook removed the 3 keys, which is exactly why the diagnostic needed this.
+      assertFalse(body.has("streetName"));
+
+      java.util.Map<String, Object> declared = handler.deferredCreateValues(ctx);
+
+      assertEquals("Calle Retest P3", declared.get("streetName"));
+      assertEquals("9", declared.get("buildingNumber"));
+      assertEquals("Torre P3", declared.get("buildingName"));
+      // Every spelling, because the lookup is by the key the caller actually sent.
+      assertEquals("Calle Retest P3", declared.get("oBSEPAStreetName"));
+      assertEquals("Calle Retest P3", declared.get("EM_OBSEPA_StrtNm"));
+      // The composed lines are overwritten by the post-hook too, whatever the body carried.
+      assertEquals("Calle Retest P3, 9 - Torre P3", declared.get("addressLine1"));
+      assertNull(declared.get("addressLine2"));
+    }
+
+    /**
+     * ETP-5806 QA pass 3 — the declaration is the value REALLY persisted, not an echo of the
+     * body, so a genuine rewrite stays reported: a blank Building Number is stored as "s/n" and
+     * {@code adjustedFields} must say so rather than claim the caller's own value was kept.
+     */
+    @Test
+    void deferredCreateValuesDeclaresTheSlashNFallbackNotTheSentBlank() throws Exception {
+      JSONObject body = new JSONObject();
+      body.put("streetName", "Gran Via");
+      body.put("cityName", "Madrid");
+      body.put("country", "ES");
+      // buildingNumber intentionally never sent at all.
+
+      NeoContext ctx = buildCrudContext("POST", null, body);
+      assertNull(handler.handle(ctx));
+
+      assertEquals("s/n", handler.deferredCreateValues(ctx).get("buildingNumber"));
+    }
+
+    /**
+     * ETP-5806 QA pass 3 — nothing is declared when this handler took no ownership of the write,
+     * so a request it did not intercept keeps the generic diagnostic exactly as it was.
+     */
+    @Test
+    void deferredCreateValuesIsEmptyWithoutAPendingWrite() throws Exception {
+      // A GET is neither a create nor an update, so handle() declines before recording anything.
+      NeoContext ctx = buildCrudContext("GET", null, new JSONObject());
+      assertNull(handler.handle(ctx));
+
+      assertTrue(handler.deferredCreateValues(ctx).isEmpty());
+    }
+
     @Test
     void missingMandatoryFieldsReturns400() throws Exception {
       JSONObject body = new JSONObject();
