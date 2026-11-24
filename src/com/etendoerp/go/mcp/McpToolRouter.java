@@ -1877,10 +1877,12 @@ public class McpToolRouter {
       // windows, and the top-level authorizeSpecAccess(null) on etendo_batch is a
       // no-op. Authorise each distinct spec before any DAL work happens so an
       // LLM agent cannot smuggle writes into a spec it lacks CRUD access to.
-      // Every batch operation is a create (BatchService#processOperation only
-      // ever calls createRecord — there is no update/delete op type), so this
-      // is a write-tier ("POST") check: a read-only AD_Window_Access role must
-      // be denied here exactly as it would be for a direct etendo_create call.
+      // MCP batch is create-only (ETP-5810): every operation is a create, and the DELETE
+      // operation BatchService serves to the REST /sws/neo/batch caller (method/recordId) never
+      // gets here — McpBatchOperationKeys refuses those keys above, and a delete goes through
+      // etendo_delete and its DELETE-tier check. So this is a write-tier ("POST") check: a
+      // read-only AD_Window_Access role must be denied here exactly as it would be for a direct
+      // etendo_create call.
       java.util.Set<String> seen = new java.util.HashSet<>();
       for (int i = 0; i < operations.length(); i++) {
         JSONObject op = operations.optJSONObject(i);
