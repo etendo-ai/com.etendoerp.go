@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import java.math.BigDecimal;
 import java.time.Instant;
 
+import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.jupiter.api.Test;
 
@@ -139,6 +140,104 @@ class StripeInvoicePaymentTest {
     assertNull(payment.invoiceNumber());
     assertEquals(Instant.ofEpochSecond(PAID_AT + 5), payment.paidAt(),
         "the event's creation stands in for a missing paid_at");
+  }
+
+  /** Stripe Tax: 25.00 net, 21 % VAT, collected 30.25, typed by a business at the checkout. */
+  @Test
+  void aTaxedInvoiceRecordsItsBaseBreakdownAndBillingDetails() throws Exception {
+    JSONObject invoice = currentInvoice("subscription_create", 3_025)
+        .put("subtotal", 2_500).put("total_excluding_tax", 2_500)
+        .put("total_taxes", new JSONArray("[{\"amount\":525,\"taxable_amount\":2500,"
+            + "\"taxability_reason\":\"standard_rated\",\"tax_behavior\":\"exclusive\","
+            + "\"tax_rate_details\":{\"tax_rate\":\"txr_1\"}}]"))
+        .put("customer_name", "Fiscal Uno SL")
+        .put("customer_tax_ids", new JSONArray("[{\"type\":\"es_cif\","
+            + "\"value\":\"B81639718\"}]"))
+        .put("customer_address", new JSONObject("{\"line1\":\"Calle Mayor 1\","
+            + "\"line2\":null,\"postal_code\":\"28013\",\"city\":\"Madrid\","
+            + "\"state\":\"M\",\"country\":\"ES\"}"));
+
+    StripeInvoicePayment payment = StripeInvoicePayment.from("invoice.paid",
+        event("invoice.paid", invoice)).orElseThrow();
+
+    assertEquals(0, new BigDecimal("30.25").compareTo(payment.amountPaid()));
+    assertEquals(0, new BigDecimal("25.00").compareTo(payment.taxBase()));
+    assertEquals(0, new BigDecimal("5.25").compareTo(payment.taxAmount()));
+    JSONObject tax = payment.taxes().getJSONObject(0);
+    assertEquals("25.00", tax.getString("taxableAmount"));
+    assertEquals("5.25", tax.getString("amount"));
+    assertEquals("21.00", tax.getString("rate"));
+    assertEquals("standard_rated", tax.getString("reason"));
+    JSONObject billing = payment.billingDetails();
+    assertEquals("Fiscal Uno SL", billing.getString("name"));
+    assertEquals("es_cif", billing.getString("taxIdType"));
+    assertEquals("B81639718", billing.getString("taxId"));
+    assertEquals("Calle Mayor 1", billing.getString("address1"));
+    assertTrue(billing.isNull("address2"));
+    assertEquals("28013", billing.getString("postalCode"));
+    assertEquals("Madrid", billing.getString("city"));
+    assertEquals("M", billing.getString("region"));
+    assertEquals("ES", billing.getString("countryCode"));
+  }
+
+  /** The base is after discounts: the subtotal is before them, so a coupon would overstate it. */
+  @Test
+  void theBaseIsTheTotalExcludingTaxNotTheSubtotal() throws Exception {
+    JSONObject invoice = currentInvoice("subscription_create", 1_210)
+        .put("subtotal", 2_500).put("total_excluding_tax", 1_000);
+
+    StripeInvoicePayment payment = StripeInvoicePayment.from("invoice.paid",
+        event("invoice.paid", invoice)).orElseThrow();
+
+    assertEquals(0, new BigDecimal("10.00").compareTo(payment.taxBase()));
+    assertEquals(0, new BigDecimal("25.00").compareTo(payment.subtotal()));
+  }
+
+  /** A business from another EU country: no VAT, and the reason says why. */
+  @Test
+  void aReverseChargeIsKeptWithItsReason() throws Exception {
+    JSONArray taxes = StripeInvoicePayment.taxesOf(new JSONObject("{\"total_taxes\":["
+        + "{\"amount\":0,\"taxable_amount\":2500,\"taxability_reason\":\"reverse_charge\"}"
+        + "]}"), 2);
+
+    assertEquals("0.00", taxes.getJSONObject(0).getString("rate"));
+    assertEquals("reverse_charge", taxes.getJSONObject(0).getString("reason"));
+  }
+
+  /** Older API versions break the tax down in {@code total_tax_amounts}. */
+  @Test
+  void theOlderTaxBreakdownIsReadToo() throws Exception {
+    JSONArray taxes = StripeInvoicePayment.taxesOf(new JSONObject("{\"total_tax_amounts\":["
+        + "{\"amount\":525,\"taxable_amount\":2500,\"inclusive\":false,"
+        + "\"taxability_reason\":\"standard_rated\",\"tax_rate\":\"txr_1\"}]}"), 2);
+
+    assertEquals(1, taxes.length());
+    assertEquals("21.00", taxes.getJSONObject(0).getString("rate"));
+  }
+
+  @Test
+  void anUntaxedInvoiceHasNoBreakdownAndARateCannotComeFromAZeroBase() throws Exception {
+    StripeInvoicePayment payment = StripeInvoicePayment.from("invoice.paid",
+        event("invoice.paid", currentInvoice("subscription_cycle", 2_500))).orElseThrow();
+
+    assertEquals(0, payment.taxes().length());
+    assertNull(payment.taxBase(), "an invoice that does not state it has no base");
+    assertNull(StripeInvoicePayment.rateOf(BigDecimal.ONE, BigDecimal.ZERO));
+    assertNull(StripeInvoicePayment.rateOf(null, BigDecimal.TEN));
+  }
+
+  /** Before the checkout asked for an address, Stripe only knew the country. */
+  @Test
+  void billingDetailsWithoutAddressOrTaxIdKeepWhatThereIs() throws Exception {
+    JSONObject billing = StripeInvoicePayment.billingDetailsOf(new JSONObject(
+        "{\"customer_name\":\"Fiscal Tester\",\"customer_tax_ids\":[],"
+            + "\"customer_address\":{\"country\":\"ES\",\"line1\":null}}"));
+
+    assertEquals("Fiscal Tester", billing.getString("name"));
+    assertTrue(billing.isNull("taxId"));
+    assertTrue(billing.isNull("taxIdType"));
+    assertTrue(billing.isNull("address1"));
+    assertEquals("ES", billing.getString("countryCode"));
   }
 
   @Test

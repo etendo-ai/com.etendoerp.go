@@ -18,6 +18,7 @@
 package com.etendoerp.go.payment.invoicing;
 
 import java.math.BigDecimal;
+import java.math.RoundingMode;
 import java.time.Instant;
 import java.util.Locale;
 import java.util.Optional;
@@ -39,12 +40,17 @@ import com.etendoerp.go.payment.SubscriptionLifecycleApplier;
  * what it collected is not a payment either: there is no amount to invoice.
  *
  * <p>Amounts are in the currency's major unit (euros, not cents), with the currency's own number of
- * decimals. The plans are sold without VAT, so the base of the invoice is {@link #amountPaid()};
- * {@link #taxAmount()} is only what Stripe itself reports, which stays empty while Stripe does not
- * compute tax.
+ * decimals. The prices are net of VAT and Stripe Tax adds it at the checkout, so
+ * {@link #amountPaid()} includes the tax: the base of the invoice is {@link #taxBase()} (after
+ * discounts, unlike {@link #subtotal()}), the tax is {@link #taxAmount()} and {@link #taxes()}
+ * breaks it down with the reason Stripe applied (a reverse charge, a sale it does not tax).
+ *
+ * <p>{@link #billingDetails()} is what the buyer typed at the checkout (name, tax id, address):
+ * what Stripe computed the tax from, and the party of the invoice.
  *
  * <p>Reads both the current and the older Stripe API shapes: the subscription and the price moved
- * under {@code parent} and {@code pricing}, and {@code tax} became {@code total_taxes}.
+ * under {@code parent} and {@code pricing}, {@code tax} became {@code total_taxes} and
+ * {@code total_tax_amounts} its breakdown.
  */
 public final class StripeInvoicePayment {
 
@@ -65,6 +71,9 @@ public final class StripeInvoicePayment {
   private static final String START = "start";
   private static final String END = "end";
   private static final String SUBSCRIPTION_DETAILS = "subscription_details";
+  private static final String TAXABLE_AMOUNT = "taxable_amount";
+  private static final String TAX_ID = "taxId";
+  private static final int RATE_SCALE = 2;
 
   private final String invoiceId;
   private final String invoiceNumber;
@@ -78,7 +87,10 @@ public final class StripeInvoicePayment {
   private final String currency;
   private final BigDecimal amountPaid;
   private final BigDecimal subtotal;
+  private final BigDecimal taxBase;
   private final BigDecimal taxAmount;
+  private final JSONArray taxes;
+  private final JSONObject billingDetails;
   private final BigDecimal totalAmount;
   private final Instant paidAt;
   private final Instant periodStart;
@@ -101,7 +113,10 @@ public final class StripeInvoicePayment {
     this.currency = currencyCode;
     this.amountPaid = major(invoice, AMOUNT_PAID, exponent);
     this.subtotal = major(invoice, "subtotal", exponent);
+    this.taxBase = major(invoice, "total_excluding_tax", exponent);
     this.taxAmount = taxOf(invoice, exponent);
+    this.taxes = taxesOf(invoice, exponent);
+    this.billingDetails = billingDetailsOf(invoice);
     this.totalAmount = major(invoice, "total", exponent);
     JSONObject transitions = invoice.optJSONObject("status_transitions");
     this.paidAt = firstNonNull(epochSeconds(transitions, "paid_at"),
@@ -182,6 +197,77 @@ public final class StripeInvoicePayment {
       return BigDecimal.valueOf(sum).movePointLeft(exponent);
     }
     return major(invoice, "tax", exponent);
+  }
+
+  /**
+   * The tax breakdown: {@code [{taxableAmount, amount, rate, reason}]}, one entry per tax Stripe
+   * applied, from {@code total_taxes} or, on older API versions, {@code total_tax_amounts}.
+   * {@code rate} is the percentage, worked out from the two amounts because the event only names
+   * the tax rate by id; {@code reason} is Stripe's {@code taxability_reason}
+   * ({@code standard_rated}, {@code reverse_charge}, {@code not_collecting}...). Empty when Stripe
+   * did not compute tax.
+   */
+  static JSONArray taxesOf(JSONObject invoice, int exponent) throws JSONException {
+    JSONArray source = invoice.optJSONArray("total_taxes");
+    if (source == null) {
+      source = invoice.optJSONArray("total_tax_amounts");
+    }
+    JSONArray result = new JSONArray();
+    for (int i = 0; source != null && i < source.length(); i++) {
+      JSONObject tax = source.optJSONObject(i);
+      if (tax == null) {
+        continue;
+      }
+      BigDecimal taxable = major(tax, TAXABLE_AMOUNT, exponent);
+      BigDecimal amount = major(tax, AMOUNT, exponent);
+      result.put(new JSONObject()
+          .put("taxableAmount", plainOrNull(taxable))
+          .put(AMOUNT, plainOrNull(amount))
+          .put("rate", plainOrNull(rateOf(amount, taxable)))
+          .put("reason", textOrNull(StripeJson.text(tax, "taxability_reason"))));
+    }
+    return result;
+  }
+
+  /** The percentage {@code amount} is of {@code taxable}, or null when it cannot be told. */
+  static BigDecimal rateOf(BigDecimal amount, BigDecimal taxable) {
+    if (amount == null || taxable == null || taxable.signum() == 0) {
+      return null;
+    }
+    return amount.multiply(BigDecimal.valueOf(100))
+        .divide(taxable, RATE_SCALE, RoundingMode.HALF_UP);
+  }
+
+  /**
+   * What the buyer typed at the checkout, as Stripe copied it onto the invoice:
+   * {@code {name, taxIdType, taxId, address1, address2, postalCode, city, region, countryCode}},
+   * blank fields as {@code null}. The tax id is the first one the buyer gave; its type is
+   * Stripe's ({@code es_cif}, {@code eu_vat}...).
+   */
+  static JSONObject billingDetailsOf(JSONObject invoice) throws JSONException {
+    JSONObject address = invoice.optJSONObject("customer_address");
+    JSONArray taxIds = invoice.optJSONArray("customer_tax_ids");
+    JSONObject taxId = taxIds == null || taxIds.length() == 0 ? null : taxIds.optJSONObject(0);
+    return new JSONObject()
+        .put("name", textOrNull(StripeJson.text(invoice, "customer_name")))
+        .put("taxIdType", textOrNull(taxId == null ? null : StripeJson.text(taxId, "type")))
+        .put(TAX_ID, textOrNull(taxId == null ? null : StripeJson.text(taxId, "value")))
+        .put("address1", textOrNull(address == null ? null : StripeJson.text(address, "line1")))
+        .put("address2", textOrNull(address == null ? null : StripeJson.text(address, "line2")))
+        .put("postalCode", textOrNull(address == null ? null
+            : StripeJson.text(address, "postal_code")))
+        .put("city", textOrNull(address == null ? null : StripeJson.text(address, "city")))
+        .put("region", textOrNull(address == null ? null : StripeJson.text(address, "state")))
+        .put("countryCode", textOrNull(address == null ? null
+            : StripeJson.text(address, "country")));
+  }
+
+  private static Object plainOrNull(BigDecimal value) {
+    return value == null ? JSONObject.NULL : value.toPlainString();
+  }
+
+  private static Object textOrNull(String value) {
+    return StringUtils.isBlank(value) ? JSONObject.NULL : value.trim();
   }
 
   private static JSONArray linesOf(JSONObject invoice, int exponent) throws JSONException {
@@ -317,19 +403,34 @@ public final class StripeInvoicePayment {
     return currency;
   }
 
-  /** @return what was collected, in the major unit; the base of the invoice */
+  /** @return what was collected, in the major unit, tax included */
   public BigDecimal amountPaid() {
     return amountPaid;
   }
 
-  /** @return Stripe's subtotal, or null */
+  /** @return Stripe's subtotal, before discounts and tax, or null */
   public BigDecimal subtotal() {
     return subtotal;
+  }
+
+  /** @return the base of the invoice: Stripe's total excluding tax, after discounts, or null */
+  public BigDecimal taxBase() {
+    return taxBase;
   }
 
   /** @return the tax Stripe reports, or null */
   public BigDecimal taxAmount() {
     return taxAmount;
+  }
+
+  /** @return the tax breakdown, as stored in {@code ETGO_PAYMENT.TAXES}; empty without tax */
+  public JSONArray taxes() {
+    return taxes;
+  }
+
+  /** @return what the buyer typed at the checkout, as stored in {@code BILLING_DETAILS} */
+  public JSONObject billingDetails() {
+    return billingDetails;
   }
 
   /** @return Stripe's total, or null */

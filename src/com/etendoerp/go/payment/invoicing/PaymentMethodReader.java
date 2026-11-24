@@ -54,8 +54,15 @@ public class PaymentMethodReader {
   static final int CONNECT_TIMEOUT_MS = 3_000;
   static final int READ_TIMEOUT_MS = 5_000;
 
+  /**
+   * Stripe expands at most 4 levels and answers 400 to a deeper path, so the payment intent is
+   * the deepest object asked for: its {@code latest_charge} comes back as an id ({@code ch_…}),
+   * which {@link #chargeOf} then fetches.
+   */
+  static final String EXPAND_PATH = "payments.data.payment.payment_intent";
+
   static final String EXPAND = "?" + URLEncoder.encode("expand[]", StandardCharsets.UTF_8)
-      + "=payments.data.payment.payment_intent.latest_charge";
+      + "=" + EXPAND_PATH;
 
   private static final String CHARGE = "charge";
   private static final String CHARGE_PREFIX = "ch_";

@@ -28,6 +28,7 @@ import java.sql.Types;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONArray;
@@ -60,7 +61,7 @@ class PaymentLedgerStore {
       + " p.stripe_customer_id, p.currency, p.amount_paid, p.subtotal, p.tax_amount,"
       + " p.total_amount, p.paid_at, p.period_start, p.period_end, p.lines, p.fiscal_data,"
       + " p.fiscal_data_at, p.payment_method, p.invoice_number, p.invoiced_at, p.created,"
-      + " p.updated";
+      + " p.updated, p.tax_base, p.taxes, p.billing_details";
 
   private static final String INSERT_SQL = "insert into etgo_payment"
       + " (etgo_payment_id, ad_client_id, ad_org_id, isactive, created, createdby, updated,"
@@ -68,9 +69,9 @@ class PaymentLedgerStore {
       + " billing_reason, billing_email, stripe_invoice_id, stripe_invoice_number,"
       + " stripe_event_id, stripe_subscription_id, stripe_customer_id, currency, amount_paid,"
       + " subtotal, tax_amount, total_amount, paid_at, period_start, period_end, lines,"
-      + " fiscal_data, fiscal_data_at, payment_method)"
+      + " fiscal_data, fiscal_data_at, payment_method, tax_base, taxes, billing_details)"
       + " values (get_uuid(), '0', '0', 'Y', now(), '0', now(), '0', ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-      + " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+      + " ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
       + " on conflict (stripe_invoice_id) do nothing"
       + " returning etgo_payment_id";
 
@@ -126,6 +127,9 @@ class PaymentLedgerStore {
       + " order by ot.islegalentity desc, (oi.taxid is null), o.created"
       + " limit 1";
 
+  private static final String COUNTRY_NAME_SQL = "select name from c_country"
+      + " where countrycode = ? order by isactive desc limit 1";
+
   private static final String UPDATE_PAYMENT = "update etgo_payment";
 
   private static final String UPDATE_FISCAL_SQL = UPDATE_PAYMENT
@@ -157,16 +161,19 @@ class PaymentLedgerStore {
     private final String subscriptionId;
     private final String environmentClientId;
     private final String fiscalData;
+    private final String billingDetails;
     private final JSONObject json;
 
+    @SuppressWarnings("java:S107")
     PaymentRow(String id, String status, String invoiceNumber, String subscriptionId,
-        String environmentClientId, String fiscalData, JSONObject json) {
+        String environmentClientId, String fiscalData, String billingDetails, JSONObject json) {
       this.id = id;
       this.status = status;
       this.invoiceNumber = invoiceNumber;
       this.subscriptionId = subscriptionId;
       this.environmentClientId = environmentClientId;
       this.fiscalData = fiscalData;
+      this.billingDetails = billingDetails;
       this.json = json;
     }
 
@@ -193,6 +200,11 @@ class PaymentLedgerStore {
     /** The stored snapshot as text, compared to tell whether a refresh changed it. */
     String fiscalData() {
       return fiscalData;
+    }
+
+    /** What the buyer typed at the checkout, as text; null for a payment recorded before. */
+    String billingDetails() {
+      return billingDetails;
     }
 
     JSONObject json() {
@@ -232,7 +244,10 @@ class PaymentLedgerStore {
       statement.setString(i++, payment.lines().toString());
       statement.setString(i++, fiscalData == null ? null : fiscalData.toString());
       statement.setTimestamp(i++, fiscalData == null ? null : Timestamp.from(Instant.now()));
-      statement.setString(i, paymentMethod == null ? null : paymentMethod.toString());
+      statement.setString(i++, paymentMethod == null ? null : paymentMethod.toString());
+      statement.setBigDecimal(i++, payment.taxBase());
+      statement.setString(i++, payment.taxes().toString());
+      statement.setString(i, payment.billingDetails().toString());
       try (ResultSet result = statement.executeQuery()) {
         return result.next() ? result.getString(1) : null;
       }
@@ -284,6 +299,17 @@ class PaymentLedgerStore {
         return fiscal;
       }
     }
+  }
+
+  /**
+   * The name of a country, as the fiscal data prints it.
+   *
+   * @param countryCode the ISO code, as Stripe reports it
+   * @return the name, or {@code null} for a blank or unknown code
+   */
+  String countryName(Connection connection, String countryCode) throws SQLException {
+    return StringUtils.isBlank(countryCode) ? null
+        : selectString(connection, COUNTRY_NAME_SQL, countryCode.trim().toUpperCase(Locale.ROOT));
   }
 
   /** The page of payments after {@code afterId}, oldest first; {@code status} null for all. */
@@ -394,6 +420,7 @@ class PaymentLedgerStore {
     String subscriptionId = result.getString("stripe_subscription_id");
     String environmentClientId = result.getString("environment_client_id");
     String fiscalData = result.getString("fiscal_data");
+    String billingDetails = result.getString("billing_details");
     String currency = result.getString("currency");
     int scale = StripeCurrencyScale.exponent(currency);
     JSONObject json = new JSONObject()
@@ -407,7 +434,9 @@ class PaymentLedgerStore {
         .put("currency", currency)
         .put("amountPaid", amount(result.getBigDecimal("amount_paid"), scale))
         .put("subtotal", amount(result.getBigDecimal("subtotal"), scale))
+        .put("taxBase", amount(result.getBigDecimal("tax_base"), scale))
         .put("taxAmount", amount(result.getBigDecimal("tax_amount"), scale))
+        .put("taxes", jsonArray(result.getString("taxes")))
         .put("totalAmount", amount(result.getBigDecimal("total_amount"), scale))
         .put("paidAt", iso(result.getTimestamp("paid_at")))
         .put("periodStart", iso(result.getTimestamp("period_start")))
@@ -422,11 +451,12 @@ class PaymentLedgerStore {
             .put("invoiceId", result.getString("stripe_invoice_id"))
             .put("invoiceNumber", textOrNull(result.getString("stripe_invoice_number")))
             .put("subscriptionId", textOrNull(subscriptionId))
-            .put("customerId", textOrNull(result.getString("stripe_customer_id"))))
+            .put("customerId", textOrNull(result.getString("stripe_customer_id")))
+            .put("billingDetails", jsonObject(billingDetails)))
         .put("created", iso(result.getTimestamp("created")))
         .put("updated", iso(result.getTimestamp("updated")));
     return new PaymentRow(id, status, invoiceNumber, subscriptionId, environmentClientId,
-        fiscalData, json);
+        fiscalData, billingDetails, json);
   }
 
   private static String selectString(Connection connection, String sql, String... parameters)

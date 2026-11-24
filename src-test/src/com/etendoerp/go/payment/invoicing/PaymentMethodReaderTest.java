@@ -65,6 +65,29 @@ class PaymentMethodReaderTest {
     assertEquals("ch_1", method.getString("chargeId"));
   }
 
+  /** Stripe refuses a path deeper than 4 levels with a 400, and no payment had its method. */
+  @Test
+  void theExpandStaysWithinTheFourLevelsStripeAllows() {
+    assertTrue(PaymentMethodReader.EXPAND_PATH.split("\\.").length <= 4,
+        PaymentMethodReader.EXPAND_PATH);
+    assertTrue(PaymentMethodReader.EXPAND.endsWith("=" + PaymentMethodReader.EXPAND_PATH));
+  }
+
+  /** With the payment intent expanded, its latest charge comes back as an id and is fetched. */
+  @Test
+  void theLatestChargeOfTheExpandedPaymentIntentIsFetchedById() throws Exception {
+    when(stripe.get("/v1/invoices/in_6" + PaymentMethodReader.EXPAND)).thenReturn(
+        new StripeResponse(200, "{\"payments\":{\"data\":[{\"payment\":{\"type\":"
+            + "\"payment_intent\",\"payment_intent\":{\"id\":\"pi_1\","
+            + "\"latest_charge\":\"ch_1\"}}}]}}"));
+    when(stripe.get("/v1/charges/ch_1")).thenReturn(new StripeResponse(200, CHARGE));
+
+    JSONObject method = reader.read("in_6");
+
+    assertEquals("4242", method.getString("last4"));
+    assertEquals("ch_1", method.getString("chargeId"));
+  }
+
   @Test
   void aChargeTheInvoiceOnlyNamesIsFetched() throws Exception {
     when(stripe.get("/v1/invoices/in_2" + PaymentMethodReader.EXPAND))

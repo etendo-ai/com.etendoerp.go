@@ -709,6 +709,18 @@ public class HostedCheckoutService {
     // The sandbox product is not configured for Stripe Managed Payments. Keep the
     // Checkout contract explicit until Product selects an eligible tax code.
     add(form, "managed_payments[enabled]", "false");
+    // VAT is computed and charged by Stripe Tax: the prices are net of VAT, and the tax depends on
+    // where the buyer is, which only the billing address tells. A subscription keeps automatic
+    // tax for its renewals. Needs Stripe Tax active with a registration, a tax code and a tax
+    // behavior on the price; without them the session is refused or charges 0 %.
+    add(form, "automatic_tax[enabled]", "true");
+    add(form, "billing_address_collection", "required");
+    // The name and tax id printed on the invoice, and the reverse charge for a business from
+    // another EU country. Required wherever Stripe can collect one (Spain among them): the buyer
+    // is a company or a self-employed person, both with a tax id, and the checkout is the only
+    // source of the invoice's fiscal data. Where Stripe collects none, nothing is asked.
+    add(form, "tax_id_collection[enabled]", "true");
+    add(form, "tax_id_collection[required]", "if_supported");
     if (SUBSCRIPTION_FIELD.equals(mode)) {
       add(form, "subscription_data[metadata][request_id]", requestId);
       if (StringUtils.isNotBlank(planKey)) {
