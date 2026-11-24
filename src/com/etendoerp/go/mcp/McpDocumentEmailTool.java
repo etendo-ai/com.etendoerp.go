@@ -272,7 +272,6 @@ final class McpDocumentEmailTool {
       problem.put(McpConstants.KEY_HINT, missingHint(pdf));
     } else if (pdf.getStatus() == NeoDocumentPdf.Status.STALE) {
       problem.put(McpConstants.KEY_HINT, McpDocumentPdfTool.STALE_RETRY_HINT
-          + "If the document was reactivated, complete it again, then ask to send again. "
           + "Otherwise the server could not regenerate it: tell the user the PDF could not be "
           + "generated and report it with etendo_feedback.");
     }

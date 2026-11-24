@@ -701,8 +701,9 @@ class McpDocumentEmailToolTest {
       assertNotSent(result, 409, "pdf_stale");
       String hint = result.getString("hint");
       assertTrue(hint.startsWith(McpDocumentPdfTool.STALE_RETRY_HINT), hint);
-      assertTrue(hint.contains("If the document was reactivated, complete it again")
-          && hint.contains("ask to send again"), hint);
+      assertTrue(hint.contains("report it with etendo_feedback"), hint);
+      // A reactivated document never reaches the PDF gate: the status gate refuses it first.
+      assertFalse(hint.contains("reactivated"), hint);
       assertFalse(hint.contains("preview"), hint);
       assertFalse(hint.contains("send the document by email"), hint);
     }

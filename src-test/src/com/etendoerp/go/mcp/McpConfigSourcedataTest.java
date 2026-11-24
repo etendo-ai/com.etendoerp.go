@@ -750,6 +750,7 @@ class McpConfigSourcedataTest {
         StandardCharsets.UTF_8);
     assertFalse(xml.contains("preview stores nothing"));
     assertFalse(xml.contains("only a send from the application"));
+    assertFalse(xml.contains("preview in the application"));
   }
 
   /**
