@@ -450,6 +450,7 @@ com.etendoerp.go.schemaforge.NeoTenantWriteGuardTest
 com.etendoerp.go.schemaforge.NeoUsageEventEndpointTest
 com.etendoerp.go.schemaforge.NeoVectorSearchEndpointTest
 com.etendoerp.go.schemaforge.NeoWriteChannelTest
+com.etendoerp.go.schemaforge.NeoDeclarativeValidationTest
 com.etendoerp.go.schemaforge.NeoWritePreflightTest
 com.etendoerp.go.schemaforge.PopulateSpecProcessTest
 com.etendoerp.go.schemaforge.PrintableDataTest

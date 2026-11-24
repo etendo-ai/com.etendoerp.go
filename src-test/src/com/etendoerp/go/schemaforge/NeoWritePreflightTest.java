@@ -73,6 +73,7 @@ public class NeoWritePreflightTest {
   private MockedStatic<NeoActionRecordGuard> targets;
   private MockedStatic<NeoFieldFilter> fieldFilters;
   private MockedStatic<OBContext> obContext;
+  private MockedStatic<NeoDeclarativeValidation> declarative;
   private Tab adTab;
   private SFEntity sfEntity;
 
@@ -86,6 +87,7 @@ public class NeoWritePreflightTest {
         .thenReturn(null);
     targets = mockStatic(NeoActionRecordGuard.class);
     fieldFilters = mockStatic(NeoFieldFilter.class);
+    declarative = mockStatic(NeoDeclarativeValidation.class);
     obContext = mockStatic(OBContext.class);
     obContext.when(OBContext::getOBContext).thenReturn(mock(OBContext.class));
 
@@ -109,6 +111,7 @@ public class NeoWritePreflightTest {
     targets.close();
     fieldFilters.close();
     obContext.close();
+    declarative.close();
     Mockito.framework().clearInlineMocks();
   }
 
