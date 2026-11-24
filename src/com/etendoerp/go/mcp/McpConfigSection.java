@@ -69,9 +69,11 @@ final class McpConfigSection {
   private final Set<String> allowedKeys;
   private final Merge merge;
   private final Function<JSONObject, List<String>> validator;
+  private final boolean openKeys;
 
   private McpConfigSection(String name, Set<String> allowedKeys, Merge merge,
-      Function<JSONObject, List<String>> validator) {
+      Function<JSONObject, List<String>> validator, boolean openKeys) {
+    this.openKeys = openKeys;
     this.name = name;
     this.allowedKeys = allowedKeys;
     this.merge = merge;
@@ -99,7 +101,31 @@ final class McpConfigSection {
       throw new IllegalArgumentException(
           "Section '" + name + "': allowedKeys, merge and validator are all required");
     }
-    return new McpConfigSection(name, Collections.unmodifiableSet(allowedKeys), merge, validator);
+    return new McpConfigSection(name, Collections.unmodifiableSet(allowedKeys), merge, validator,
+        false);
+  }
+
+  /**
+   * Declare a section that tolerates keys it does not know (ETP-4558): a newer producer may add a
+   * constraint this server predates, and that must not mark the whole field's configuration
+   * unusable for the other sections. The section's own validator sees every key and decides
+   * what to do with the unknown ones.
+   *
+   * @param name      the JSON key the section lives under
+   * @param knownKeys the keys the section understands
+   * @param merge     how the levels combine
+   * @param validator the section's own validation; never returns {@code null}
+   * @return the registrable section
+   */
+  static McpConfigSection ofOpenKeys(String name, Set<String> knownKeys, Merge merge,
+      Function<JSONObject, List<String>> validator) {
+    McpConfigSection closed = of(name, knownKeys, merge, validator);
+    return new McpConfigSection(name, closed.allowedKeys, merge, validator, true);
+  }
+
+  /** @return whether keys outside {@link #getAllowedKeys()} are tolerated rather than refused */
+  boolean allowsUnknownKeys() {
+    return openKeys;
   }
 
   String getName() {

@@ -4,7 +4,7 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=plataforma [-Pkind=mock|integration|all]
 
-# --- con mocks (658)
+# --- con mocks (660)
 com.etendoerp.go.accounts.AccountDemoExpiryHandlerTest
 com.etendoerp.go.accounts.AccountGroupKeyHandlerTest
 com.etendoerp.go.agentchat.AgentChatConversationsServletTest
@@ -376,6 +376,7 @@ com.etendoerp.go.schemaforge.NeoCsvExportServiceTest
 com.etendoerp.go.schemaforge.NeoCurrencyPrecisionTest
 com.etendoerp.go.schemaforge.NeoCurrencyTotalsTest
 com.etendoerp.go.schemaforge.NeoCustomizedSelectorCheckTest
+com.etendoerp.go.schemaforge.NeoDeclarativeValidationTest
 com.etendoerp.go.schemaforge.NeoDefaultTenantGuardTest
 com.etendoerp.go.schemaforge.NeoDefaultsCascadeHelperTest
 com.etendoerp.go.schemaforge.NeoDefaultsEndpointTest
@@ -450,7 +451,6 @@ com.etendoerp.go.schemaforge.NeoTenantWriteGuardTest
 com.etendoerp.go.schemaforge.NeoUsageEventEndpointTest
 com.etendoerp.go.schemaforge.NeoVectorSearchEndpointTest
 com.etendoerp.go.schemaforge.NeoWriteChannelTest
-com.etendoerp.go.schemaforge.NeoDeclarativeValidationTest
 com.etendoerp.go.schemaforge.NeoWritePreflightTest
 com.etendoerp.go.schemaforge.PopulateSpecProcessTest
 com.etendoerp.go.schemaforge.PrintableDataTest

@@ -43,7 +43,9 @@ public class NeoDeclarativeValidationTest {
     return rules;
   }
 
+  /** The only violation of the field: asserts the list holds exactly one entry (no duplicates). */
   private static String code(Map<String, List<JSONObject>> errors, String key) {
+    assertEquals("exactly one violation for " + key, 1, errors.get(key).size());
     return errors.get(key).get(0).optString("code");
   }
 
@@ -134,5 +136,27 @@ public class NeoDeclarativeValidationTest {
     assertFalse(response.getBody().toString().contains("secret"));
     assertEquals("INVALID_FORMAT",
         error.getJSONObject("fields").getJSONArray("etgoEmail").getJSONObject(0).getString("code"));
+  }
+
+  @Test
+  public void numericEnumComparesNumerically() throws Exception {
+    Map<String, JSONObject> r = rules("n", "{\"enum\":[1,2]}");
+    assertTrue(NeoDeclarativeValidation.evaluate(r, SAME, new JSONObject("{\"n\":1.0}"), true)
+        .isEmpty());
+    assertEquals("INVALID_ENUM", code(NeoDeclarativeValidation.evaluate(r, SAME,
+        new JSONObject("{\"n\":3}"), true), "n"));
+  }
+
+  @Test
+  public void unknownConstraintKeysAreIgnored() throws Exception {
+    assertTrue(NeoDeclarativeValidation.evaluate(rules("x", "{\"pattern\":\"a+\",\"v\":2}"),
+        SAME, new JSONObject("{\"x\":\"zzz\"}"), true).isEmpty());
+  }
+
+  @Test
+  public void lengthCountsUtf16UnitsLikeTheContract() throws Exception {
+    // U+1F600 is two UTF-16 units; the contract documents that semantics.
+    assertEquals("TOO_LONG", code(NeoDeclarativeValidation.evaluate(rules("n", "{\"maxLength\":1}"),
+        SAME, new JSONObject("{\"n\":\"\uD83D\uDE00\"}"), true), "n"));
   }
 }

@@ -298,6 +298,49 @@ class McpEntityConfigTest {
   }
 
   /**
+   * ETP-4558 — the {@code validation} section tolerates keys a newer contract adds: they are ignored
+   * and never make the record's other sections unusable.
+   */
+  @Nested
+  @DisplayName("the validation section")
+  class ValidationSection {
+
+    private SFEntity entityWith(String id, String config) {
+      SFEntity entity = org.mockito.Mockito.mock(SFEntity.class);
+      org.mockito.Mockito.when(entity.getId()).thenReturn(id);
+      org.mockito.Mockito.when(entity.get(McpEntityConfig.PROPERTY_MCP_CONFIG)).thenReturn(config);
+      return entity;
+    }
+
+    @Test
+    @DisplayName("an unknown key is ignored and the other sections stay usable and unchanged")
+    void unknownKeyDoesNotBreakOtherSections() {
+      McpConfigSections.resetForTests();
+
+      McpEntityConfig.Resolved resolved = McpEntityConfig.forEntity(entityWith("VAL-OK",
+          "{\"validation\":{\"maxLength\":5,\"pattern\":\"a+\"},"
+              + "\"defaults\":{\"context\":[\"businessPartner\"],\"reason\":\"r\"}}"));
+
+      assertTrue(resolved.isUsable(), resolved.describeProblems());
+      assertTrue(resolved.section("defaults").isPresent());
+      assertEquals(5, resolved.section("validation").get().optInt("maxLength"));
+      McpConfigSections.resetForTests();
+    }
+
+    @Test
+    @DisplayName("a wrongly typed known key makes the section unusable")
+    void malformedKnownKeyIsRefused() {
+      McpConfigSections.resetForTests();
+
+      McpEntityConfig.Resolved bad = McpEntityConfig.forEntity(entityWith("VAL-BAD",
+          "{\"validation\":{\"maxLength\":\"five\"}}"));
+
+      assertFalse(bad.isUsable());
+      McpConfigSections.resetForTests();
+    }
+  }
+
+  /**
    * ETP-5715 — the {@code pdf} section is registered too: a window declared supplier-document stays
    * published, and a misspelt key or an unknown {@code source} value unpublishes the entity like any
    * other bad section instead of silently falling back to "rendered".

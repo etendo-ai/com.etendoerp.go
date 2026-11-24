@@ -24,6 +24,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.UnaryOperator;
 import java.util.regex.Pattern;
 
@@ -69,6 +71,20 @@ import com.etendoerp.go.mcp.McpFieldValidationRules;
  * The rejected value is never echoed or logged.
  */
 final class NeoDeclarativeValidation {
+
+  private static final String K_MIN_LENGTH = "minLength";
+  private static final String K_MAX_LENGTH = "maxLength";
+  private static final String K_MINIMUM = "minimum";
+  private static final String K_MAXIMUM = "maximum";
+  private static final String K_REQUIRED_KEY = "required";
+  private static final String K_FORMAT = "format";
+  private static final String K_ENUM = "enum";
+  private static final String K_ALLOWED_SCHEMES = "allowedSchemes";
+  private static final String K_EXPECTED = "expected";
+  private static final String C_INVALID_TYPE = "INVALID_TYPE";
+  private static final String C_REQUIRED = "REQUIRED";
+  /** Unknown formats already reported: logged once per format, not once per write. */
+  private static final Set<String> REPORTED_FORMATS = ConcurrentHashMap.newKeySet();
 
   static final String CODE_VALIDATION_FAILED = "VALIDATION_FAILED";
 
@@ -129,14 +145,17 @@ final class NeoDeclarativeValidation {
       String apiKey = rule.getKey();
       List<JSONObject> found = new ArrayList<>();
       boolean present = false;
-      for (String key : new String[] { apiKey, propResolver.apply(apiKey) }) {
+      String propName = propResolver.apply(apiKey);
+      String[] candidates = propName == null || propName.equals(apiKey)
+          ? new String[] { apiKey } : new String[] { apiKey, propName };
+      for (String key : candidates) {
         if (source.has(key)) {
           present = true;
           checkValue(rule.getValue(), source.opt(key), found);
         }
       }
-      if (!present && create && rule.getValue().optBoolean("required", false)) {
-        found.add(error("REQUIRED"));
+      if (!present && create && rule.getValue().optBoolean(K_REQUIRED_KEY, false)) {
+        found.add(error(C_REQUIRED));
       }
       if (!found.isEmpty()) {
         errors.put(apiKey, found);
@@ -149,8 +168,8 @@ final class NeoDeclarativeValidation {
     boolean blank = value == null || JSONObject.NULL.equals(value)
         || (value instanceof String && ((String) value).trim().isEmpty());
     if (blank) {
-      if (rule.optBoolean("required", false)) {
-        out.add(error("REQUIRED"));
+      if (rule.optBoolean(K_REQUIRED_KEY, false)) {
+        out.add(error(C_REQUIRED));
       }
       return;
     }
@@ -161,68 +180,77 @@ final class NeoDeclarativeValidation {
   }
 
   private static void checkLength(JSONObject rule, Object value, List<JSONObject> out) {
-    if (!rule.has("minLength") && !rule.has("maxLength")) {
+    if (!rule.has(K_MIN_LENGTH) && !rule.has(K_MAX_LENGTH)) {
       return;
     }
     if (!(value instanceof String)) {
-      out.add(error("INVALID_TYPE", "expected", "string"));
+      out.add(error(C_INVALID_TYPE, K_EXPECTED, "string"));
       return;
     }
-    int length = ((String) value).codePointCount(0, ((String) value).length());
-    if (rule.has("minLength") && length < rule.optLong("minLength")) {
-      out.add(error("TOO_SHORT", "minLength", rule.opt("minLength")));
+    // UTF-16 code units, the semantics the contract documents (JS String.length / AD fieldlength).
+    int length = ((String) value).length();
+    if (rule.has(K_MIN_LENGTH) && length < rule.optLong(K_MIN_LENGTH)) {
+      out.add(error("TOO_SHORT", K_MIN_LENGTH, rule.opt(K_MIN_LENGTH)));
     }
-    if (rule.has("maxLength") && length > rule.optLong("maxLength")) {
-      out.add(error("TOO_LONG", "maxLength", rule.opt("maxLength")));
+    if (rule.has(K_MAX_LENGTH) && length > rule.optLong(K_MAX_LENGTH)) {
+      out.add(error("TOO_LONG", K_MAX_LENGTH, rule.opt(K_MAX_LENGTH)));
     }
   }
 
   private static void checkRange(JSONObject rule, Object value, List<JSONObject> out) {
-    if (!rule.has("minimum") && !rule.has("maximum")) {
+    if (!rule.has(K_MINIMUM) && !rule.has(K_MAXIMUM)) {
       return;
     }
     BigDecimal number = asNumber(value);
     if (number == null) {
-      out.add(error("INVALID_TYPE", "expected", "number"));
+      out.add(error(C_INVALID_TYPE, K_EXPECTED, "number"));
       return;
     }
-    if (rule.has("minimum") && number.compareTo(decimal(rule.opt("minimum"))) < 0) {
-      out.add(error("BELOW_MINIMUM", "minimum", rule.opt("minimum")));
+    if (rule.has(K_MINIMUM) && number.compareTo(decimal(rule.opt(K_MINIMUM))) < 0) {
+      out.add(error("BELOW_MINIMUM", K_MINIMUM, rule.opt(K_MINIMUM)));
     }
-    if (rule.has("maximum") && number.compareTo(decimal(rule.opt("maximum"))) > 0) {
-      out.add(error("ABOVE_MAXIMUM", "maximum", rule.opt("maximum")));
+    if (rule.has(K_MAXIMUM) && number.compareTo(decimal(rule.opt(K_MAXIMUM))) > 0) {
+      out.add(error("ABOVE_MAXIMUM", K_MAXIMUM, rule.opt(K_MAXIMUM)));
     }
   }
 
   private static void checkEnum(JSONObject rule, Object value, List<JSONObject> out) {
-    JSONArray allowed = rule.optJSONArray("enum");
+    JSONArray allowed = rule.optJSONArray(K_ENUM);
     if (allowed == null) {
       return;
     }
     for (int i = 0; i < allowed.length(); i++) {
-      if (String.valueOf(allowed.opt(i)).equals(String.valueOf(value))) {
+      if (sameValue(allowed.opt(i), value)) {
         return;
       }
     }
     out.add(error("INVALID_ENUM", "allowed", allowed));
   }
 
+  /** Numbers compare numerically (1 equals 1.0); anything else by its text. */
+  private static boolean sameValue(Object allowed, Object value) {
+    if (allowed instanceof Number && value instanceof Number) {
+      return decimal(allowed).compareTo(decimal(value)) == 0;
+    }
+    return String.valueOf(allowed).equals(String.valueOf(value));
+  }
+
   private static void checkFormatAndScheme(JSONObject rule, Object value, List<JSONObject> out) {
-    String format = rule.optString("format", null);
-    JSONArray schemes = rule.optJSONArray("allowedSchemes");
+    String format = rule.optString(K_FORMAT, null);
+    JSONArray schemes = rule.optJSONArray(K_ALLOWED_SCHEMES);
     if (format == null && schemes == null) {
       return;
     }
     if (!(value instanceof String)) {
-      out.add(error("INVALID_TYPE", "expected", "string"));
+      out.add(error(C_INVALID_TYPE, K_EXPECTED, "string"));
       return;
     }
     String text = ((String) value).trim();
     if (format != null && !matchesFormat(format, text)) {
-      out.add(error("INVALID_FORMAT", "format", format));
+      out.add(error("INVALID_FORMAT", K_FORMAT, format));
     }
     if (schemes != null && !schemeAllowed(text, schemes)) {
-      out.add(error("DISALLOWED_SCHEME", "allowedSchemes", schemes));
+      out.add(error("DISALLOWED_SCHEME", K_ALLOWED_SCHEMES, schemes));
     }
   }
 
@@ -239,8 +267,10 @@ final class NeoDeclarativeValidation {
       case "url":
         return parseUri(text) != null;
       default:
-        log.warn("Declarative validation: unknown format '{}' is not enforced",
-            StringUtils.abbreviate(format, 40));
+        if (REPORTED_FORMATS.add(format)) {
+          log.warn("Declarative validation: unknown format '{}' is not enforced",
+              StringUtils.abbreviate(format, 40));
+        }
         return true;
     }
   }

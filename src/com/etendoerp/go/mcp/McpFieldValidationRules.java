@@ -23,7 +23,9 @@ import java.util.Map;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
+import org.openbravo.dal.core.OBContext;
 import org.hibernate.criterion.Restrictions;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
@@ -55,6 +57,18 @@ public final class McpFieldValidationRules {
     if (sfEntity == null) {
       return rules;
     }
+    // ETGO_SF_FIELD is system-level metadata: read it in admin mode, or a tenant caller's client/org
+    // filter hides every row and the check would pass silently.
+    OBContext.setAdminMode(false);
+    try {
+      collect(sfEntity, rules);
+    } finally {
+      OBContext.restorePreviousMode();
+    }
+    return rules;
+  }
+
+  private static void collect(SFEntity sfEntity, Map<String, JSONObject> rules) {
     OBCriteria<SFField> crit = OBDal.getInstance().createCriteria(SFField.class);
     crit.add(Restrictions.eq(SFField.PROPERTY_ETGOSFENTITY + ".id", sfEntity.getId()));
     crit.add(Restrictions.eq(SFField.PROPERTY_ISACTIVE, true));
@@ -72,10 +86,12 @@ public final class McpFieldValidationRules {
         continue;
       }
       resolved.section(McpValidationSection.NAME).ifPresent(body -> {
-        rules.put(apiKey, hasDefault(field) ? withoutRequired(body) : body);
+        JSONObject effective = hasDefault(field) ? withoutRequired(body) : body;
+        if (effective != null) {
+          rules.put(apiKey, effective);
+        }
       });
     }
-    return rules;
   }
 
   private static boolean hasDefault(SFField field) {
@@ -86,10 +102,12 @@ public final class McpFieldValidationRules {
   private static JSONObject withoutRequired(JSONObject body) {
     try {
       JSONObject copy = new JSONObject(body.toString());
-      copy.remove("required");
+      copy.remove(McpValidationSection.REQUIRED);
       return copy;
-    } catch (org.codehaus.jettison.json.JSONException e) {
-      return body;
+    } catch (JSONException e) {
+      // Never keep a "required" the field's default makes meaningless: skip the rule instead.
+      log.warn("Declarative validation skipped for a server-defaulted field: unreadable payload");
+      return null;
     }
   }
 }

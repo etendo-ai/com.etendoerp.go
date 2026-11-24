@@ -17,9 +17,13 @@
 package com.etendoerp.go.mcp;
 
 import java.util.ArrayList;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 
@@ -42,12 +46,25 @@ final class McpValidationSection {
 
   static final String NAME = "validation";
 
-  private static final Set<String> NUMBER_KEYS = Set.of("minLength", "maxLength", "minimum", "maximum");
-  private static final Set<String> ARRAY_KEYS = Set.of("enum", "allowedSchemes");
-  private static final Set<String> ALLOWED_KEYS = Set.of("required", "minLength", "maxLength",
-      "minimum", "maximum", "format", "enum", "allowedSchemes");
+  static final String REQUIRED = "required";
+  static final String MIN_LENGTH = "minLength";
+  static final String MAX_LENGTH = "maxLength";
+  static final String MINIMUM = "minimum";
+  static final String MAXIMUM = "maximum";
+  static final String FORMAT = "format";
+  static final String ENUM = "enum";
+  static final String ALLOWED_SCHEMES = "allowedSchemes";
 
-  private static final McpConfigSection DECLARATION = McpConfigSection.of(NAME, ALLOWED_KEYS,
+  private static final Logger log = LogManager.getLogger(McpValidationSection.class);
+  /** Unknown keys already reported, so a newer contract logs once per key, not once per read. */
+  private static final Set<String> REPORTED_UNKNOWN = ConcurrentHashMap.newKeySet();
+
+  private static final Set<String> NUMBER_KEYS = Set.of(MIN_LENGTH, MAX_LENGTH, MINIMUM, MAXIMUM);
+  private static final Set<String> ARRAY_KEYS = Set.of(ENUM, ALLOWED_SCHEMES);
+  private static final Set<String> ALLOWED_KEYS = Set.of(REQUIRED, MIN_LENGTH, MAX_LENGTH,
+      MINIMUM, MAXIMUM, FORMAT, ENUM, ALLOWED_SCHEMES);
+
+  private static final McpConfigSection DECLARATION = McpConfigSection.ofOpenKeys(NAME, ALLOWED_KEYS,
       McpConfigSection.Merge.REPLACE, McpValidationSection::validate);
 
   private McpValidationSection() {
@@ -69,7 +86,8 @@ final class McpValidationSection {
       problems.add("the 'validation' section is empty - remove it or declare a constraint");
       return problems;
     }
-    if (body.has("required") && !(body.opt("required") instanceof Boolean)) {
+    reportUnknownKeys(body);
+    if (body.has(REQUIRED) && !(body.opt(REQUIRED) instanceof Boolean)) {
       problems.add("section 'validation': 'required' must be a boolean");
     }
     for (String key : NUMBER_KEYS) {
@@ -77,8 +95,8 @@ final class McpValidationSection {
         problems.add("section 'validation': '" + key + "' must be a number");
       }
     }
-    if (body.has("format") && (!(body.opt("format") instanceof String)
-        || ((String) body.opt("format")).trim().isEmpty())) {
+    if (body.has(FORMAT) && (!(body.opt(FORMAT) instanceof String)
+        || ((String) body.opt(FORMAT)).trim().isEmpty())) {
       problems.add("section 'validation': 'format' must be a non-empty string");
     }
     for (String key : ARRAY_KEYS) {
@@ -90,5 +108,15 @@ final class McpValidationSection {
       }
     }
     return problems;
+  }
+
+  /** Keys this server does not know are ignored (a newer contract), logged once per key. */
+  private static void reportUnknownKeys(JSONObject body) {
+    for (Iterator<?> it = body.keys(); it.hasNext();) {
+      String key = String.valueOf(it.next());
+      if (!ALLOWED_KEYS.contains(key) && REPORTED_UNKNOWN.add(key)) {
+        log.warn("MCP_CONFIG 'validation' has an unknown constraint '{}': ignored", key);
+      }
+    }
   }
 }
