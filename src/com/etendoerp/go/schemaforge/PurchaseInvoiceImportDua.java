@@ -33,9 +33,10 @@ import org.openbravo.model.common.invoice.Invoice;
  * import tax lines. The SII invoice type F5 / LC only says how SII reports it; for an organization
  * adopted to SII the SPA sets F5 when the check is on.
  *
- * <p>Header rule ({@link #checkHeaderWrite}): with the check on and Múltiple DUA off, the invoice
- * needs DUA and Fecha DUA — the rule Classic ({@code FacturasEventHandler.checkDUAFields}) applies
- * to F5 / LC only. Turning the check on while the {@code sii-import-dua} flag is off is refused with
+ * <p>An SII invoice type F5 / LC counts as checked ({@link #isImportDua}), so a legacy or Classic
+ * import without the check follows the same rules. Header rule ({@link #checkHeaderWrite}): on an
+ * import and with Múltiple DUA off, the invoice needs DUA and Fecha DUA — the rule Classic
+ * ({@code FacturasEventHandler.checkDUAFields}) applies to F5 / LC only. Turning the check on while the {@code sii-import-dua} flag is off is refused with
  * {@link SiiImportDuaFlag#featureDisabled()}. Called explicitly by
  * {@link PurchaseInvoiceHeaderHandler}, so it holds on REST single, batch and MCP alike.
  */
@@ -46,23 +47,36 @@ final class PurchaseInvoiceImportDua {
   static final String FIELD_MULTI_DUA = Invoice.PROPERTY_AEATSIIMULTIDUA;
   static final String FIELD_DUA = Invoice.PROPERTY_AEATSIIDUA;
   static final String FIELD_DUA_DATE = Invoice.PROPERTY_AEATSIIFECHADUA;
+  static final String FIELD_SII_TYPE = Invoice.PROPERTY_AEATSIICLAVETIPOFC;
 
   static final String MSG_DUA_REQUIRED = "ETGO_PurchaseInvoiceImportDuaRequired";
 
   private PurchaseInvoiceImportDua() {
   }
 
-  /** Whether the stored invoice has the "Importación con DUA" check on. */
+  /**
+   * Whether the stored invoice is an import with DUA: the "Importación con DUA" check on, or an SII
+   * invoice type F5 / LC (a legacy or Classic invoice without the check counts as checked).
+   */
   static boolean isImportDua(Invoice invoice) {
     if (invoice == null) {
       return false;
     }
+    return storedCheck(invoice) || isImportKey(invoice.getAeatsiiClaveTipoFc());
+  }
+
+  /** The stored check alone. */
+  private static boolean storedCheck(Invoice invoice) {
     try {
       return isYes(invoice.get(FIELD_IMPORT_DUA));
     } catch (RuntimeException e) {
       // The column is not in the runtime model yet (update.database pending): treat as off.
       return false;
     }
+  }
+
+  static boolean isImportKey(Object key) {
+    return "F5".equals(key) || "LC".equals(key);
   }
 
   /**
@@ -113,7 +127,10 @@ final class PurchaseInvoiceImportDua {
 
     /** The body's value when it names the field (a null or blank clears it), else the stored one. */
     static HeaderState of(JSONObject body, Invoice stored) {
-      boolean importDua = flag(body, FIELD_IMPORT_DUA, isImportDua(stored));
+      boolean check = flag(body, FIELD_IMPORT_DUA, stored != null && storedCheck(stored));
+      Object type = body != null && body.has(FIELD_SII_TYPE) ? body.opt(FIELD_SII_TYPE)
+          : stored == null ? null : stored.getAeatsiiClaveTipoFc();
+      boolean importDua = check || isImportKey(type);
       boolean multiDua = flag(body, FIELD_MULTI_DUA,
           stored != null && Boolean.TRUE.equals(stored.isAeatsiiMultiDua()));
       boolean hasDua = present(body, FIELD_DUA,

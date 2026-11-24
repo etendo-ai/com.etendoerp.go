@@ -27,6 +27,8 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
+import java.util.List;
+
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -35,14 +37,18 @@ import org.mockito.Mockito;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.common.businesspartner.Location;
+import org.openbravo.model.common.enterprise.Organization;
+import org.openbravo.model.common.enterprise.OrganizationInformation;
+import org.openbravo.model.common.geography.Country;
+import org.openbravo.model.common.geography.Region;
 import org.openbravo.model.common.invoice.Invoice;
 import org.openbravo.module.sii.utils.SIIUtils;
 
 /**
  * Unit tests for {@link PurchaseInvoiceSiiDeferredVat}: the {@code siiDeferredVat} action of the
  * purchase-invoice header, which tells the SPA whether to offer the compensatory import-tax line.
- * {@code deferredVat} is true only for an invoice with the "Importación con DUA" check on whose
- * supplier address the SII module classifies as deferred VAT — never depending on the SII
+ * {@code deferredVat} is true only for an import with DUA (the check, or type F5/LC) of an IVA
+ * organization whose supplier address the SII module classifies as deferred VAT — never depending on the SII
  * configuration (adoption, tax type, invoice type).
  *
  * @covers com.etendoerp.go.schemaforge.PurchaseInvoiceSiiDeferredVat
@@ -161,6 +167,46 @@ public class PurchaseInvoiceSiiDeferredVatTest {
 
     assertTrue(answer());
     siiUtils.verify(() -> SIIUtils.getSiiConfigFromOrg(any()), org.mockito.Mockito.never());
+  }
+
+  @Test
+  public void aLegacyF5ImportWithoutTheCheckIsTrue() throws Exception {
+    when(invoice.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn(false);
+    when(invoice.getAeatsiiClaveTipoFc()).thenReturn("F5");
+
+    assertTrue(answer());
+  }
+
+  @Test
+  public void anIgicOrganizationIsFalse() throws Exception {
+    Organization org = orgIn("ES", "35");
+    when(invoice.getOrganization()).thenReturn(org);
+
+    assertFalse(answer());
+  }
+
+  @Test
+  public void aPeninsulaOrganizationIsTrue() throws Exception {
+    Organization org = orgIn("ES", "28");
+    when(invoice.getOrganization()).thenReturn(org);
+
+    assertTrue(answer());
+  }
+
+  private static Organization orgIn(String countryCode, String regionCode) {
+    Organization org = mock(Organization.class);
+    OrganizationInformation info = mock(OrganizationInformation.class);
+    org.openbravo.model.common.geography.Location address =
+        mock(org.openbravo.model.common.geography.Location.class);
+    Country country = mock(Country.class);
+    Region region = mock(Region.class);
+    when(org.getOrganizationInformationList()).thenReturn(List.of(info));
+    when(info.getLocationAddress()).thenReturn(address);
+    when(address.getCountry()).thenReturn(country);
+    when(address.getRegion()).thenReturn(region);
+    when(country.getISOCountryCode()).thenReturn(countryCode);
+    when(region.getEsregRegionCode()).thenReturn(regionCode);
+    return org;
   }
 
   @Test

@@ -17,6 +17,9 @@
 
 package com.etendoerp.go.schemaforge;
 
+import java.util.List;
+import java.util.Set;
+
 import javax.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
@@ -26,6 +29,9 @@ import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.common.enterprise.Organization;
+import org.openbravo.model.common.enterprise.OrganizationInformation;
+import org.openbravo.model.common.geography.Location;
 import org.openbravo.model.common.invoice.Invoice;
 import org.openbravo.module.sii.utils.SIIUtils;
 
@@ -43,7 +49,9 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  * {@link SIIUtils#isDeferredVATInvoice}, which the Classic send uses to pick the deferred-VAT
  * registry builder. It does NOT depend on the SII configuration (adoption, tax type, invoice type):
  * an organization that imports but does not file SII from Etendo gets the same answer. That method
- * reads only the partner address; it never touches {@code AEATSIIConfig}. Read-only; works on a
+ * reads only the partner address; it never touches {@code AEATSIIConfig}. IVA only: an organization
+ * located in Canarias (IGIC) or Ceuta / Melilla (IPSI) answers {@code false}
+ * ({@link #isIvaOrganization}, from the organization's own address, not from the SII config). Read-only; works on a
  * draft. The action keeps its historic {@code sii} name, which the SPA and agents already call.
  *
  * <p>Called explicitly by {@link PurchaseInvoiceHeaderHandler}, never from shared code.
@@ -54,15 +62,14 @@ final class PurchaseInvoiceSiiDeferredVat {
 
   static final String KEY_DEFERRED_VAT = "deferredVat";
 
-  private static final String KEY_F5 = "F5";
-  private static final String KEY_LC = "LC";
-
   private static final Logger log = LogManager.getLogger(PurchaseInvoiceSiiDeferredVat.class);
 
   /** Published for agents next to the header's other actions; served over GET only. */
   static final NeoActionContract CONTRACT = NeoActionContract.read(ACTION_NAME,
-      "Whether this purchase invoice is an import with DUA (etgoImportDua=true) of deferred VAT, "
-          + "i.e. its supplier is outside the EU or in Canarias, Ceuta or Melilla: {deferredVat}. "
+      "Whether this purchase invoice is an import with DUA (etgoImportDua=true, or invoice type "
+          + "F5/LC) of deferred VAT for an IVA organization (not located in Canarias, Ceuta or "
+          + "Melilla), i.e. its supplier is outside the EU or in Canarias, Ceuta or Melilla: "
+          + "{deferredVat}. "
           + "Independent of SII. When true, each import tax needs a compensatory manual "
           + "tax row (the matching '=0%' import tax, base = minus that tax's base, tax amount 0). "
           + "Read-only; works on a draft.")
@@ -108,18 +115,43 @@ final class PurchaseInvoiceSiiDeferredVat {
     }
   }
 
-  /** Marked as an import with DUA and a supplier address of deferred VAT. No SII config needed. */
+  /**
+   * Spanish provinces whose indirect tax is not IVA: Las Palmas (35) and Santa Cruz de Tenerife (38)
+   * pay IGIC, Ceuta (51) and Melilla (52) IPSI. The same region codes the SII module uses.
+   */
+  static final Set<String> NON_IVA_REGION_CODES = Set.of("35", "38", "51", "52");
+
+  /**
+   * An import with DUA (the check, or SII type F5 / LC), of an IVA organization, with a supplier
+   * address of deferred VAT. No SII config needed.
+   */
   static boolean isDeferredVatImport(Invoice invoice) {
     OBContext.setAdminMode(true);
     try {
-      return invoice != null && PurchaseInvoiceImportDua.isImportDua(invoice) && isDeferredVat(invoice);
+      return invoice != null && PurchaseInvoiceImportDua.isImportDua(invoice)
+          && isIvaOrganization(invoice.getOrganization()) && isDeferredVat(invoice);
     } finally {
       OBContext.restorePreviousMode();
     }
   }
 
-  static boolean isImportKey(String key) {
-    return KEY_F5.equals(key) || KEY_LC.equals(key);
+  /**
+   * Whether the organization declares IVA, judged from its own address
+   * ({@code AD_OrgInfo.C_Location_ID}) and never from {@code AEATSIIConfig}, so it also holds for an
+   * organization that does not file SII: an address in Canarias (IGIC) or Ceuta / Melilla (IPSI) is
+   * not IVA. No address, or no region, is read as IVA (the common case).
+   */
+  static boolean isIvaOrganization(Organization organization) {
+    if (organization == null) {
+      return true;
+    }
+    List<OrganizationInformation> infos = organization.getOrganizationInformationList();
+    Location address = infos == null || infos.isEmpty() ? null : infos.get(0).getLocationAddress();
+    if (address == null || address.getRegion() == null || address.getCountry() == null
+        || !"ES".equals(address.getCountry().getISOCountryCode())) {
+      return true;
+    }
+    return !NON_IVA_REGION_CODES.contains(address.getRegion().getEsregRegionCode());
   }
 
   private static boolean isDeferredVat(Invoice invoice) {

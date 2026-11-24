@@ -179,8 +179,7 @@ public class PurchaseInvoiceTaxExtension implements NeoHandler {
    */
   static boolean requiresLineDua(Invoice invoice) {
     return Boolean.TRUE.equals(invoice.isAeatsiiMultiDua())
-        && (PurchaseInvoiceImportDua.isImportDua(invoice)
-            || PurchaseInvoiceSiiDeferredVat.isImportKey(invoice.getAeatsiiClaveTipoFc()));
+        && PurchaseInvoiceImportDua.isImportDua(invoice);
   }
 
   /**

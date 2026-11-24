@@ -126,6 +126,21 @@ public class PurchaseInvoiceImportDuaTest {
   }
 
   @Test
+  public void aLegacyF5WithoutTheCheckNeedsItsDua() throws Exception {
+    when(stored.getAeatsiiClaveTipoFc()).thenReturn("F5");
+
+    assertRefused(PurchaseInvoiceImportDua.checkHeaderWrite(
+        crud("PATCH", INVOICE_ID, new JSONObject().put("description", "x"))), 400);
+  }
+
+  @Test
+  public void settingTypeLcWithoutDuaIsRefused() throws Exception {
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_SII_TYPE, "LC");
+
+    assertRefused(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)), 400);
+  }
+
+  @Test
   public void turningTheCheckOnWhileTheFlagIsOffIs403() throws Exception {
     flag.when(SiiImportDuaFlag::isEnabled).thenReturn(false);
     JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
