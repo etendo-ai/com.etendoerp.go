@@ -50,7 +50,6 @@ import org.mockito.MockedStatic;
 import org.openbravo.base.model.ModelProvider;
 import org.openbravo.dal.core.DalThreadCleaner;
 import org.openbravo.dal.core.OBContext;
-import org.openbravo.dal.core.SessionHandler;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.User;
@@ -357,7 +356,7 @@ class NeoPrintAfterCompleteTest {
   }
 
   @Test
-  @DisplayName("ETP-6399 — a cleanup that fails does not reach the caller and still drops the state")
+  @DisplayName("ETP-6399 — a failing cleanup never reaches the caller; admin mode is cleared")
   void failingCleanupDoesNotPropagate() {
     NeoPrintAfterComplete.Job job = NeoPrintAfterComplete.jobFor(entity, RECORD,
         new NeoPrintAfterComplete.Caller("USER1", "ROLE1", "CLIENT1", "ORG1", "es_ES"));
@@ -369,7 +368,6 @@ class NeoPrintAfterCompleteTest {
 
     try (MockedStatic<OBContext> contextMock = mockStatic(OBContext.class);
         MockedStatic<OBDal> dalMock = mockStatic(OBDal.class);
-        MockedStatic<SessionHandler> handlerMock = mockStatic(SessionHandler.class);
         MockedStatic<DalThreadCleaner> cleanerMock = mockStatic(DalThreadCleaner.class)) {
       dalMock.when(OBDal::getInstance).thenReturn(dal);
       cleanerMock.when(DalThreadCleaner::getInstance).thenReturn(cleaner);
@@ -377,8 +375,6 @@ class NeoPrintAfterCompleteTest {
       assertEquals(NeoPrintableRenderer.Outcome.NOT_PRINTABLE, NeoPrintAfterComplete.run(job));
 
       verify(cleaner, times(1)).cleanWithRollback();
-      handlerMock.verify(SessionHandler::deleteSessionHandler, times(1));
-      contextMock.verify(() -> OBContext.setOBContext((OBContext) null), times(1));
       contextMock.verify(OBContext::clearAdminModeStack, times(1));
     }
   }
@@ -484,6 +480,23 @@ class NeoPrintAfterCompleteTest {
   }
 
   @Test
+  @DisplayName("ETP-6399 — the read-only pool's session is closed too before the render")
+  void readOnlySessionClosesBeforeTheRender() {
+    NeoPrintAfterComplete.Job job = NeoPrintAfterComplete.jobFor(entity, RECORD,
+        new NeoPrintAfterComplete.Caller("USER1", "ROLE1", "CLIENT1", "ORG1", "es_ES"));
+
+    runTheWorker(job, NeoDocumentPdf.Status.MISSING, NeoDocumentPdf.Status.MISSING,
+        NeoPrintableRenderer.Outcome.STORED, NeoPrintableRenderer.Outcome.STORED, usage -> { },
+        (dal, session, renderer) -> {
+          InOrder order = inOrder(dal, readOnlyDal, renderer);
+          order.verify(dal).commitAndClose();
+          order.verify(readOnlyDal).commitAndClose();
+          order.verify(renderer).renderPdf(any(), any());
+          verify(readOnlyDal, times(1)).commitAndClose();
+        });
+  }
+
+  @Test
   @DisplayName("ETP-6418 — a PDF stored while rendering is ALREADY_CURRENT and nothing is stored")
   void pdfFoundAfterTheRenderIsNotStoredAgain() {
     NeoPrintAfterComplete.Job job = NeoPrintAfterComplete.jobFor(entity, RECORD,
@@ -498,6 +511,8 @@ class NeoPrintAfterCompleteTest {
   /** What the stubbed {@code prepare} says (null: ready to render) and {@code renderPdf} returns. */
   private NeoPrintableRenderer.Outcome preparedOutcome;
   private byte[] renderedPdf = new byte[] { 1 };
+  /** The read-only pool's {@link OBDal} the worker sees ({@code OBDal.getReadOnlyInstance()}). */
+  private final OBDal readOnlyDal = mock(OBDal.class);
 
   @Test
   @DisplayName("ETP-6418 — a failed render is FAILED: one commit, no lock, no store")
@@ -570,6 +585,7 @@ class NeoPrintAfterCompleteTest {
               when(renderer.store(any(), any())).thenReturn(storeOutcome);
             })) {
       dalMock.when(OBDal::getInstance).thenReturn(dal);
+      dalMock.when(OBDal::getReadOnlyInstance).thenReturn(readOnlyDal);
       modelMock.when(ModelProvider::getInstance).thenReturn(modelProvider);
       pdfMock.when(() -> NeoDocumentPdf.resolveStored(any(), any())).thenReturn(first, second);
 

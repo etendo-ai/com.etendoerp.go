@@ -38,7 +38,6 @@ import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
 import org.openbravo.dal.core.DalThreadCleaner;
 import org.openbravo.dal.core.OBContext;
-import org.openbravo.dal.core.SessionHandler;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.datamodel.Table;
 
@@ -560,8 +559,11 @@ public final class NeoPrintAfterComplete {
     }
     String document = NeoPdfSourceConfig.printDocumentOf(entity);
     // The manifest and jsreport are slow HTTP calls: no transaction (no idle-in-transaction
-    // connection, no advisory lock) may be open meanwhile. The reads above are committed first.
+    // connection, no advisory lock) may be open meanwhile. The reads above are committed first, in
+    // both pools: the stored-PDF check reads the branding through the read-only pool, and that
+    // session would otherwise keep its connection (and its transaction) for the whole render.
     OBDal.getInstance().commitAndClose();
+    OBDal.getReadOnlyInstance().commitAndClose();
     byte[] pdf = renderer.renderPdf(prepared, job.language);
     if (pdf.length == 0) {
       return NeoPrintableRenderer.Outcome.FAILED;
@@ -641,25 +643,16 @@ public final class NeoPrintAfterComplete {
     }
   }
 
+  /**
+   * The cleanup of a request thread, as {@code IsolatedDalRead} does it: the cleaner closes every
+   * session of the thread and, even when a close fails, drops the session handler and the context
+   * in its own {@code finally}; the admin-mode stack is the only state it leaves behind.
+   */
   private static void cleanThreadQuietly() {
     try {
       DalThreadCleaner.getInstance().cleanWithRollback();
     } catch (RuntimeException e) {
       log.debug("[print] could not clean the worker thread: {}", e.getClass().getSimpleName());
-      // The cleaner may have failed before dropping the handler and the context (a rollback on a
-      // closed connection): the reused thread must not keep either.
-      try {
-        SessionHandler.deleteSessionHandler();
-      } catch (RuntimeException inner) {
-        log.debug("[print] could not drop the worker session handler: {}",
-            inner.getClass().getSimpleName());
-      }
-      try {
-        OBContext.setOBContext((OBContext) null);
-      } catch (RuntimeException inner) {
-        log.debug("[print] could not clear the worker context: {}",
-            inner.getClass().getSimpleName());
-      }
     } finally {
       OBContext.clearAdminModeStack();
     }
