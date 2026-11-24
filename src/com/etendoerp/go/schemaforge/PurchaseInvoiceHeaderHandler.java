@@ -30,6 +30,7 @@ import org.openbravo.model.common.invoice.Invoice;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
@@ -62,6 +63,7 @@ import org.openbravo.base.structure.BaseOBObject;
  *   <li>{@code registerPayment} / {@code invoicePayments} / {@code invoiceAccounts} → {@link RegisterPaymentOutHandler}</li>
  *   <li>{@code Em_Aeatsii_Send} → {@link SiiSendHandler}</li>
  *   <li>{@code Em_Tbai_Xmlgenerator} → {@link TbaiXmlgeneratorHandler}</li>
+ *   <li>{@code siiDeferredVat} (GET) → {@link PurchaseInvoiceSiiDeferredVat} (ETP-6284)</li>
  *   <li>{@code createGoodsReceipt} → {@link FollowUpActionHandler} with a {@link FollowUpFlow}
  *       of {@link InvoicePendingResolver} + {@link InOutFollowUpCreator} ({@code PURCHASE}): the
  *       draft goods receipt for the still-pending quantities (ETP-5576)</li>
@@ -144,6 +146,18 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
   }
 
   /**
+   * {@inheritDoc} ETP-6365: the header currency is picked from {@code currencyOptions} (routed by this header),
+   * so it is accepted when that action would list it ({@link
+   * CurrencyOptionsHandler#offersHeaderCurrency}) rather than through the generic
+   * {@code Currency} selector and its EUR/USD/GBP allowlist.
+   */
+  @Override
+  public Optional<Boolean> offersReference(String propertyName, String candidateId,
+      Map<String, String> mergedRecord) {
+    return CurrencyOptionsHandler.offersHeaderCurrency(propertyName, candidateId, mergedRecord);
+  }
+
+  /**
    * The actions this header serves through its delegates, declared for agents (ETP-5558): the
    * invoice payment actions, {@code currencyOptions}, the follow-up document actions
    * ({@link FollowUpSupport#actionContracts()}, ETP-5576), {@code post} / {@code unpost}
@@ -168,6 +182,8 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
     // rectifies instead (the window's "Import from return" / "Import from source invoice").
     contracts.putAll(ImportInOutLinesIntoInvoiceHandler.returnContracts(false));
     contracts.putAll(ImportOriginInvoiceLinesHandler.contracts(false));
+    // ETP-6284: read-only deferred-VAT answer (offers the compensatory import-tax line).
+    contracts.put(PurchaseInvoiceSiiDeferredVat.ACTION_NAME, PurchaseInvoiceSiiDeferredVat.CONTRACT);
     return contracts;
   }
 
@@ -200,10 +216,15 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
 
   @Override
   public NeoResponse handle(NeoContext context) {
-    NeoResponse paymentMethodSelector = PaymentMethodSelectorSupport.handleIfPaymentMethodSelector(context,
-        PaymentMethodSelectorSupport.DirectionFallback.WINDOW);
-    if (paymentMethodSelector != null) {
-      return paymentMethodSelector;
+    // ETP-6284: a read-only GET action, served before anything with side effects runs.
+    NeoResponse siiDeferredVat = PurchaseInvoiceSiiDeferredVat.handleIfDeferredVat(context);
+    if (siiDeferredVat != null) {
+      return siiDeferredVat;
+    }
+    // ETP-6365: the header's own selectors — payment method, and the currency currencyOptions lists
+    NeoResponse ownSelector = HeaderCurrencySelector.handleIfHeaderSelector(context);
+    if (ownSelector != null) {
+      return ownSelector;
     }
     // ETP-5692: completed-invoice write fence + unpost status gate, before anything is captured.
     NeoResponse invoiceGuard =
@@ -301,6 +322,17 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
   }
 
   /**
+   * ETP-6284: also declares {@code hasManualTaxLines} ({@link PurchaseInvoiceManualTaxLines}), so a
+   * {@code fields:[...]} read naming it is not reported as unknown.
+   */
+  @Override
+  public Set<String> responseEnrichedFields() {
+    Set<String> keys = new HashSet<>(super.responseEnrichedFields());
+    keys.add(PurchaseInvoiceManualTaxLines.FIELD);
+    return keys;
+  }
+
+  /**
    * Persists the origin-invoice / SII authorization data on writes, and on GET enriches every
    * record with the virtual fields the AP invoice screens need (transfer state, total-discount
    * adjustment, subtype, and — in detail view — linked receipts, origin invoice, docTypeLocked,
@@ -378,6 +410,7 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
         InvoiceExemptTaxes.enrich(rec, context.getRecordId());
         SifSubRecordAttachments.enrich(rec, context.getRecordId());
         InvoiceReactivationGuard.enrichReactivationBlock(rec, context.getRecordId());
+        PurchaseInvoiceManualTaxLines.enrich(rec, context.getRecordId()); // ETP-6284
       }
       DocumentListTotals.injectInto(context, true); // ETP-5757, last: see AbstractInvoiceHeaderHandler
       return NeoResponse.ok(body);
