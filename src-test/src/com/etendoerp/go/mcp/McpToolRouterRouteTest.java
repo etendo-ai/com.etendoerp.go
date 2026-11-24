@@ -2776,13 +2776,17 @@ class McpToolRouterRouteTest {
     }
 
     private JSONObject docsFailure(Throwable failure) throws Exception {
+      return docsFailure(failure, null);
+    }
+
+    private JSONObject docsFailure(Throwable failure, String token) throws Exception {
       Context7DocsClient mockClient = mock(Context7DocsClient.class);
       when(mockClient.fetchDocs(anyString(), org.mockito.ArgumentMatchers.anyInt(),
           anyString(), org.mockito.ArgumentMatchers.any())).thenThrow((RuntimeException) failure);
       McpToolRouter docsRouter = new McpToolRouter() {
         @Override
         String resolveContext7Token() {
-          return null;
+          return token;
         }
       };
       JSONObject args = new JSONObject();
@@ -2820,12 +2824,31 @@ class McpToolRouterRouteTest {
     }
 
     @Test
-    @DisplayName("docs failure log level: 401/403 ERROR, others WARN")
+    @DisplayName("docs failure log level: 401/403/404 ERROR, others WARN")
     void docsFailureLogLevelByStatus() {
-      assertEquals(org.apache.logging.log4j.Level.ERROR, Context7DocsException.logLevel(401));
-      assertEquals(org.apache.logging.log4j.Level.ERROR, Context7DocsException.logLevel(403));
-      for (int status : new int[] { 404, 429, 500, 503, -1 }) {
+      for (int status : new int[] { 401, 403, 404 }) {
+        assertEquals(org.apache.logging.log4j.Level.ERROR, Context7DocsException.logLevel(status));
+      }
+      for (int status : new int[] { 429, 500, 503, -1 }) {
         assertEquals(org.apache.logging.log4j.Level.WARN, Context7DocsException.logLevel(status));
+      }
+    }
+
+    @Test
+    @DisplayName("docs failure text never contains the configured Context7 API key")
+    void docsFailureNeverLeaksApiKey() throws Exception {
+      String apiKey = "ctx7-secret-api-key";
+      Throwable[] failures = {
+          new Context7DocsException("status 401", 401, null),
+          new Context7DocsException("status 403", 403, null),
+          new Context7DocsException("status 404", 404, null),
+          new Context7DocsException("status 429", 429, null),
+          new Context7DocsException("status 503", 503, null),
+          new Context7DocsException("timeout", -1, null),
+          new IllegalStateException("boom") };
+      for (Throwable failure : failures) {
+        String text = errorText(docsFailure(failure, apiKey));
+        assertFalse(text.contains(apiKey), text);
       }
     }
 

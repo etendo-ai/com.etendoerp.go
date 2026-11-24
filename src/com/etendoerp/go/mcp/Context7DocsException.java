@@ -63,14 +63,15 @@ class Context7DocsException extends McpToolException {
   }
 
   /**
-   * Log level for a failed Context7 lookup: persistent configuration faults (401/403) stay at
-   * ERROR so they remain in the error stream; transient failures are WARN.
+   * Log level for a failed Context7 lookup: persistent configuration faults stay at ERROR so they
+   * remain in the error stream — 401/403 (missing or expired token) and 404 (renamed library or
+   * wrong URL, as in ETP-5850). Transient failures (429, 5xx, no response) are WARN.
    *
    * @param status the HTTP status, or {@link #NO_STATUS} when there was no response
    * @return the level to log at
    */
   static org.apache.logging.log4j.Level logLevel(int status) {
-    return status == 401 || status == 403
+    return status == 401 || status == 403 || status == 404
         ? org.apache.logging.log4j.Level.ERROR : org.apache.logging.log4j.Level.WARN;
   }
 
