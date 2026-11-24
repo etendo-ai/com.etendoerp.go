@@ -280,6 +280,46 @@ public class NeoReferenceSelectorValidationTest {
     }
   }
 
+  /** An update is judged under the stored parent, not the one the body or parentId names. */
+  @Test
+  public void testUpdateIsJudgedUnderTheStoredParent() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      Entity lineEntity = ModelProvider.getInstance().getEntityByTableId("T-LINE");
+      when(lineEntity.getName()).thenReturn("ShipLine");
+      BaseOBObject storedHeader = mock(BaseOBObject.class);
+      when(storedHeader.getId()).thenReturn(LineFixture.HEADER_ID);
+      BaseOBObject stored = mock(BaseOBObject.class);
+      when(stored.get(LineFixture.LINK)).thenReturn(storedHeader);
+      when(dal.get("ShipLine", "LINE-1")).thenReturn(stored);
+      when(OBProvider.getInstance().get(DataToJsonConverter.class)
+          .toJsonObject(stored, DataResolvingMode.FULL))
+          .thenReturn(new JSONObject().put(LineFixture.LINK, LineFixture.HEADER_ID));
+      offers(Boolean.TRUE);
+
+      NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, "LINE-1", "OTHER-HEADER",
+          new JSONObject().put(LineFixture.LINK, "OTHER-HEADER-2")
+              .put(LineFixture.BIN, LineFixture.BIN_ID));
+
+      Map<String, String> context = contextFor(LineFixture.BIN);
+      assertEquals(LineFixture.WAREHOUSE_ID, context.get("M_Warehouse_ID"));
+      assertEquals(LineFixture.HEADER_ID, context.get("M_InOut_ID"));
+      Mockito.verify(dal, never()).get(LineFixture.HEADER_ENTITY, "OTHER-HEADER");
+      Mockito.verify(dal, never()).get(LineFixture.HEADER_ENTITY, "OTHER-HEADER-2");
+    }
+  }
+
+  /** The {@code <reference>.id} spelling is selector-validated like the plain key. */
+  @Test
+  public void testIdSpellingOfAReferenceIsValidated() throws Exception {
+    offers(Boolean.FALSE);
+
+    NeoReferenceSelectorValidation.RefusedReference refused =
+        check(new JSONObject().put(PARTNER + ".id", PARTNER_ID));
+
+    assertEquals(PARTNER, refused.fieldName());
+    assertEquals(PARTNER_ID, refused.value());
+  }
+
   /**
    * The tab's literal auxiliary inputs reach the selector: Sales Quotation's {@code isQuotation=Y}
    * is what lets the quotation document type through rule 133 (ETP-6381).

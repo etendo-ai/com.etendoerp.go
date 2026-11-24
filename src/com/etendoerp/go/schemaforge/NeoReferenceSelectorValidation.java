@@ -34,6 +34,7 @@ import java.util.regex.Pattern;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
@@ -121,7 +122,8 @@ public final class NeoReferenceSelectorValidation {
     OBContext.setAdminMode(true);
     String[] current = new String[1];
     try {
-      return firstRefused(sfEntity, adTab, written, recordId, parentId, requestFields, current);
+      return firstRefused(sfEntity, adTab, written, recordId, parentId,
+          withIdSpellingFolded(written, requestFields), current);
     } catch (RuntimeException e) {
       // Fail closed: a selector check that errors cannot vouch for the value.
       log.warn("Selector validation of a NEO write failed, refusing it: {}", e.getMessage());
@@ -130,6 +132,41 @@ public final class NeoReferenceSelectorValidation {
     } finally {
       OBContext.restorePreviousMode();
     }
+  }
+
+  /**
+   * A copy of the request where a {@code <reference>.id} key reads as {@code <reference>}: that is
+   * how {@link NeoReferenceOwnership} understands the spelling, and {@code getProperty} would
+   * resolve it to the target's id property, leaving the reference unchecked. A key already sent
+   * in its plain form wins.
+   */
+  private static JSONObject withIdSpellingFolded(Entity written, JSONObject requestFields) {
+    String suffix = "." + ID;
+    JSONObject folded = null;
+    Iterator<?> keys = requestFields.keys();
+    while (keys.hasNext()) {
+      String key = String.valueOf(keys.next());
+      String name = key.endsWith(suffix) ? key.substring(0, key.length() - suffix.length()) : null;
+      if (name == null || name.isEmpty() || name.indexOf('.') >= 0
+          || requestFields.has(name)) {
+        continue;
+      }
+      Property property = written.getProperty(name, false);
+      if (property == null || property.isPrimitive() || property.getTargetEntity() == null) {
+        continue;
+      }
+      try {
+        if (folded == null) {
+          folded = new JSONObject(requestFields.toString());
+        }
+        folded.remove(key);
+        folded.put(name, requestFields.get(key));
+      } catch (JSONException e) {
+        // Fail closed: the caller refuses a check that errors.
+        throw new IllegalStateException(e);
+      }
+    }
+    return folded == null ? requestFields : folded;
   }
 
   private static RefusedReference firstRefused(SFEntity sfEntity, Tab adTab, Entity written,
@@ -305,7 +342,8 @@ public final class NeoReferenceSelectorValidation {
 
   private static BaseOBObject load(Entity entity, String id) {
     try {
-      return OBDal.getInstance().get(entity.getName(), id);
+      BaseOBObject row = OBDal.getInstance().get(entity.getName(), id);
+      return TenantOwnership.belongsToReadableClient(row) ? row : null;
     } catch (RuntimeException e) {
       return null;
     }
@@ -340,6 +378,10 @@ public final class NeoReferenceSelectorValidation {
       publish(context, written, flat(stored));
     }
     publish(context, written, requestFields);
+    if (parentLink != null && storedId(stored, parentLink.getName()) != null) {
+      // An update is judged under the stored parent: the request's link value must not replace it.
+      publishValue(context, parentLink, effectiveParent);
+    }
     addAuxiliaryLiterals(adTab, context);
     addWindowDirection(adTab, context);
     return context;
@@ -347,17 +389,25 @@ public final class NeoReferenceSelectorValidation {
 
   private static String effectiveParent(Entity written, Property parentLink, String parentId,
       BaseOBObject stored, JSONObject requestFields) {
-    if (StringUtils.isNotBlank(parentId) || parentLink == null) {
+    if (parentLink == null) {
       return parentId;
     }
     String linkName = parentLink.getName();
+    String storedParent = storedId(stored, linkName);
+    if (storedParent != null) {
+      // An existing record keeps its parent: neither parentId nor the link value moves it.
+      return storedParent;
+    }
+    if (StringUtils.isNotBlank(parentId)) {
+      return parentId;
+    }
     if (requestFields.has(linkName)) {
       String sent = referenceId(written, linkName, requestFields.opt(linkName));
       if (sent != null) {
         return sent;
       }
     }
-    return storedId(stored, linkName);
+    return null;
   }
 
   /**
