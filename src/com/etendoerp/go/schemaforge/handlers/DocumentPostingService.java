@@ -35,6 +35,7 @@ import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.criterion.Restrictions;
+import org.openbravo.base.structure.BaseOBObject;
 import org.openbravo.base.secureApp.VariablesSecureApp;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
@@ -113,6 +114,9 @@ public class DocumentPostingService {
    * pre-check applies to (ETP-5445). Same resolution rule as {@link #TABLE_M_INVENTORY}.
    */
   private static final String TABLE_M_INTERNAL_CONSUMPTION = "M_Internal_Consumption";
+  /** Header properties the costing-stall probe reads off the pre-checked document (ETP-6406). */
+  private static final String PROPERTY_CLIENT = "client";
+  private static final String PROPERTY_ORGANIZATION = "organization";
 
   /**
    * {@code AD_MESSAGE.VALUE} for the plain, no-params "cost not yet calculated" text (ETP-5360) —
@@ -337,9 +341,9 @@ public class DocumentPostingService {
    * commit / rollback logic can be exercised with a mocked {@link ConnectionProvider} (no live DB).
    */
   PostResult post(String adTableId, String recordId, ConnectionProvider conn) {
-    if (isUncalculatedCost(adTableId, recordId)) {
-      return new PostResult(false, OBMessageUtils.messageBD(MSG_NOT_CALCULATED_COST),
-          List.of(MSG_NOT_CALCULATED_COST));
+    BaseOBObject uncosted = uncalculatedCostDocument(adTableId, recordId);
+    if (uncosted != null) {
+      return uncalculatedCostResult(uncosted);
     }
     OBContext ctx = OBContext.getOBContext();
     String clientId = ctx.getCurrentClient().getId();
@@ -397,8 +401,8 @@ public class DocumentPostingService {
    * lines 223-228) has the identical shape — it sets {@code STATUS_NotCalculatedCost} and then
    * throws a bare {@code IllegalStateException()}, which {@code AcctServer.createFacts} swallows
    * the same way. The table-specific part (header → lines) is resolved in
-   * {@link #hasUncalculatedInventoryCost(String)} and
-   * {@link #hasUncalculatedInternalConsumptionCost(String)}; the per-line transaction scan is
+   * {@link #uncalculatedInventory(String)} and
+   * {@link #uncalculatedInternalConsumption(String)}; the per-line transaction scan is
    * shared in {@link #hasUncalculatedTransaction(List)}. Both helpers are called inside this
    * method's {@code try}, so any exception they throw still fails open here.</p>
    *
@@ -407,78 +411,105 @@ public class DocumentPostingService {
    * @param recordId
    *     primary key of the record being posted ({@code M_Inventory_ID} or
    *     {@code M_Internal_Consumption_ID} when applicable).
-   * @return {@code true} when this is an {@code M_Inventory} or {@code M_Internal_Consumption}
-   *     document with at least one line transaction whose cost is not yet calculated (including a
-   *     null/unset flag, treated as not calculated); {@code false} otherwise, including when the
-   *     table is neither of those two, the record cannot be resolved, or the lookup itself fails.
+   * @return the {@code M_Inventory} or {@code M_Internal_Consumption} document when at least one
+   *     of its line transactions has no calculated cost (including a null/unset flag, treated as
+   *     not calculated); {@code null} otherwise, including when the table is neither of those two,
+   *     the record cannot be resolved, or the lookup itself fails.
    *     Unlike {@link #resolveMissingBpGroupAccounts} and {@link #resolveMissingProductAccounts}
    *     — enrichment helpers called AFTER {@code acct.post()} has already failed, where a failure
    *     here just omits extra detail text and the post stays blocked either way — this method is
-   *     a GATE called BEFORE {@code acct.post()}. On a lookup error it returns {@code false},
+   *     a GATE called BEFORE {@code acct.post()}. On a lookup error it returns {@code null},
    *     which lets the post PROCEED normally: this pre-check fails OPEN (permissive), not closed.
    *     That is deliberate: the alternative (blocking on lookup failure) would risk breaking the
    *     ~15 existing non-Inventory unit tests that exercise this path with an unmocked
    *     {@code OBDal}, for a pre-check that is a purely additive improvement over the generic
    *     error path in the first place.
    */
-  private boolean isUncalculatedCost(String adTableId, String recordId) {
+  private BaseOBObject uncalculatedCostDocument(String adTableId, String recordId) {
     try {
       Table table = OBDal.getInstance().get(Table.class, adTableId);
       if (table == null) {
-        return false;
+        return null;
       }
       String dbTableName = table.getDBTableName();
       if (TABLE_M_INVENTORY.equals(dbTableName)) {
-        return hasUncalculatedInventoryCost(recordId);
+        return uncalculatedInventory(recordId);
       }
       if (TABLE_M_INTERNAL_CONSUMPTION.equals(dbTableName)) {
-        return hasUncalculatedInternalConsumptionCost(recordId);
+        return uncalculatedInternalConsumption(recordId);
       }
-      return false;
+      return null;
     } catch (Exception e) {
       log.warn("Could not evaluate cost-calculated pre-check for table {} record {}", adTableId, recordId, e);
-      return false;
+      return null;
     }
   }
 
   /**
-   * {@code M_Inventory} branch of {@link #isUncalculatedCost}: resolves the Physical Inventory
+   * The refusal of a post the cost pre-check stopped (ETP-6406): the same answers a goods document
+   * gets from {@link #failureOf} when core reports {@code STATUS_NotCalculatedCost} (ETP-5714), so
+   * an agent posting an Internal Consumption or a Physical Inventory is told to wait and repeat
+   * (409 {@code costNotCalculated}, {@code retryAfterSeconds}) or, when costing is stuck, not to
+   * retry (422 {@code costCalculationStalled}). Before, this pre-check answered a plain 422 with
+   * no retry guidance, so the agent fell back to the AD {@code Posted} button and core's broken
+   * message.
+   *
+   * @param document the Physical Inventory or Internal Consumption whose cost is not calculated
+   * @return the stalled refusal when the organisation's costing queue is stuck, else the retryable one
+   */
+  private static PostResult uncalculatedCostResult(BaseOBObject document) {
+    String clientId = idOf(document.get(PROPERTY_CLIENT));
+    String orgId = idOf(document.get(PROPERTY_ORGANIZATION));
+    if (CostingStall.isQueueStalled(clientId, orgId)) {
+      return CostingStall.failure(localizedMessage(CostingStall.MSG_COSTING_STALLED));
+    }
+    return new PostResult(false, OBMessageUtils.messageBD(MSG_NOT_CALCULATED_COST),
+        List.of(MSG_NOT_CALCULATED_COST),
+        Map.of(MESSAGE_PARAMS_RETRY_AFTER_SECONDS, COST_RETRY_AFTER_SECONDS));
+  }
+
+  private static String idOf(Object reference) {
+    return reference instanceof BaseOBObject ? (String) ((BaseOBObject) reference).getId() : null;
+  }
+
+  /**
+   * {@code M_Inventory} branch of {@link #uncalculatedCostDocument}: resolves the Physical Inventory
    * header and scans each line's transactions. {@code false} when the record does not exist.
    * Exceptions propagate to the caller's fail-open {@code catch}.
    */
-  private static boolean hasUncalculatedInventoryCost(String recordId) {
+  private static InventoryCount uncalculatedInventory(String recordId) {
     InventoryCount inventoryCount = OBDal.getInstance().get(InventoryCount.class, recordId);
     if (inventoryCount == null) {
-      return false;
+      return null;
     }
     for (InventoryCountLine line : inventoryCount.getMaterialMgmtInventoryCountLineList()) {
       if (hasUncalculatedTransaction(line.getMaterialMgmtMaterialTransactionList())) {
-        return true;
+        return inventoryCount;
       }
     }
-    return false;
+    return null;
   }
 
   /**
-   * {@code M_Internal_Consumption} branch of {@link #isUncalculatedCost} (ETP-5445): resolves the
+   * {@code M_Internal_Consumption} branch of {@link #uncalculatedCostDocument} (ETP-5445): resolves the
    * Internal Consumption header and scans each line's transactions. {@code false} when the record
    * does not exist. Exceptions propagate to the caller's fail-open {@code catch}.
    */
-  private static boolean hasUncalculatedInternalConsumptionCost(String recordId) {
+  private static InternalConsumption uncalculatedInternalConsumption(String recordId) {
     InternalConsumption consumption = OBDal.getInstance().get(InternalConsumption.class, recordId);
     if (consumption == null) {
-      return false;
+      return null;
     }
     for (InternalConsumptionLine line : consumption.getMaterialMgmtInternalConsumptionLineList()) {
       if (hasUncalculatedTransaction(line.getMaterialMgmtMaterialTransactionList())) {
-        return true;
+        return consumption;
       }
     }
-    return false;
+    return null;
   }
 
   /**
-   * Shared per-line scan for {@link #isUncalculatedCost}: {@code true} when any of the line's
+   * Shared per-line scan for {@link #uncalculatedCostDocument}: {@code true} when any of the line's
    * material transactions has {@code IsCostCalculated} not set to {@code 'Y'} (a null flag counts
    * as not calculated).
    */

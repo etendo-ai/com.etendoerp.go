@@ -9,6 +9,7 @@ com.etendoerp.go.schemaforge.GoodsMovementProcessGuardTest
 com.etendoerp.go.schemaforge.GoodsMovementsHeaderHandlerTest
 com.etendoerp.go.schemaforge.InternalConsumptionLineHandlerTest
 com.etendoerp.go.schemaforge.InventoryLineHandlerTest
+com.etendoerp.go.schemaforge.InventoryPostingContractsTest
 com.etendoerp.go.schemaforge.InventoryStockReportHandlerTest
 com.etendoerp.go.schemaforge.MovementWindowTest
 com.etendoerp.go.schemaforge.NeoOrderedListPageTest

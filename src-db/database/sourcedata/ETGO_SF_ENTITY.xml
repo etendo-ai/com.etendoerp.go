@@ -424,6 +424,7 @@
 <!--1211A620DEB64FCEBCDB32FDE7E956CB-->  <ISDELETE><![CDATA[Y]]></ISDELETE>
 <!--1211A620DEB64FCEBCDB32FDE7E956CB-->  <JAVA_QUALIFIER><![CDATA[inventory]]></JAVA_QUALIFIER>
 <!--1211A620DEB64FCEBCDB32FDE7E956CB-->  <SEQNO><![CDATA[10]]></SEQNO>
+<!--1211A620DEB64FCEBCDB32FDE7E956CB-->  <MCP_CONFIG><![CDATA[{"actions":{"hidden":["posted","etblkpBulkposting"],"reason":"The posted button is a blind post/unpost toggle the app never uses; book the document with this entity's post action and remove its accounting entries with its unpost action, which state their preconditions and how to react to a cost that is not calculated yet. The posted field itself stays readable","reasons":{"posted":"The posted button is a blind post/unpost toggle the app never uses; book the document with this entity's post action and remove its accounting entries with its unpost action, which state their preconditions and how to react to a cost that is not calculated yet. The posted field itself stays readable","etblkpBulkposting":"The Bulk Posting button is a classic mass-accounting toggle with no process an agent can run; book the document with this entity's post action and remove its accounting entries with its unpost action. The value itself stays readable"}}}]]></MCP_CONFIG>
 <!--1211A620DEB64FCEBCDB32FDE7E956CB--></ETGO_SF_ENTITY>
 
 <!--1318775D8FB24AB7B974EB501DC7621B--><ETGO_SF_ENTITY>
@@ -524,6 +525,7 @@
 <!--18FDC6F8F6B04F7EA22758965290D51E-->  <ISDELETE><![CDATA[Y]]></ISDELETE>
 <!--18FDC6F8F6B04F7EA22758965290D51E-->  <JAVA_QUALIFIER><![CDATA[internal-consumption]]></JAVA_QUALIFIER>
 <!--18FDC6F8F6B04F7EA22758965290D51E-->  <SEQNO><![CDATA[10]]></SEQNO>
+<!--18FDC6F8F6B04F7EA22758965290D51E-->  <MCP_CONFIG><![CDATA[{"actions":{"hidden":["posted","etblkpBulkposting"],"reason":"The posted button is a blind post/unpost toggle the app never uses; book the document with this entity's post action and remove its accounting entries with its unpost action, which state their preconditions and how to react to a cost that is not calculated yet. The posted field itself stays readable","reasons":{"posted":"The posted button is a blind post/unpost toggle the app never uses; book the document with this entity's post action and remove its accounting entries with its unpost action, which state their preconditions and how to react to a cost that is not calculated yet. The posted field itself stays readable","etblkpBulkposting":"The Bulk Posting button is a classic mass-accounting toggle with no process an agent can run; book the document with this entity's post action and remove its accounting entries with its unpost action. The value itself stays readable"}}}]]></MCP_CONFIG>
 <!--18FDC6F8F6B04F7EA22758965290D51E--></ETGO_SF_ENTITY>
 
 <!--192C8D44E7234C4EBCAEF6893E24AE10--><ETGO_SF_ENTITY>
@@ -2065,6 +2067,7 @@
 <!--59B96B75153149EF993CD7FD3CE9439F-->  <JAVA_QUALIFIER><![CDATA[goodsMovementsHeaderHandler]]></JAVA_QUALIFIER>
 <!--59B96B75153149EF993CD7FD3CE9439F-->  <SEQNO><![CDATA[10]]></SEQNO>
 <!--59B96B75153149EF993CD7FD3CE9439F-->  <AGENT_PROMPT><![CDATA[Movements between warehouses or bins only. For everything that moved for one product (receipts, shipments, inventories, consumptions and these movements together), list spec product, entity transactions, with parentId = the product id.]]></AGENT_PROMPT>
+<!--59B96B75153149EF993CD7FD3CE9439F-->  <MCP_CONFIG><![CDATA[{"actions":{"hidden":["posted","etblkpBulkposting"],"reason":"The posted button is a blind post/unpost toggle the app never uses; book the document with this entity's post action and remove its accounting entries with its unpost action, which state their preconditions and how to react to a cost that is not calculated yet. The posted field itself stays readable","reasons":{"posted":"The posted button is a blind post/unpost toggle the app never uses; book the document with this entity's post action and remove its accounting entries with its unpost action, which state their preconditions and how to react to a cost that is not calculated yet. The posted field itself stays readable","etblkpBulkposting":"The Bulk Posting button is a classic mass-accounting toggle with no process an agent can run; book the document with this entity's post action and remove its accounting entries with its unpost action. The value itself stays readable"}}}]]></MCP_CONFIG>
 <!--59B96B75153149EF993CD7FD3CE9439F--></ETGO_SF_ENTITY>
 
 <!--59F6B08209AA48969DD26439762DE8D0--><ETGO_SF_ENTITY>
