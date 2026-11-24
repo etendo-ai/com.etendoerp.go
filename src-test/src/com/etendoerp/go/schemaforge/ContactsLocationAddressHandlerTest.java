@@ -1943,47 +1943,6 @@ class ContactsLocationAddressHandlerTest {
   }
 
   /**
-   * Verifies that str returns fallback when key is absent.
-   */
-  @Test
-  void testStrReturnsFallbackWhenKeyAbsent() throws Exception {
-    Method method = ContactsLocationAddressHandler.class.getDeclaredMethod(
-        "str", JSONObject.class, String.class, String.class);
-    method.setAccessible(true);
-
-    JSONObject body = new JSONObject();
-    assertEquals("fallback", method.invoke(null, body, "missing", "fallback"));
-  }
-
-  /**
-   * Verifies that str returns the value when key is present.
-   */
-  @Test
-  void testStrReturnsValueWhenKeyPresent() throws Exception {
-    Method method = ContactsLocationAddressHandler.class.getDeclaredMethod(
-        "str", JSONObject.class, String.class, String.class);
-    method.setAccessible(true);
-
-    JSONObject body = new JSONObject();
-    body.put("name", "Hello");
-    assertEquals("Hello", method.invoke(null, body, "name", "fallback"));
-  }
-
-  /**
-   * Verifies that str returns fallback when key has empty value.
-   */
-  @Test
-  void testStrReturnsFallbackWhenValueEmpty() throws Exception {
-    Method method = ContactsLocationAddressHandler.class.getDeclaredMethod(
-        "str", JSONObject.class, String.class, String.class);
-    method.setAccessible(true);
-
-    JSONObject body = new JSONObject();
-    body.put("name", "");
-    assertEquals("fallback", method.invoke(null, body, "name", "fallback"));
-  }
-
-  /**
    * Verifies joinNonNull with multiple non-null parts.
    */
   @Test

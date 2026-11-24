@@ -164,6 +164,27 @@ class McpSchemaFieldBuilderTest {
     }
 
     @Test
+    @DisplayName("a column narrower than its override publishes the column, not the override")
+    void columnNarrowerThanOverrideWins() throws Exception {
+      // The override says what the write path enforces; the column says what the row can hold.
+      // Publishing the override here would promise 60 on a VARCHAR(40) — the CP-6b bug reversed.
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", 40L), "string");
+      assertEquals(40L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("an overridden column with no AD length still publishes the enforced cap")
+    void overrideSurvivesMissingAdLength() throws Exception {
+      for (Long length : new Long[] { null, 0L }) {
+        JSONObject field = new JSONObject();
+        McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", length), "string");
+        assertEquals(60L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH),
+            String.valueOf(length));
+      }
+    }
+
+    @Test
     @DisplayName("a non-text field carries no maxLength, override or not")
     void nonTextTypeCarriesNoMaxLength() throws Exception {
       JSONObject field = new JSONObject();

@@ -83,6 +83,18 @@ public final class AddressVirtualSelectorPolicy {
   private static final String COLUMN_COUNTRY = "C_Country_ID";
   private static final String COLUMN_REGION = "C_Region_ID";
 
+  /*
+   * ETP-5806 — the 3 structured SEPA address columns as LOOKUP KEYS: the upper-cased form of
+   * EM_OBSEPA_StrtNm / BldgNb / BldgNm. Every map and set keyed by column below uses these,
+   * because a caller hands the column name in whatever case it happens to have.
+   *
+   * VIRTUAL_COLUMNS deliberately keeps the mixed-case spelling instead: it is matched against
+   * AD_Column.DBColumnName in a case-sensitive query (see locationColumns).
+   */
+  private static final String KEY_STREET_NAME = "EM_OBSEPA_STRTNM";
+  private static final String KEY_BUILDING_NUMBER = "EM_OBSEPA_BLDGNB";
+  private static final String KEY_BUILDING_NAME = "EM_OBSEPA_BLDGNM";
+
   /** The virtual columns that back an FK selector. A subset of {@link #VIRTUAL_COLUMNS}. */
   private static final Set<String> SELECTOR_COLUMNS = new LinkedHashSet<>(
       List.of(COLUMN_COUNTRY, COLUMN_REGION));
@@ -114,7 +126,7 @@ public final class AddressVirtualSelectorPolicy {
    * (backend-only flag, TTL 2026-11-15) — see {@link #resolveVirtualColumns}.
    */
   private static final Set<String> STRUCTURED_ADDRESS_COLUMNS = Set.of(
-      "EM_OBSEPA_STRTNM", "EM_OBSEPA_BLDGNB", "EM_OBSEPA_BLDGNM");
+      KEY_STREET_NAME, KEY_BUILDING_NUMBER, KEY_BUILDING_NAME);
 
   /**
    * The wrapper's OWN column that the handler resolves instead of the caller (ETP-5368).
@@ -158,9 +170,9 @@ public final class AddressVirtualSelectorPolicy {
    * EM_-prefixed column ever needs the same treatment.
    */
   private static final Map<String, String> PUBLISHED_NAME_OVERRIDES = Map.of(
-      "EM_OBSEPA_STRTNM", "streetName",
-      "EM_OBSEPA_BLDGNB", "buildingNumber",
-      "EM_OBSEPA_BLDGNM", "buildingName");
+      KEY_STREET_NAME, "streetName",
+      KEY_BUILDING_NUMBER, "buildingNumber",
+      KEY_BUILDING_NAME, "buildingName");
 
   /**
    * The inverse of {@link #PUBLISHED_NAME_OVERRIDES} — published name to DB column name. Built
@@ -203,9 +215,9 @@ public final class AddressVirtualSelectorPolicy {
    * map, never add a per-entity {@code if}.
    */
   private static final Map<String, Integer> MAX_LENGTH_OVERRIDES = Map.of(
-      "EM_OBSEPA_STRTNM", StructuredAddressComposer.streetNameMaxLength(),
-      "EM_OBSEPA_BLDGNB", StructuredAddressComposer.buildingNumberMaxLength(),
-      "EM_OBSEPA_BLDGNM", StructuredAddressComposer.buildingNameMaxLength());
+      KEY_STREET_NAME, StructuredAddressComposer.streetNameMaxLength(),
+      KEY_BUILDING_NUMBER, StructuredAddressComposer.buildingNumberMaxLength(),
+      KEY_BUILDING_NAME, StructuredAddressComposer.buildingNameMaxLength());
 
   private AddressVirtualSelectorPolicy() {
   }

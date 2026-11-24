@@ -1343,9 +1343,4 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     String v = body.optString(key, "");
     return "Y".equalsIgnoreCase(v) || "true".equalsIgnoreCase(v);
   }
-
-  private static String str(JSONObject body, String key, String fallback) {
-    String v = nullIfEmpty(body.optString(key, null));
-    return v != null ? v : fallback;
-  }
 }

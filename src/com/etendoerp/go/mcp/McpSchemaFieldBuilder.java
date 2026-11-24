@@ -768,20 +768,28 @@ final class McpSchemaFieldBuilder {
    * through {@link NeoSelectorPolicy#maxLengthOverride} — structural, naming no spec and no
    * entity, so it applies identically on the wrapper path ({@code buildVirtualAddressFields}) and
    * on the direct table walk ({@code buildSchemaFieldsArray}), for every view.
+   *
+   * <p>The published value is the <b>narrower</b> of the two, never the override alone: the
+   * override says what the write path enforces today, and the column says what the row can hold.
+   * If the column were ever narrowed below its override (shrinking {@code EM_OBSEPA_StrtNm} to 40
+   * would do it), publishing 60 would reintroduce exactly the bug above with the roles reversed —
+   * a schema promising a width the insert refuses.
    */
   static void addMaxLength(JSONObject fieldObj, Column col, String type) throws JSONException {
     if (!McpConstants.TYPE_STRING.equals(type)) {
       return;
     }
     Integer enforced = NeoSelectorPolicy.maxLengthOverride(col.getDBColumnName());
-    if (enforced != null) {
-      fieldObj.put(KEY_MAX_LENGTH, enforced.longValue());
+    Long length = col.getLength();
+    boolean hasLength = length != null && length > 0;
+    if (enforced == null) {
+      if (hasLength) {
+        fieldObj.put(KEY_MAX_LENGTH, length.longValue());
+      }
       return;
     }
-    Long length = col.getLength();
-    if (length != null && length > 0) {
-      fieldObj.put(KEY_MAX_LENGTH, length.longValue());
-    }
+    fieldObj.put(KEY_MAX_LENGTH,
+        hasLength ? Math.min(length, enforced.longValue()) : enforced.longValue());
   }
 
   /**

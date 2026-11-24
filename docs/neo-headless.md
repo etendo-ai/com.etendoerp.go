@@ -6269,11 +6269,18 @@ it applies to `bp-location`'s direct table walk and to every wrapper entity, on 
 `update` views alike. The column itself is NOT narrowed: shrinking it would break existing 61-70
 character data on `update.database` and restrict SEPA export for callers unrelated to the composer.
 
-`etendo_schema`/`etendo_get` still report `streetName`/`buildingNumber`/`buildingName` in
-`unknownFields` for this entity — not because the columns are uncurated, but because the published
-name resolves to no DAL property and `bpLocation` is a direct table, not a wrapper, so
-`McpWriteRequestSupport.virtualFieldNames` is empty for it. The value is accepted and persisted
-regardless (IMP-18 reports, it does not refuse).
+**A write to `bp-location` under these 3 published names reports no `unknownFields` (ETP-5806
+CP-12g).** `bpLocation` IS `C_Location` rather than a wrapper around it, so
+`McpWriteRequestSupport.virtualFieldNames` is indeed empty for it — but
+`McpWriteRequestSupport#reportIfUnknown` returns before reporting anything, because
+`NeoSelectorPolicy.ownPropertyForPublishedName(dalEntity, key)` resolves the published name against
+the entity's **own** table (`streetName` → `EM_OBSEPA_StrtNm` → an existing `C_Location` property).
+That branch was added for exactly this entity shape. The published name is also the emittable one:
+`ETGO_SF_FIELD.JAVA_QUALIFIER` is pinned to `streetName`/`buildingNumber`/`buildingName`, so
+`NeoFieldFilter` renames the raw DAL property on the way out and schema key, write key and response
+key are the same string on every verb. Verified live: an `etendo_update` sending `streetName` and
+`buildingName` applies both, recomposes `addressLine1`, refreshes `_identifier`, and answers with no
+`unknownFields` key at all.
 
 **MCP naming unification.** The three handlers that read/write the SEPA columns
 (`ContactsLocationAddressHandler`, `WarehouseLocationHandler`, `BpLocationHandler`) all agree on
