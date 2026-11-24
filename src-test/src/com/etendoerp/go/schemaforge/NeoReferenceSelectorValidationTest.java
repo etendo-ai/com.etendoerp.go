@@ -308,6 +308,19 @@ public class NeoReferenceSelectorValidationTest {
     }
   }
 
+  /** Both spellings with different ids are refused; with the same id the reference is checked. */
+  @Test
+  public void testConflictingIdSpellingsAreRefusedAndEqualOnesValidated() throws Exception {
+    NeoReferenceSelectorValidation.RefusedReference refused = check(
+        new JSONObject().put(PARTNER, PARTNER_ID).put(PARTNER + ".id", "OTHER-BP"));
+
+    assertEquals(PARTNER + ".id", refused.fieldName());
+    assertEquals("OTHER-BP", refused.value());
+
+    offers(Boolean.TRUE);
+    assertNull(check(new JSONObject().put(PARTNER, PARTNER_ID).put(PARTNER + ".id", PARTNER_ID)));
+  }
+
   /** The {@code <reference>.id} spelling is selector-validated like the plain key. */
   @Test
   public void testIdSpellingOfAReferenceIsValidated() throws Exception {

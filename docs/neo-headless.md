@@ -1445,10 +1445,13 @@ its parent, that parent decides the context, whatever `parentId` or the link val
 On a create the order is: explicit `parentId`, then the link value of the body.
 
 **`.id` spelling.** A body key `<reference>.id` is treated as `<reference>`, as
-`NeoReferenceOwnership` already does, so it cannot skip the selector check.
+`NeoReferenceOwnership` already does, so it cannot skip the selector check. A body sending both
+spellings with different ids is refused.
 
 **Stored-row reads are client-scoped.** The stored record and the parent are loaded only when they
 belong to a client the caller may read; otherwise they read as missing.
+With no session (no `OBContext`) the stored-row reads are unscoped, the same contract as
+`TenantOwnership.belongsToReadableClient`.
 
 Tests: `NeoReferenceSelectorValidationTest`.
 

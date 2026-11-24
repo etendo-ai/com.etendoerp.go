@@ -353,7 +353,8 @@ final class ContactIdentityRules {
    */
   private static Persisted queryPersisted(String recordId) {
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn, PERSISTED_SQL, recordId)) {
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        PERSISTED_SQL, recordId)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (!rs.next()) {
           return null;

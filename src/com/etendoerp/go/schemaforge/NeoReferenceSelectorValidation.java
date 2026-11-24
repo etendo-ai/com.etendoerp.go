@@ -122,6 +122,10 @@ public final class NeoReferenceSelectorValidation {
     OBContext.setAdminMode(true);
     String[] current = new String[1];
     try {
+      RefusedReference conflict = conflictingIdSpelling(written, requestFields);
+      if (conflict != null) {
+        return conflict;
+      }
       return firstRefused(sfEntity, adTab, written, recordId, parentId,
           withIdSpellingFolded(written, requestFields), current);
     } catch (RuntimeException e) {
@@ -132,6 +136,38 @@ public final class NeoReferenceSelectorValidation {
     } finally {
       OBContext.restorePreviousMode();
     }
+  }
+
+  /**
+   * Refuses (fail closed) a body that sets a reference as both {@code x} and {@code x.id} with
+   * different ids: only one of them can be selector-checked, and persistence may keep the other.
+   */
+  private static RefusedReference conflictingIdSpelling(Entity written, JSONObject requestFields) {
+    String suffix = "." + ID;
+    Iterator<?> keys = requestFields.keys();
+    while (keys.hasNext()) {
+      String key = String.valueOf(keys.next());
+      String name = key.endsWith(suffix) ? key.substring(0, key.length() - suffix.length()) : "";
+      if (name.isEmpty() || name.indexOf('.') >= 0 || !requestFields.has(name)) {
+        continue;
+      }
+      Property property = written.getProperty(name, false);
+      if (property == null || property.isPrimitive() || property.getTargetEntity() == null) {
+        continue;
+      }
+      String plain = idText(requestFields.opt(name));
+      String spelled = idText(requestFields.opt(key));
+      if (!Objects.equals(plain, spelled)) {
+        log.warn("Refused a NEO write: '{}' and '{}' carry different ids", name, key);
+        return new RefusedReference(key, property.getTargetEntity().getName(), spelled, false);
+      }
+    }
+    return null;
+  }
+
+  private static String idText(Object value) {
+    Object raw = value instanceof JSONObject ? ((JSONObject) value).opt(ID) : value;
+    return raw == null || JSONObject.NULL.equals(raw) ? null : String.valueOf(raw);
   }
 
   /**
