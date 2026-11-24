@@ -38,22 +38,23 @@ import org.codehaus.jettison.json.JSONObject;
  * </pre>
  *
  * <p>It is the same object {@code schema_forge_core} publishes per field in the contract, so the
- * push step can copy it verbatim. Only the {@code field} level is meaningful. Each key is optional
- * and independent; unknown keys are refused (a misspelt constraint must not read as "no
- * constraint"). Enforcement lives in {@code NeoDeclarativeValidation}.</p>
+ * push step copies it verbatim. Only the {@code field} level is read. Each key is optional and
+ * independent. Keys this server does not know (a newer contract) are ignored and logged once; a known
+ * key of the wrong type makes the section unusable. Enforcement lives in
+ * {@code NeoDeclarativeValidation}; the key names below are shared with it.</p>
  */
-final class McpValidationSection {
+public final class McpValidationSection {
 
   static final String NAME = "validation";
 
-  static final String REQUIRED = "required";
-  static final String MIN_LENGTH = "minLength";
-  static final String MAX_LENGTH = "maxLength";
-  static final String MINIMUM = "minimum";
-  static final String MAXIMUM = "maximum";
-  static final String FORMAT = "format";
-  static final String ENUM = "enum";
-  static final String ALLOWED_SCHEMES = "allowedSchemes";
+  public static final String REQUIRED = "required";
+  public static final String MIN_LENGTH = "minLength";
+  public static final String MAX_LENGTH = "maxLength";
+  public static final String MINIMUM = "minimum";
+  public static final String MAXIMUM = "maximum";
+  public static final String FORMAT = "format";
+  public static final String ENUM = "enum";
+  public static final String ALLOWED_SCHEMES = "allowedSchemes";
 
   private static final Logger log = LogManager.getLogger(McpValidationSection.class);
   /** Unknown keys already reported, so a newer contract logs once per key, not once per read. */
@@ -87,27 +88,47 @@ final class McpValidationSection {
       return problems;
     }
     reportUnknownKeys(body);
+    checkRequired(body, problems);
+    checkNumbers(body, problems);
+    checkFormat(body, problems);
+    checkArrays(body, problems);
+    return problems;
+  }
+
+  private static void checkRequired(JSONObject body, List<String> problems) {
     if (body.has(REQUIRED) && !(body.opt(REQUIRED) instanceof Boolean)) {
       problems.add("section 'validation': 'required' must be a boolean");
     }
+  }
+
+  private static void checkNumbers(JSONObject body, List<String> problems) {
     for (String key : NUMBER_KEYS) {
       if (body.has(key) && !(body.opt(key) instanceof Number)) {
         problems.add("section 'validation': '" + key + "' must be a number");
       }
     }
-    if (body.has(FORMAT) && (!(body.opt(FORMAT) instanceof String)
-        || ((String) body.opt(FORMAT)).trim().isEmpty())) {
+  }
+
+  private static void checkFormat(JSONObject body, List<String> problems) {
+    if (!body.has(FORMAT)) {
+      return;
+    }
+    Object format = body.opt(FORMAT);
+    if (!(format instanceof String) || ((String) format).trim().isEmpty()) {
       problems.add("section 'validation': 'format' must be a non-empty string");
     }
+  }
+
+  private static void checkArrays(JSONObject body, List<String> problems) {
     for (String key : ARRAY_KEYS) {
-      if (body.has(key)) {
-        Object value = body.opt(key);
-        if (!(value instanceof JSONArray) || ((JSONArray) value).length() == 0) {
-          problems.add("section 'validation': '" + key + "' must be a non-empty array");
-        }
+      if (body.has(key) && !isNonEmptyArray(body.opt(key))) {
+        problems.add("section 'validation': '" + key + "' must be a non-empty array");
       }
     }
-    return problems;
+  }
+
+  private static boolean isNonEmptyArray(Object value) {
+    return value instanceof JSONArray && ((JSONArray) value).length() > 0;
   }
 
   /** Keys this server does not know are ignored (a newer contract), logged once per key. */

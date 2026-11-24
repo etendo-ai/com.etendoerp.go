@@ -25,8 +25,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
-import org.openbravo.dal.core.OBContext;
 import org.hibernate.criterion.Restrictions;
+import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 
@@ -37,9 +37,12 @@ import com.etendoerp.go.schemaforge.data.SFField;
  * Read side of the {@code validation} section (ETP-4558) for code outside this package: the
  * declared constraints of an entity, keyed by the field's API key.
  *
- * <p>Fields the caller cannot send are left out: not included, read-only, or with a configured
- * default (server-defaulted, so a "required" there must not refuse a request that omits it). A
- * field whose payload is unusable is skipped and logged, never half-applied.</p>
+ * <p>Only the field's <b>own</b> {@code MCP_CONFIG} is read: a {@code validation} section at entity
+ * or spec level is never inherited by fields, and a problem in an unrelated section of another level
+ * cannot make the field's constraints disappear. Fields the caller cannot send are left out: not
+ * included, read-only, or with a configured default (server-defaulted, so a "required" there must not
+ * refuse a request that omits it). A field whose own payload is unusable is skipped and logged at
+ * error level, never half-applied.</p>
  */
 public final class McpFieldValidationRules {
 
@@ -79,35 +82,53 @@ public final class McpFieldValidationRules {
           || Boolean.TRUE.equals(field.isReadOnly())) {
         continue;
       }
-      McpEntityConfig.Resolved resolved = McpEntityConfig.forField(field);
-      if (!resolved.isUsable()) {
-        log.warn("Declarative validation skipped for field {}: {}", apiKey,
-            resolved.describeProblems());
-        continue;
+      JSONObject body = ownValidation(field, apiKey);
+      if (body != null) {
+        rules.put(apiKey, hasDefault(field) ? withoutRequired(body) : body);
       }
-      resolved.section(McpValidationSection.NAME).ifPresent(body -> {
-        JSONObject effective = hasDefault(field) ? withoutRequired(body) : body;
-        if (effective != null) {
-          rules.put(apiKey, effective);
-        }
-      });
+    }
+  }
+
+  /** The field's own {@code validation} body, or {@code null} when absent or unusable. */
+  private static JSONObject ownValidation(SFField field, String apiKey) {
+    Object raw = field.get(McpEntityConfig.PROPERTY_MCP_CONFIG);
+    if (raw == null || StringUtils.isBlank(String.valueOf(raw))) {
+      return null;
+    }
+    try {
+      JSONObject body = new JSONObject(String.valueOf(raw)).optJSONObject(McpValidationSection.NAME);
+      if (body == null) {
+        return null;
+      }
+      List<String> problems = McpValidationSection.validate(body);
+      if (!problems.isEmpty()) {
+        log.error("Declarative validation NOT enforced for field {}: {}", apiKey,
+            String.join("; ", problems));
+        return null;
+      }
+      return body;
+    } catch (JSONException e) {
+      log.error("Declarative validation NOT enforced for field {}: MCP_CONFIG is not valid JSON",
+          apiKey);
+      return null;
     }
   }
 
   private static boolean hasDefault(SFField field) {
     return StringUtils.isNotBlank(field.getDefaultValue())
-        || (field.getADColumn() != null && StringUtils.isNotBlank(field.getADColumn().getDefaultValue()));
+        || (field.getADColumn() != null
+            && StringUtils.isNotBlank(field.getADColumn().getDefaultValue()));
   }
 
+  /** The body without {@code required}; it is a copy, the parsed body is not shared. */
   private static JSONObject withoutRequired(JSONObject body) {
     try {
       JSONObject copy = new JSONObject(body.toString());
       copy.remove(McpValidationSection.REQUIRED);
       return copy;
     } catch (JSONException e) {
-      // Never keep a "required" the field's default makes meaningless: skip the rule instead.
-      log.warn("Declarative validation skipped for a server-defaulted field: unreadable payload");
-      return null;
+      // Cannot happen for a body that was just parsed; never keep a meaningless "required".
+      throw new IllegalStateException("Could not copy a validation body", e);
     }
   }
 }

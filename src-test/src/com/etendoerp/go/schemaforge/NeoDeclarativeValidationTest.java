@@ -18,7 +18,11 @@ package com.etendoerp.go.schemaforge;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.when;
 
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -27,6 +31,12 @@ import java.util.function.UnaryOperator;
 
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.Test;
+import org.mockito.MockedStatic;
+import org.openbravo.model.ad.datamodel.Table;
+import org.openbravo.model.ad.ui.Tab;
+
+import com.etendoerp.go.mcp.McpFieldValidationRules;
+import com.etendoerp.go.schemaforge.data.SFEntity;
 
 /**
  * Production evaluation of the declarative constraints (ETP-4558), bypassing any frontend.
@@ -158,5 +168,77 @@ public class NeoDeclarativeValidationTest {
     // U+1F600 is two UTF-16 units; the contract documents that semantics.
     assertEquals("TOO_LONG", code(NeoDeclarativeValidation.evaluate(rules("n", "{\"maxLength\":1}"),
         SAME, new JSONObject("{\"n\":\"\uD83D\uDE00\"}"), true), "n"));
+  }
+
+  // ---- refusalFor: the boundary NeoWritePreflight calls ----
+
+  private static NeoContext context(String method, String body, SFEntity entity, Tab tab)
+      throws Exception {
+    return NeoContext.builder().specName("contacts").entityName("contact").httpMethod(method)
+        .requestBody(new JSONObject(body)).adTab(tab).sfEntity(entity)
+        .endpointType(NeoEndpointType.CRUD).build();
+  }
+
+  private Tab tab() {
+    Table table = mock(Table.class);
+    when(table.getName()).thenReturn("BusinessPartner");
+    Tab tab = mock(Tab.class);
+    when(tab.getTable()).thenReturn(table);
+    return tab;
+  }
+
+  @Test
+  public void refusalForWithoutRulesProceeds() throws Exception {
+    SFEntity entity = mock(SFEntity.class);
+    try (MockedStatic<McpFieldValidationRules> rules = mockStatic(McpFieldValidationRules.class)) {
+      rules.when(() -> McpFieldValidationRules.forEntity(entity)).thenReturn(new LinkedHashMap<>());
+      assertNull(NeoDeclarativeValidation.refusalFor(context("POST", "{}", entity, tab()), tab()));
+    }
+  }
+
+  @Test
+  public void refusalForViolationIsA400WithTheStableBody() throws Exception {
+    SFEntity entity = mock(SFEntity.class);
+    Tab tab = tab();
+    NeoFieldFilter filter = mock(NeoFieldFilter.class);
+    when(filter.resolveWritablePropName("etgoEmail")).thenReturn("email");
+    try (MockedStatic<McpFieldValidationRules> rules = mockStatic(McpFieldValidationRules.class);
+        MockedStatic<NeoFieldFilter> filters = mockStatic(NeoFieldFilter.class)) {
+      rules.when(() -> McpFieldValidationRules.forEntity(entity))
+          .thenReturn(rules("etgoEmail", "{\"format\":\"email\"}"));
+      filters.when(() -> NeoFieldFilter.forEntity(entity, "BusinessPartner")).thenReturn(filter);
+
+      NeoResponse post = NeoDeclarativeValidation.refusalFor(
+          context("POST", "{\"etgoEmail\":\"top-secret\"}", entity, tab), tab);
+      assertEquals(400, post.getHttpStatus());
+      assertEquals("VALIDATION_FAILED", post.getBody().getJSONObject("error").getString("code"));
+      assertFalse(post.getBody().toString().contains("top-secret"));
+
+      // The DAL spelling of the same field is judged too, and a valid PATCH proceeds.
+      assertEquals(400, NeoDeclarativeValidation.refusalFor(
+          context("PATCH", "{\"email\":\"bad\"}", entity, tab), tab).getHttpStatus());
+      assertNull(NeoDeclarativeValidation.refusalFor(
+          context("PATCH", "{\"etgoEmail\":\"a@b.com\"}", entity, tab), tab));
+    }
+  }
+
+  @Test
+  public void createRequiresPresenceButPatchDoesNot() throws Exception {
+    SFEntity entity = mock(SFEntity.class);
+    Tab tab = tab();
+    NeoFieldFilter filter = mock(NeoFieldFilter.class);
+    when(filter.resolveWritablePropName(org.mockito.ArgumentMatchers.anyString()))
+        .thenAnswer(inv -> inv.getArgument(0));
+    try (MockedStatic<McpFieldValidationRules> rules = mockStatic(McpFieldValidationRules.class);
+        MockedStatic<NeoFieldFilter> filters = mockStatic(NeoFieldFilter.class)) {
+      rules.when(() -> McpFieldValidationRules.forEntity(entity))
+          .thenReturn(rules("name", "{\"required\":true}"));
+      filters.when(() -> NeoFieldFilter.forEntity(entity, "BusinessPartner")).thenReturn(filter);
+
+      assertEquals(400, NeoDeclarativeValidation.refusalFor(
+          context("POST", "{\"other\":1}", entity, tab), tab).getHttpStatus());
+      assertNull(NeoDeclarativeValidation.refusalFor(
+          context("PATCH", "{\"other\":1}", entity, tab), tab));
+    }
   }
 }

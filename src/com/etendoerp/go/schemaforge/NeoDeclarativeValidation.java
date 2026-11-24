@@ -40,6 +40,7 @@ import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.model.ad.ui.Tab;
 
 import com.etendoerp.go.mcp.McpFieldValidationRules;
+import com.etendoerp.go.mcp.McpValidationSection;
 
 /**
  * Authoritative server-side enforcement of the per-field {@code validation} constraints
@@ -72,14 +73,6 @@ import com.etendoerp.go.mcp.McpFieldValidationRules;
  */
 final class NeoDeclarativeValidation {
 
-  private static final String K_MIN_LENGTH = "minLength";
-  private static final String K_MAX_LENGTH = "maxLength";
-  private static final String K_MINIMUM = "minimum";
-  private static final String K_MAXIMUM = "maximum";
-  private static final String K_REQUIRED_KEY = "required";
-  private static final String K_FORMAT = "format";
-  private static final String K_ENUM = "enum";
-  private static final String K_ALLOWED_SCHEMES = "allowedSchemes";
   private static final String K_EXPECTED = "expected";
   private static final String C_INVALID_TYPE = "INVALID_TYPE";
   private static final String C_REQUIRED = "REQUIRED";
@@ -142,33 +135,44 @@ final class NeoDeclarativeValidation {
       source = data;
     }
     for (Map.Entry<String, JSONObject> rule : rules.entrySet()) {
-      String apiKey = rule.getKey();
-      List<JSONObject> found = new ArrayList<>();
-      boolean present = false;
-      String propName = propResolver.apply(apiKey);
-      String[] candidates = propName == null || propName.equals(apiKey)
-          ? new String[] { apiKey } : new String[] { apiKey, propName };
-      for (String key : candidates) {
-        if (source.has(key)) {
-          present = true;
-          checkValue(rule.getValue(), source.opt(key), found);
-        }
-      }
-      if (!present && create && rule.getValue().optBoolean(K_REQUIRED_KEY, false)) {
-        found.add(error(C_REQUIRED));
-      }
+      List<JSONObject> found = evaluateRule(rule.getKey(), rule.getValue(), propResolver.apply(rule.getKey()),
+          source, create);
       if (!found.isEmpty()) {
-        errors.put(apiKey, found);
+        errors.put(rule.getKey(), found);
       }
     }
     return errors;
+  }
+
+  /** The violations of one field: found under its API key and/or its DAL name. */
+  private static List<JSONObject> evaluateRule(String apiKey, JSONObject rule, String propName,
+      JSONObject source, boolean create) {
+    List<JSONObject> found = new ArrayList<>();
+    boolean present = false;
+    for (String key : candidateKeys(apiKey, propName)) {
+      if (source.has(key)) {
+        present = true;
+        checkValue(rule, source.opt(key), found);
+      }
+    }
+    if (!present && create && rule.optBoolean(McpValidationSection.REQUIRED, false)) {
+      found.add(error(C_REQUIRED));
+    }
+    return found;
+  }
+
+  private static String[] candidateKeys(String apiKey, String propName) {
+    if (propName == null || propName.equals(apiKey)) {
+      return new String[] { apiKey };
+    }
+    return new String[] { apiKey, propName };
   }
 
   private static void checkValue(JSONObject rule, Object value, List<JSONObject> out) {
     boolean blank = value == null || JSONObject.NULL.equals(value)
         || (value instanceof String && ((String) value).trim().isEmpty());
     if (blank) {
-      if (rule.optBoolean(K_REQUIRED_KEY, false)) {
+      if (rule.optBoolean(McpValidationSection.REQUIRED, false)) {
         out.add(error(C_REQUIRED));
       }
       return;
@@ -180,7 +184,7 @@ final class NeoDeclarativeValidation {
   }
 
   private static void checkLength(JSONObject rule, Object value, List<JSONObject> out) {
-    if (!rule.has(K_MIN_LENGTH) && !rule.has(K_MAX_LENGTH)) {
+    if (!rule.has(McpValidationSection.MIN_LENGTH) && !rule.has(McpValidationSection.MAX_LENGTH)) {
       return;
     }
     if (!(value instanceof String)) {
@@ -189,16 +193,16 @@ final class NeoDeclarativeValidation {
     }
     // UTF-16 code units, the semantics the contract documents (JS String.length / AD fieldlength).
     int length = ((String) value).length();
-    if (rule.has(K_MIN_LENGTH) && length < rule.optLong(K_MIN_LENGTH)) {
-      out.add(error("TOO_SHORT", K_MIN_LENGTH, rule.opt(K_MIN_LENGTH)));
+    if (rule.has(McpValidationSection.MIN_LENGTH) && length < rule.optLong(McpValidationSection.MIN_LENGTH)) {
+      out.add(error("TOO_SHORT", McpValidationSection.MIN_LENGTH, rule.opt(McpValidationSection.MIN_LENGTH)));
     }
-    if (rule.has(K_MAX_LENGTH) && length > rule.optLong(K_MAX_LENGTH)) {
-      out.add(error("TOO_LONG", K_MAX_LENGTH, rule.opt(K_MAX_LENGTH)));
+    if (rule.has(McpValidationSection.MAX_LENGTH) && length > rule.optLong(McpValidationSection.MAX_LENGTH)) {
+      out.add(error("TOO_LONG", McpValidationSection.MAX_LENGTH, rule.opt(McpValidationSection.MAX_LENGTH)));
     }
   }
 
   private static void checkRange(JSONObject rule, Object value, List<JSONObject> out) {
-    if (!rule.has(K_MINIMUM) && !rule.has(K_MAXIMUM)) {
+    if (!rule.has(McpValidationSection.MINIMUM) && !rule.has(McpValidationSection.MAXIMUM)) {
       return;
     }
     BigDecimal number = asNumber(value);
@@ -206,16 +210,16 @@ final class NeoDeclarativeValidation {
       out.add(error(C_INVALID_TYPE, K_EXPECTED, "number"));
       return;
     }
-    if (rule.has(K_MINIMUM) && number.compareTo(decimal(rule.opt(K_MINIMUM))) < 0) {
-      out.add(error("BELOW_MINIMUM", K_MINIMUM, rule.opt(K_MINIMUM)));
+    if (rule.has(McpValidationSection.MINIMUM) && number.compareTo(decimal(rule.opt(McpValidationSection.MINIMUM))) < 0) {
+      out.add(error("BELOW_MINIMUM", McpValidationSection.MINIMUM, rule.opt(McpValidationSection.MINIMUM)));
     }
-    if (rule.has(K_MAXIMUM) && number.compareTo(decimal(rule.opt(K_MAXIMUM))) > 0) {
-      out.add(error("ABOVE_MAXIMUM", K_MAXIMUM, rule.opt(K_MAXIMUM)));
+    if (rule.has(McpValidationSection.MAXIMUM) && number.compareTo(decimal(rule.opt(McpValidationSection.MAXIMUM))) > 0) {
+      out.add(error("ABOVE_MAXIMUM", McpValidationSection.MAXIMUM, rule.opt(McpValidationSection.MAXIMUM)));
     }
   }
 
   private static void checkEnum(JSONObject rule, Object value, List<JSONObject> out) {
-    JSONArray allowed = rule.optJSONArray(K_ENUM);
+    JSONArray allowed = rule.optJSONArray(McpValidationSection.ENUM);
     if (allowed == null) {
       return;
     }
@@ -236,8 +240,8 @@ final class NeoDeclarativeValidation {
   }
 
   private static void checkFormatAndScheme(JSONObject rule, Object value, List<JSONObject> out) {
-    String format = rule.optString(K_FORMAT, null);
-    JSONArray schemes = rule.optJSONArray(K_ALLOWED_SCHEMES);
+    String format = rule.optString(McpValidationSection.FORMAT, null);
+    JSONArray schemes = rule.optJSONArray(McpValidationSection.ALLOWED_SCHEMES);
     if (format == null && schemes == null) {
       return;
     }
@@ -247,14 +251,14 @@ final class NeoDeclarativeValidation {
     }
     String text = ((String) value).trim();
     if (format != null && !matchesFormat(format, text)) {
-      out.add(error("INVALID_FORMAT", K_FORMAT, format));
+      out.add(error("INVALID_FORMAT", McpValidationSection.FORMAT, format));
     }
     if (schemes != null && !schemeAllowed(text, schemes)) {
-      out.add(error("DISALLOWED_SCHEME", K_ALLOWED_SCHEMES, schemes));
+      out.add(error("DISALLOWED_SCHEME", McpValidationSection.ALLOWED_SCHEMES, schemes));
     }
   }
 
-  /** Unknown formats are not enforced (logged once per call): a newer contract must not break writes. */
+  /** Unknown formats are not enforced (logged once per format): a newer contract must not break writes. */
   private static boolean matchesFormat(String format, String text) {
     switch (format.toLowerCase(Locale.ROOT)) {
       case "email":
