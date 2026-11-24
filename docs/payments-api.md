@@ -27,11 +27,12 @@ shared with the signup API. Tables: `ETGO_PAYMENT`, `ETGO_PAYMENT_EVENT`.
   it for its renewals. So `amountPaid` includes the VAT: the base of the invoice is `taxBase`,
   the tax `taxAmount`, and `taxes` says which tax and why.
 - **Stripe Tax must be configured before the code that asks for it is deployed**: Stripe Tax
-  active with Spain as head office and `exclusive` as tax behavior, a VAT registration in Spain,
-  a default tax code (`txcd_10103001`, SaaS for business use, also set on the product) and a
-  `tax_behavior` on every price the checkout uses. Without Stripe Tax or a price's tax behavior
-  the session is refused and nobody can buy; without the registration Stripe charges 0 % and says
-  nothing.
+  active with Spain as head office, `exclusive` as the default tax behavior and a default tax code
+  (`txcd_10103001`, SaaS for business use), and a standard VAT registration in Spain. A price with
+  `tax_behavior: unspecified` takes the default; a product with its own tax code uses that one
+  instead, so check it is the SaaS one. Without Stripe Tax, or with no tax behavior at all, the
+  session is refused and nobody can buy; without the registration Stripe charges 0 % and says
+  nothing. Test and live are configured separately: nothing is copied between them.
 - **Billing email = the account's email**, else the address Stripe billed.
 - **The ERP decides** whether an invoice may be simplified (no customer data, up to 400 € VAT
   included for Spanish customers) or must be complete. Fiscal data are **not** required at
