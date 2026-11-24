@@ -79,6 +79,43 @@ public final class StructuredAddressComposer {
   }
 
   /**
+   * The Street Name cap this composer enforces — <b>60, not the 70 of {@code EM_OBSEPA_StrtNm}</b>.
+   *
+   * <p>ETP-5806 CP-6b (QA finding): {@code etendo_schema} derived every {@code maxLength} from the
+   * AD column's own {@code FIELDLENGTH}, so it advertised 70 for a field {@link
+   * #fieldsExceedingMaxLength} rejects at 61 — an agent that trusted the schema got a {@code 400
+   * validation_error} for a value the schema had just told it was legal. The composer's caps are
+   * the only enforced ones, so they are the only honest ones to publish; the schema now reads
+   * them from here instead of from the column. See {@link #STREET_NAME_MAX_LENGTH} for why the
+   * column itself legitimately stays wider.
+   *
+   * @return the maximum number of characters a Street Name may carry
+   */
+  public static int streetNameMaxLength() {
+    return STREET_NAME_MAX_LENGTH;
+  }
+
+  /**
+   * The Building Number cap this composer enforces (ETP-5806 CP-6b) — see {@link
+   * #streetNameMaxLength()} for why the published schema reads the cap from here.
+   *
+   * @return the maximum number of characters a Building Number may carry
+   */
+  public static int buildingNumberMaxLength() {
+    return BUILDING_NUMBER_MAX_LENGTH;
+  }
+
+  /**
+   * The Building Name cap this composer enforces (ETP-5806 CP-6b) — see {@link
+   * #streetNameMaxLength()} for why the published schema reads the cap from here.
+   *
+   * @return the maximum number of characters a Building Name may carry
+   */
+  public static int buildingNameMaxLength() {
+    return BUILDING_NAME_MAX_LENGTH;
+  }
+
+  /**
    * Whether the {@code structured-address-for-sepa} backend-only flag (ETP-5806, TTL 2026-11-15)
    * is on <b>for the given account</b>.
    *

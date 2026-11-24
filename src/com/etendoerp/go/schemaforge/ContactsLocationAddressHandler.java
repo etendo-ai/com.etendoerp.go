@@ -24,8 +24,10 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.openbravo.module.bptaxidkey.ViesService;
@@ -119,6 +121,27 @@ public class ContactsLocationAddressHandler implements NeoHandler {
   private static final String FIELD_LOCATION_ADDRESS = "locationAddress";
   /** Free-text region, resolved server-side against the payload's own country. See {@link #resolveRegionByName}. */
   private static final String FIELD_REGION_NAME = "regionName";
+  /**
+   * ETP-5806 CP-12h (QA finding) — the {@code C_Location} keys {@link #putGeoLocFields} injects
+   * into EVERY record of a GET, single or list, regardless of the feature flag. Declared through
+   * {@link #responseEnrichedFields()} so the MCP projection validator stops calling them unknown;
+   * see that method for the full reasoning.
+   *
+   * <p>Base property names only, no {@code $}-companions: {@code McpFieldProjection} reduces a
+   * requested name to its base property before judging it, so {@code country$_identifier} is
+   * already covered by {@code country}.
+   */
+  private static final Set<String> ENRICHED_LOCATION_FIELDS = Set.of(
+      FIELD_ADDRESS_LINE1, FIELD_ADDRESS_LINE2, FIELD_CITY_NAME, FIELD_POSTAL_CODE, FIELD_COUNTRY,
+      FIELD_COUNTRY_CODE, FIELD_REGION, FIELD_REGION_NAME);
+  /**
+   * ETP-5806 CP-12h — the 3 structured SEPA keys, injected by {@link #putGeoLocFields} only while
+   * {@code structured-address-for-sepa} is on for the caller's account. Kept apart from
+   * {@link #ENRICHED_LOCATION_FIELDS} so the declaration follows the flag: while off the keys are
+   * genuinely absent from the response, and a caller that asks for them should keep being told so.
+   */
+  private static final Set<String> ENRICHED_STRUCTURED_FIELDS = Set.of(
+      FIELD_STREET_NAME, FIELD_BUILDING_NUMBER, FIELD_BUILDING_NAME);
   private static final String FIELD_RESPONSE = "response";
   private static final String FIELD_UPDATED = "updated";
   private static final String FIELD_DATA = "data";
@@ -177,6 +200,36 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     } finally {
       OBContext.restorePreviousMode();
     }
+  }
+
+  /**
+   * ETP-5806 CP-12h (QA finding) — the keys {@link #putGeoLocFields} injects into every GET
+   * record, declared so the MCP {@code fields:[…]} projection validator stops reporting them as
+   * {@code unknownFields} while the very same response carries their values.
+   *
+   * <p><b>Root cause this closes.</b> {@code McpQuerySupport#applyProjection} validates a caller's
+   * whitelist against {@code NeoFieldFilter#emittableResponseKeys()}, which is built from this
+   * spec's {@code ETGO_SF_FIELD} rows — i.e. the columns of {@code C_BPartner_Location}, the
+   * wrapper's own table. Every address field lives one table over, in {@code C_Location}, and
+   * reaches the response only because {@link #afterHandle} injects it. So
+   * {@code etendo_list contacts/locationAddress fields:[streetName, cityName, …]} returned the
+   * values AND reported all of them unknown — a self-contradiction an agent reads as a silent
+   * failure, and the reason {@code bp-location} (whose entity IS {@code C_Location}, so the same
+   * names are real curated fields there) showed no such symptom with the identical request.
+   *
+   * <p>The 3 structured SEPA keys follow the flag, the other 8 do not — see
+   * {@link #ENRICHED_STRUCTURED_FIELDS}. Nothing here filters, renames or writes anything; the
+   * only reader is the projection validator.
+   *
+   * @return the injected response keys, by base property name
+   */
+  @Override
+  public Set<String> responseEnrichedFields() {
+    Set<String> keys = new LinkedHashSet<>(ENRICHED_LOCATION_FIELDS);
+    if (StructuredAddressComposer.isEnabled(GoAccountResolver.currentAccountEmail())) {
+      keys.addAll(ENRICHED_STRUCTURED_FIELDS);
+    }
+    return keys;
   }
 
   @Override

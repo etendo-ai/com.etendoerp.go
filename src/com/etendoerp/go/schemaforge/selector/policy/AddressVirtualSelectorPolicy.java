@@ -180,7 +180,47 @@ public final class AddressVirtualSelectorPolicy {
           .collect(java.util.stream.Collectors.toUnmodifiableMap(
               Map.Entry::getValue, Map.Entry::getKey));
 
+  /**
+   * ETP-5806 CP-6b (QA finding) — the {@code maxLength} {@code etendo_schema} must publish for a
+   * structured SEPA address column, keyed by DB column name (upper-cased).
+   *
+   * <p><b>The column's own {@code FIELDLENGTH} is the wrong answer for these three.</b>
+   * {@code McpSchemaFieldBuilder#addMaxLength} derives {@code maxLength} from
+   * {@code AD_Column.getLength()}, which for {@code EM_OBSEPA_StrtNm} is 70 — while
+   * {@link StructuredAddressComposer#fieldsExceedingMaxLength} rejects anything over 60, because
+   * the street has to fit the 60-character {@code C_Location.Address1} line the composer writes
+   * it into. The schema therefore advertised a width the write path refuses: a 61-character
+   * street passed {@code etendo_schema}'s contract and came back
+   * {@code 400 validation_error "Field(s) exceed maximum length: streetName"}. The composer is
+   * the only enforcer, so it is the only honest source; the values are read from it rather than
+   * duplicated here, so the two can never drift. The column stays {@code VARCHAR(70)} on purpose
+   * — see {@code StructuredAddressComposer#STREET_NAME_MAX_LENGTH}.
+   *
+   * <p>Structural, like {@link #PUBLISHED_NAME_OVERRIDES} next to it: keyed by column and
+   * consulted identically for any entity carrying one of these columns — the wrapper entities
+   * through {@link #resolveVirtualColumns} and {@code bp-location} through
+   * {@code McpSchemaFieldBuilder}'s direct table walk — naming no spec and no table. Extend this
+   * map, never add a per-entity {@code if}.
+   */
+  private static final Map<String, Integer> MAX_LENGTH_OVERRIDES = Map.of(
+      "EM_OBSEPA_STRTNM", StructuredAddressComposer.streetNameMaxLength(),
+      "EM_OBSEPA_BLDGNB", StructuredAddressComposer.buildingNumberMaxLength(),
+      "EM_OBSEPA_BLDGNM", StructuredAddressComposer.buildingNameMaxLength());
+
   private AddressVirtualSelectorPolicy() {
+  }
+
+  /**
+   * The {@code maxLength} a caller should see for the given DB column when the enforced cap is
+   * narrower than the column itself — see {@link #MAX_LENGTH_OVERRIDES} (ETP-5806 CP-6b).
+   *
+   * @param dbColumnName AD column DB name (any case)
+   * @return the enforced maximum length, or {@code null} when the column has no override and the
+   *     AD column's own length is the right answer
+   */
+  public static Integer maxLengthOverride(String dbColumnName) {
+    return dbColumnName == null ? null
+        : MAX_LENGTH_OVERRIDES.get(dbColumnName.toUpperCase(java.util.Locale.ROOT));
   }
 
   /**

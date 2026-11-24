@@ -167,6 +167,18 @@ public final class NeoSelectorPolicy {
   }
 
   /**
+   * The {@code maxLength} {@code etendo_schema} should publish for a DB column whose enforced cap
+   * is narrower than the column itself (ETP-5806 CP-6b — see
+   * {@code AddressVirtualSelectorPolicy#MAX_LENGTH_OVERRIDES}).
+   *
+   * @param dbColumnName AD column DB name (any case)
+   * @return the enforced maximum length, or {@code null} when the AD column's own length applies
+   */
+  public static Integer maxLengthOverride(String dbColumnName) {
+    return AddressVirtualSelectorPolicy.maxLengthOverride(dbColumnName);
+  }
+
+  /**
    * The DAL property behind a published structured-address field name, when the given entity's
    * OWN table carries the backing column directly — e.g. {@code bp-location}, whose entity IS
    * {@code C_Location} (ETP-5806 CP-12g; see {@code AddressVirtualSelectorPolicy#ownPropertyForPublishedName}

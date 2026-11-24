@@ -757,10 +757,29 @@ final class McpSchemaFieldBuilder {
    * ETP-5848: the column's length on a text field, so an agent does not learn it from a
    * "Value too long … maximum allowed 40" refusal after the create. Text only: on any other type
    * the AD length is the storage of an id, a number or a date, not something the caller types.
+   *
+   * <p><b>ETP-5806 CP-6b — the AD column is not always the enforced cap.</b> A column whose write
+   * path validates against a narrower limit than {@code AD_Column.FIELDLENGTH} must publish the
+   * narrower one, or the schema promises a width the create then refuses: {@code EM_OBSEPA_StrtNm}
+   * is {@code VARCHAR(70)} on purpose, while {@code StructuredAddressComposer} rejects a street
+   * over 60 because that is what fits the composed {@code C_Location.Address1} line, and a
+   * 61-character street therefore came back {@code 400 validation_error} after {@code
+   * etendo_schema} had advertised {@code maxLength: 70}. The override is resolved per column
+   * through {@link NeoSelectorPolicy#maxLengthOverride} — structural, naming no spec and no
+   * entity, so it applies identically on the wrapper path ({@code buildVirtualAddressFields}) and
+   * on the direct table walk ({@code buildSchemaFieldsArray}), for every view.
    */
   static void addMaxLength(JSONObject fieldObj, Column col, String type) throws JSONException {
+    if (!McpConstants.TYPE_STRING.equals(type)) {
+      return;
+    }
+    Integer enforced = NeoSelectorPolicy.maxLengthOverride(col.getDBColumnName());
+    if (enforced != null) {
+      fieldObj.put(KEY_MAX_LENGTH, enforced.longValue());
+      return;
+    }
     Long length = col.getLength();
-    if (McpConstants.TYPE_STRING.equals(type) && length != null && length > 0) {
+    if (length != null && length > 0) {
       fieldObj.put(KEY_MAX_LENGTH, length.longValue());
     }
   }

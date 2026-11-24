@@ -554,6 +554,42 @@ class ContactsLocationAddressHandlerTest {
     }
   }
 
+  // ── ETP-5806 CP-12h: the enriched read keys are declared ───────────────
+
+  /**
+   * ETP-5806 CP-12h (QA finding, repro): {@code etendo_list contacts/locationAddress} with
+   * {@code fields:[streetName, buildingNumber, buildingName, cityName]} returned every value AND
+   * reported all four in {@code unknownFields}. The spec's {@code ETGO_SF_FIELD} rows describe
+   * {@code C_BPartner_Location}; every address field lives in {@code C_Location} and reaches the
+   * response only through {@code afterHandle}, so the MCP projection validator had no way to know
+   * they were emittable. {@code responseEnrichedFields()} is what tells it.
+   */
+  @Test
+  void responseEnrichedFieldsDeclaresEveryInjectedLocationKey() {
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(true)) {
+      java.util.Set<String> declared = handler.responseEnrichedFields();
+      assertTrue(declared.containsAll(java.util.List.of("addressLine1", "addressLine2", "cityName",
+          "postalCode", "country", "countryCode", "region", "regionName")), declared.toString());
+      assertTrue(declared.containsAll(
+          java.util.List.of("streetName", "buildingNumber", "buildingName")), declared.toString());
+    }
+  }
+
+  /**
+   * ETP-5806 CP-12h — with the flag off the 3 structured keys are genuinely absent from the
+   * response ({@code putGeoLocFields} omits them), so they must stay reportable as unknown.
+   */
+  @Test
+  void responseEnrichedFieldsOmitsStructuredKeysWhileFlagIsOff() {
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(false)) {
+      java.util.Set<String> declared = handler.responseEnrichedFields();
+      assertTrue(declared.contains("cityName"), declared.toString());
+      assertFalse(declared.contains("streetName"), declared.toString());
+      assertFalse(declared.contains("buildingNumber"), declared.toString());
+      assertFalse(declared.contains("buildingName"), declared.toString());
+    }
+  }
+
   // ── ETP-5806: structured-address-for-sepa flag OFF ─────────────────────
 
   /** Stubs {@link GoFeatureFlags#isEnabled} for the {@code structured-address-for-sepa} flag only. */
