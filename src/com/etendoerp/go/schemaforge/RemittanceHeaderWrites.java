@@ -112,10 +112,12 @@ final class RemittanceHeaderWrites {
    * <ul>
    *   <li><b>Create</b>: the account's IBAN when the body has none; for a collection the account's
    *       valid creditor identifier when the body has none, and the scheme {@code CORE} when the
-   *       body has none. A payment gets neither creditor identifier nor scheme.</li>
+   *       body has none. A payment gets neither creditor identifier nor scheme, nor financing
+   *       (the column default, N).</li>
    *   <li><b>Update</b> that changes the account, or switches between collection and payment: the
    *       account's IBAN when the body has none; the creditor identifier of the new account (cleared
-   *       when it has no valid one) for a collection, cleared for a payment. An update that changes
+   *       when it has no valid one) for a collection, cleared for a payment, whose financed flag is
+   *       also reset (financing is a collection option only). An update that changes
    *       neither (including a collection to collection type change) touches nothing.</li>
    * </ul>
    * Runs after every validation, so an account without a valid IBAN has already been refused
@@ -149,6 +151,11 @@ final class RemittanceHeaderWrites {
       }
     } else if (!create) {
       body.put(RemittanceHeaderHandler.FIELD_CREDITOR_ID, JSONObject.NULL);
+      // ETP-6247 (committee): «Remesa financiada» exists only for collections (pain.008). A
+      // remittance moved to a payment type (or account) drops the flag its collection had. An
+      // explicit financed=true never reaches here (validateOptions refuses it); a new payment
+      // gets the column default, N.
+      body.put(RemittanceHeaderHandler.FIELD_FINANCED, false);
     }
   }
 

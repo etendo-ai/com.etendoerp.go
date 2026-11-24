@@ -129,10 +129,15 @@ class RemittanceProcessActionTest {
     assertEquals("grouping", contract.getParams().get(0).getName());
     assertEquals(null, NeoActionContract.validate(contracts, "process", new JSONObject()),
         "the grouping is optional");
-    assertEquals(null, NeoActionContract.validate(contracts, "process",
-        new JSONObject().put("grouping", "GGPD")));
-    assertEquals(422, NeoActionContract.validate(contracts, "process",
-        new JSONObject().put("grouping", "XX")).getHttpStatus(), "only P or GGPD");
+    for (String grouping : java.util.List.of("P", "GGPD", "GGP")) {
+      assertEquals(null, NeoActionContract.validate(contracts, "process",
+          new JSONObject().put("grouping", grouping)), grouping);
+    }
+    // REM knows more groupings (by invoice, by order...); GO offers only these three.
+    for (String grouping : java.util.List.of("XX", "GGPI", "GGO", "R")) {
+      assertEquals(422, NeoActionContract.validate(contracts, "process",
+          new JSONObject().put("grouping", grouping)).getHttpStatus(), "only P, GGPD or GGP");
+    }
   }
 
   @Test

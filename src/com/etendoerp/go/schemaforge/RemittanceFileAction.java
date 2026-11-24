@@ -18,7 +18,6 @@
 package com.etendoerp.go.schemaforge;
 
 import java.io.IOException;
-import java.util.List;
 import java.util.Map;
 
 import javax.servlet.http.HttpServletResponse;
@@ -35,7 +34,6 @@ import org.openbravo.module.remittance.Remittance;
 
 import com.etendoerp.go.mcp.McpAttachmentLinks;
 import com.etendoerp.go.schemaforge.util.NeoActionContract;
-import com.etendoerp.go.schemaforge.util.NeoActionContract.Param;
 
 /**
  * ETP-6247 — the SEPA file actions of the remittance header ({@link RemittanceHeaderHandler}):
@@ -100,12 +98,7 @@ final class RemittanceFileAction {
             + "ready (the refusal lists the problems, as fileReadiness). Returns status (the "
             + "remittance status code), attachmentId, fileName and downloadUrl (a short-lived "
             + "link to the file, or null).",
-        Param.options(RemittanceProcessAction.P_GROUPING, "'"
-            + RemittanceProcessAction.GROUPING_NONE + "' one payment per line (default), '"
-            + RemittanceProcessAction.GROUPING_BP_DUE_DATE
-            + "' one payment per business partner and due date.",
-            List.of(RemittanceProcessAction.GROUPING_NONE,
-                RemittanceProcessAction.GROUPING_BP_DUE_DATE)))
+        RemittanceProcessAction.groupingParam())
         .withIdDescription(ID_DESCRIPTION)
         .withFieldValuesBody());
     contracts.put(ACTION_GENERATE, NeoActionContract.write(ACTION_GENERATE,

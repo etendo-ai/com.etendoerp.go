@@ -3100,17 +3100,27 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     avanzadas» owns them; needs the NEO push). `RemittanceHeaderWrites` normalizes them (scheme
     upper-cased, `financed` to a boolean from `true`/`Y`), 422 `ETGO_RemittanceSchemeInvalid` for a
     scheme other than CORE/B2B. On a **payment** remittance they do not apply: `B2B` or
-    `financed: true` is refused, 422 `ETGO_RemittanceOptionsCollectionOnly`; `CORE` / `false` are
-    dropped from the body. Processed remittances are not editable.
+    `financed: true` (or `"Y"`) is refused, 422 `ETGO_RemittanceOptionsCollectionOnly`; `CORE` /
+    `false` are dropped from the body. Committee decision (ETP-6247): «Remesa financiada» exists
+    only for collections (pain.008), never for payments (pain.001). An update that moves a
+    collection to a payment type (or account) also writes `financed: false`, so a flag left by the
+    collection does not survive; a new payment keeps the column default `N`. Processed remittances
+    are not editable.
   - **Read.** The fields travel with the header record; `sepaFileData` (with a saved remittance)
-    also answers `directDebitScheme` (`null` for a payment) and `financed`.
+    also answers `collection` (boolean), `directDebitScheme` (`null` for a payment) and `financed`
+    (always `false` for a payment, whatever is stored). Cobro or pago for the UI: the
+    `remittanceType` selector's `direction` (`collection` | `payment`) before saving, and
+    `sepaFileData.collection` for a saved remittance; the header record itself carries no derived
+    direction.
   - **File.** `CoreDirectDebit` reads both from the type and has no per-remittance hook, so, as for the
     IBAN and the creditor identifier, the output is rewritten by structure
     (`RemittanceCreditorIdRewriter.applyOptions`) and then validated against the XSD: `B2B` sets
     `PmtInf/PmtTpInf/LclInstrm/Cd` of every block; financed gives `GrpHdr/MsgId` the prefix within
     35 characters: when it does not fit, the ORIGINAL id is cut from its start
     (`RemittanceCreditorIdRewriter.prefixedMsgId`), so its unique end (the document number) is kept
-    (untouched when it already starts with the prefix). A plain CORE, non-financed remittance is
+    (untouched when it already starts with the prefix). The rewrite runs only on a CORE (collection)
+    type, so a payment's pain.001 never gets the prefix, even with a stale `ISFINANCED = Y`
+    (`RemittanceFileGenerator.withOptions`). A plain CORE, non-financed remittance is
     not rewritten (the type already writes CORE); a file without `LclInstrm/Cd` or `MsgId` to change
     is a `ETGO_RemittanceFileGenerationFailed`. The prefix is the type's own
     `SEPA_DD_Financed_58` value when it has one, else `RemittanceSepaOptions.FINANCED_PREFIX`
@@ -3187,8 +3197,12 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
   settlement the invoice shows paid 20.00, outstanding 33.24, and the 33.24 is a candidate for
   another remittance (verified in a rolled-back DAL run, ETP-6148 round 3).
 - **«Procesar»** — declared action `process` of the header (`RemittanceProcessAction`), POST, body
-  `{"fieldValues": {grouping?: "P" | "GGPD"}}` (default `P`, one payment per line; `GGPD` per
-  business partner and due date). Both remittance actions are declared `withFieldValuesBody()`:
+  `{"fieldValues": {grouping?: "P" | "GGPD" | "GGP"}}` (default `P`, one payment per line; `GGPD`
+  per business partner and due date; `GGP`, ETP-6247 «Agrupar solo por cliente», per business
+  partner whatever the due dates — REM's own «Group by business partner», whose payment and bank
+  instruction take the latest due date of the group). Any other value, REM's other groupings
+  included (by invoice, by order), is a 422 from the declared contract
+  (`RemittanceProcessAction.GROUPINGS`, shared by `process` and `confirm`). Both remittance actions are declared `withFieldValuesBody()`:
   the SPA presses them through its generic process dialog, which posts `fieldValues`, and
   `etendo_action` wraps the agent's flat parameters the same way; a flat body is still accepted.
   Runs Classic's `REMRemittanceProcess` (the «Process Remittance» button) directly, so window
@@ -3274,7 +3288,7 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     outstanding per line and, for a due split over several lines, their sum ≤ the outstanding
     (reported once per due, `lineIds` = its lines). A partner problem is reported once per partner and code (`lineIds` = every line it
     affects). `latestFile` is the record's main `.xml` attachment.
-  - `confirm` («Confirmar»; POST `{fieldValues: {grouping?: P | GGPD}}`) — all or nothing: 422
+  - `confirm` («Confirmar»; POST `{fieldValues: {grouping?: P | GGPD | GGP}}`) — all or nothing: 422
     `ETGO_RemittanceAlreadyProcessed` / `ETGO_RemittanceNoLines`; readiness, else 422
     `ETGO_RemittanceFileNotReady` with `error.problems`; then, in one transaction,
     `RemittanceSepaFileSetup.ensure` on the type (backfill), `EM_Etar_Automaticprocess` reset to
@@ -3292,6 +3306,14 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     (and later states; 422 `ETGO_RemittanceFileNotProcessed`), readiness without the amount check, then a **new** main
     attachment; the earlier files are kept and lose the main flag
     (`NeoAttachmentsHelper.markAsMain(attachment, keepPrevious = true)`). Same answer and refusals as `confirm`.
+  - **Grouped payments in the file (ETP-6247).** The generators write one `DrctDbtTxInf` /
+    `CdtTrfTxInf` per REM bank instruction, and REM makes one instruction per payment: with `GGP`
+    (or `GGPD`) a customer's dues are ONE transaction whose amount is their sum, and `NbOfTxs` /
+    `CtrlSum` count it once. Its `RmtInf/Ustrd` is REM's instruction description, which lists the
+    invoice numbers of the group; the generator cuts it at 140 characters (`substring`), so the
+    file stays valid but a long list loses its tail. Verified against the pain.008.001.08 XSD in
+    `RemittanceFileGeneratorIntegrationTest`. The SCT parameter `GroupBy_Duedate` is unrelated: it
+    lays out `PmtInf` blocks by execution date and groups no payments.
   - **The generator** is the remittance type's `Classname`, run as Classic's «Create File» button
     (`CreateFile.getFilePrintPage`): `init`, `generate`, `getMyError()`. The provisioned types get
     pain.008.001.08 `CoreDirectDebit` (CORE) and pain.001.001.09 `CreditTransfer` (SCT) with the
@@ -3405,7 +3427,7 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     payment). `reasonCode` when not returnable: `NOT_PROCESSED`, `NOT_SETTLED`, `ALREADY_RETURNED`,
     `NOT_A_COLLECTION`, `POSTED` (settlement or its bank transaction posted; accounting is out of
     scope), `RECONCILED` (bank transaction reconciled). `paymentLineIds`: the lines sharing the
-    payment (grouping `GGPD`); the payment is the returnable unit.
+    payment (grouping `GGPD`, or `GGP` across due dates); the payment is the returnable unit.
   - `returnLines` (POST `{fieldValues: {lineIds: [...], returnDate?: yyyy-MM-dd}}`; date default
     today, not in the future) — all or nothing, one transaction. The remittance row is locked
     (`lockRemittance`) before any line state is read, so two concurrent returns of the same line

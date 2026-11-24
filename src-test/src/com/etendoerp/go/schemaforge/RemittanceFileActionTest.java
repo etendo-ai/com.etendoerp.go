@@ -250,6 +250,21 @@ class RemittanceFileActionTest {
 
   // ---------------------------------------------------------------- confirm happy path
 
+  /** ETP-6247: «Agrupar solo por cliente» reaches REM as its own code, GGP. */
+  @Test
+  void confirmRunsTheProcessWithTheGroupingByBusinessPartner() throws Exception {
+    Remittance processed = processedReload("PR");
+    givenRun(success());
+    givenGenerated();
+
+    NeoResponse response = confirm(new JSONObject()
+        .put("fieldValues", new JSONObject().put("grouping", "GGP")));
+
+    assertEquals(200, response.getHttpStatus(), String.valueOf(response.getBody()));
+    action.verify(() -> RemittanceFileAction.runProcess(REM_ID, "GGP"));
+    action.verify(() -> RemittanceFileAction.generate(processed));
+  }
+
   @Test
   void confirmProcessesGeneratesAndStoresInOrderAndAnswersTheFile() throws Exception {
     Remittance processed = processedReload("PR");

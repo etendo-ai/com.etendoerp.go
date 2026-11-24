@@ -55,8 +55,8 @@ import org.openbravo.module.remittance.RemittanceLineReturn;
  * remittance: the module's return is a collection one), {@value #POSTED} (the settlement or its
  * bank transaction is posted: accounting is out of scope here) or {@value #RECONCILED} (the bank
  * transaction of the settlement is reconciled). A payment shared by several lines (grouping
- * {@code GGPD}) is returned whole: {@code paymentLineIds} lists the lines that share it and a
- * return must include all of them.
+ * {@code GGPD} or {@code GGP}) is returned whole: {@code paymentLineIds} lists the lines that
+ * share it and a return must include all of them.
  *
  * <p>{@code returnDate} of a {@value #RETURNED} line is the accounting date of the return row
  * created closest in time to the void of its payment (a return row does not point to the original

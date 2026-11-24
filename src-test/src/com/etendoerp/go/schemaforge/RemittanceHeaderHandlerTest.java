@@ -1895,6 +1895,20 @@ class RemittanceHeaderHandlerTest {
     assertEquals(ES_IBAN, body.getString("iBAN"));
     assertTrue(body.has("creditorIdentifier"));
     assertTrue(body.isNull("creditorIdentifier"));
+    // ETP-6247 (committee): financing is a collection option; the payment drops the flag.
+    assertFalse(body.getBoolean("financed"));
+  }
+
+  /** A collection keeps its financed flag on an account change: only a payment resets it. */
+  @Test
+  void anAccountChangeOfACollectionLeavesTheFinancedFlagAlone() throws Exception {
+    givenAccountValues();
+    givenStored(OLD_ACC_ID, TYPE_ID);
+    JSONObject body = new JSONObject().put("financialAccount", ACC_ID);
+
+    assertNull(handler.handle(context("PATCH", NeoEndpointType.CRUD, body, REM_ID)));
+
+    assertFalse(body.has("financed"));
   }
 
   @Test
@@ -2001,6 +2015,9 @@ class RemittanceHeaderHandlerTest {
     assertEquals(RemittanceHeaderHandler.MSG_OPTIONS_COLLECTION_ONLY, messageKey(b2b));
     NeoResponse financed = handler.handle(create(validBody().put("financed", true)));
     assertEquals(RemittanceHeaderHandler.MSG_OPTIONS_COLLECTION_ONLY, messageKey(financed));
+    NeoResponse financedY = handler.handle(create(validBody().put("financed", "Y")));
+    assertEquals(422, financedY.getHttpStatus());
+    assertEquals(RemittanceHeaderHandler.MSG_OPTIONS_COLLECTION_ONLY, messageKey(financedY));
 
     JSONObject defaults = validBody().put("directDebitScheme", "CORE").put("financed", false);
     assertNull(handler.handle(create(defaults)));
