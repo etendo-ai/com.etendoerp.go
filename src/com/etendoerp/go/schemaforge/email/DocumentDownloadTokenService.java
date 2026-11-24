@@ -89,9 +89,10 @@ public final class DocumentDownloadTokenService {
       suffix = DocShareLinkService.create(contractName, specName, recordId, clientId,
           idempotencyKey, expiresAtSeconds * 1000L);
     } catch (RuntimeException e) {
-      // The email must still go out: fall back to the signed token, which needs no row.
-      log.warn("Could not store the document share link, using a signed token: {}",
-          e.getMessage(), e);
+      // The email must still go out: fall back to the signed token, which needs no row. The key
+      // names the send, so the fallback can be traced back to it.
+      log.warn("Could not store the document share link for send {}, using a signed token: {}",
+          idempotencyKey, e.getMessage(), e);
       suffix = createToken(contractName, specName, recordId, clientId, idempotencyKey,
           expiresAtSeconds, secret);
     }

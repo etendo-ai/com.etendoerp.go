@@ -24,7 +24,11 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.sql.Timestamp;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,14 +37,16 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.database.ExternalConnectionPool;
 import org.openbravo.test.base.OBBaseTest;
 
 import com.etendoerp.go.schemaforge.email.DocumentDownloadTokenService.Claims;
 
 /**
- * Runs {@link DocShareLinkService} against the real {@code ETGO_Doc_Share_Link} table: only live
- * links resolve, opens are counted atomically, and the unique index on the share code
- * holds. Everything is rolled back at the end.
+ * Runs {@link DocShareLinkService} against the real {@code ETGO_Doc_Share_Link} table: a new row
+ * is committed on its own and survives a rollback of the caller's transaction, only live links
+ * resolve, opens are counted atomically, and the unique index on the share code holds. The rows
+ * {@code create} commits are deleted at the end; everything else is rolled back.
  *
  * @covers com.etendoerp.go.schemaforge.email.DocShareLinkService
  */
@@ -49,19 +55,42 @@ public class DocShareLinkServiceIntegrationTest extends OBBaseTest {
   private static final String CLIENT = "0";
   private static final long HOUR_MILLIS = 3600L * 1000L;
 
+  private final List<String> created = new ArrayList<>();
+
   @Before
   public void adminContext() {
     setTestAdminContext();
   }
 
   @After
-  public void rollbackChanges() {
+  public void rollbackChanges() throws SQLException {
     OBDal.getInstance().rollbackAndClose();
+    try (Connection connection = ExternalConnectionPool.getInstance().getConnection();
+        PreparedStatement delete = connection.prepareStatement(
+            "DELETE FROM etgo_doc_share_link WHERE share_code = ?")) {
+      connection.setAutoCommit(true);
+      for (String code : created) {
+        delete.setString(1, code);
+        delete.executeUpdate();
+      }
+    }
   }
 
-  private static String create(long expiresInMillis) {
-    return DocShareLinkService.create("sales-order-send", "sales-order", "REC1", CLIENT, "key",
-        System.currentTimeMillis() + expiresInMillis);
+  private String create(long expiresInMillis) {
+    String code = DocShareLinkService.create("sales-order-send", "sales-order", "REC1", CLIENT,
+        "key", System.currentTimeMillis() + expiresInMillis);
+    created.add(code);
+    return code;
+  }
+
+  /** The link is committed before the email goes out: a rollback of the send cannot undo it. */
+  @Test
+  public void aNewLinkSurvivesARollbackOfTheCallerTransaction() {
+    String code = create(HOUR_MILLIS);
+
+    OBDal.getInstance().rollbackAndClose();
+
+    assertTrue(DocShareLinkService.resolve(code).isPresent());
   }
 
   @Test
@@ -79,6 +108,9 @@ public class DocShareLinkServiceIntegrationTest extends OBBaseTest {
     assertFalse(DocShareLinkService.resolve(revoked).isPresent());
     assertFalse(DocShareLinkService.resolve("zzzzzzzzzz").isPresent());
     assertFalse(DocShareLinkService.revoke(revoked));
+    // Expired and revoked links stop resolving but their rows are kept: nothing deletes them.
+    assertEquals(1, count(expired));
+    assertEquals(1, count(revoked));
   }
 
   @Test
@@ -126,21 +158,6 @@ public class DocShareLinkServiceIntegrationTest extends OBBaseTest {
       chain.append(cause.getMessage()).append(" | ");
     }
     return chain.toString();
-  }
-
-  @Test
-  public void purgeRemovesOnlyRowsExpiredBeyondRetention() {
-    String old = create(-(DocShareLinkService.PURGE_RETENTION_DAYS + 1) * 24L * HOUR_MILLIS);
-    String recent = create(-HOUR_MILLIS);
-
-    // A purge deletes a bounded batch, so drain every older row a shared database may hold.
-    while (DocShareLinkService.purgeExpired(OBDal.getInstance().getSession(),
-        System.currentTimeMillis()) > 0) {
-      // keep purging
-    }
-
-    assertEquals(0, count(old));
-    assertEquals(1, count(recent));
   }
 
   private static int count(String code) {

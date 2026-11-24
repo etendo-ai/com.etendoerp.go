@@ -3511,15 +3511,19 @@ Returns `200 {}` when the row is removed. Returns `404` when no file exists for 
 
 ### 4.8 Document Download Endpoint
 
-Transactional email document links are served by a signed-token endpoint:
+Transactional email document links are served by a link-based endpoint:
 
 ```
+GET /sws/neo/document-download/{shareCode}
 GET /sws/neo/document-download/{token}
 ```
 
-This endpoint is link-token based because email recipients do not have the browser session that
-created the original preview `blob:` URL. The token is signed server-side and includes the email
-contract, document spec, record id, client id, send idempotency key, and expiration.
+This endpoint is link based because email recipients do not have the browser session that created
+the original preview `blob:` URL. Two link formats reach it (ETP-5035, see "Share links" below):
+a 10-character share code, which new emails carry, and a signed token, which links already in an
+inbox, the share-link fallback and the MCP attachment links carry. The signed token is signed
+server-side and includes the email contract, document spec, record id, client id, send idempotency
+key, and expiration.
 
 **Resolution (as of ETP-4315 Phase 8, 2026-08-18):** `NeoDocumentDownloadService.handle()` no
 longer looks up `ETGO_PREVIEW_FILE`. After validating the token, it maps the token's `specName` to
@@ -3551,6 +3555,43 @@ both resolve through the session's tenant, and these requests have none. The ema
 **Attachment links (ETP-5715).** The MCP's download links are the same token with one more claim, `att` (the attachment id), valid 10 minutes
 (`DocumentDownloadTokenService#createAttachmentToken`). With the claim present the endpoint serves exactly that attachment — never the main one —
 after checking it belongs to the signed record and client; without it, nothing changes. See §4.12.37.
+
+**Share links (ETP-5035).** New document emails carry `<base>/<shareCode>`: 10 random characters of
+`[A-Za-z0-9]` (about 60 bits, from `SecureRandom`, never a sequence), one `ETGO_Doc_Share_Link` row
+per link holding the contract, spec, record, client, the record's idempotency key, the expiry
+(the same TTL as the signed token, 7 days by default), `Revoked`, `Open_Count` and
+`First_Opened_At` (`DocShareLinkService`). A segment is a share code when it is exactly 10 characters
+of that alphabet; a signed token always holds a `.`, so the two never collide.
+
+- **Stored before the email is sent.** `DocShareLinkService.create` inserts the row on an
+  autocommit pooled connection of its own (`ExternalConnectionPool`), so the row is committed
+  before the provider call and a later rollback of the send transaction cannot leave the recipient
+  with a link that answers 404. A failure there never touches the send transaction.
+- **Fallback to the signed token.** When the row cannot be stored, `createDownloadLink` logs a WARN
+  naming the send's idempotency key and returns `<base>/<signed token>` instead, so the email still
+  goes out with a working link.
+- **Answers.** A share code that is unknown, expired or revoked answers `404 Document not found`,
+  the same answer as a live code whose file is gone, so the response never tells whether a record
+  exists. A signed token keeps its answers: `403 Invalid or expired link` when it does not verify,
+  `404 Document file not found` when the file is gone.
+- **Open counting.** Each download of a live share code that serves the file adds one to
+  `Open_Count` and stamps `First_Opened_At` once, on the request's own transaction behind a
+  savepoint; a failure is logged (with the spec and record, never the code, which is a live
+  credential) and the file is still served. Signed tokens count nothing.
+- **Email scanners are not opens.** Security gateways and link previewers fetch links before the
+  recipient does. A request whose `User-Agent` holds one of the tokens in
+  `NeoDocumentDownloadService.EMAIL_SCANNER_USER_AGENT_TOKENS` (Microsoft Safe Links and
+  BingPreview, Google's image proxy and Safe Browsing fetcher, Mimecast, Proofpoint, Barracuda,
+  Symantec/Broadcom/MessageLabs, Cisco IronPort, Trend Micro, Sophos; case-insensitive substrings)
+  still gets the file but is not counted. Many scanners present a plain browser `User-Agent`, and
+  those still count, so `Open_Count` is an upper bound and `First_Opened_At` may be a scanner's.
+- **No automatic deletion.** Expired and revoked rows stay in the table; nothing deletes them yet.
+  `DocShareLinkService.revoke` marks a link revoked and keeps its row; no screen, endpoint or MCP
+  tool calls it today.
+- **One link per send attempt.** Every attempt mints a new link, also one that ends up not sent
+  (duplicate, throttled, suppressed, provider failure). `Idempotency_Key` is per record, so all the
+  links of one document share it; the link a recipient got is the `download_link` of its
+  `ETGO_Email_Send_Log` row.
 
 #### Frontend integration
 

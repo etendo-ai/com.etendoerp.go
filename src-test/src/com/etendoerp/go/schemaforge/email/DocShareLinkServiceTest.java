@@ -19,13 +19,17 @@ package com.etendoerp.go.schemaforge.email;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.fail;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.util.Collections;
@@ -43,12 +47,13 @@ import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.database.ExternalConnectionPool;
 
 import com.etendoerp.go.schemaforge.email.DocumentDownloadTokenService.Claims;
 
 /**
- * Unit tests for {@link DocShareLinkService} (ETP-5035): code uniqueness, expiry and revocation
- * filtering, open counting and the purge of expired rows.
+ * Unit tests for {@link DocShareLinkService} (ETP-5035): code uniqueness, the row committed on a
+ * connection of its own, expiry and revocation filtering, and open counting.
  *
  * @covers com.etendoerp.go.schemaforge.email.DocShareLinkService
  */
@@ -77,28 +82,85 @@ public class DocShareLinkServiceTest {
     assertFalse(DocShareLinkService.isShareCode("eyJ2IjoidjEifQ.c2ln"));
   }
 
+  /**
+   * The row is written on an autocommit pooled connection of its own, so it is committed before
+   * the email goes out and a later rollback of the send transaction cannot take it back. A code
+   * that is already taken is drawn again.
+   */
   @Test
-  public void createRetriesACodeThatAlreadyExistsAndStoresTheRow() {
-    Session session = mock(Session.class);
-    NativeQuery<?> taken = query(Collections.singletonList(1));
-    NativeQuery<?> free = query(Collections.emptyList());
-    NativeQuery<?> insert = query(Collections.emptyList());
-    when(session.createNativeQuery(argThat(sql -> sql != null && sql.startsWith("SELECT 1"))))
-        .thenReturn((NativeQuery) taken, (NativeQuery) free);
-    when(session.createNativeQuery(argThat(sql -> sql != null && sql.startsWith("INSERT"))))
-        .thenReturn((NativeQuery) insert);
-    NativeQuery<?> emptyQuery = query(Collections.emptyList());
-    when(session.createNativeQuery(argThat(sql -> sql != null && sql.startsWith("DELETE"))))
-        .thenReturn((NativeQuery) emptyQuery);
+  public void createCommitsTheRowOnItsOwnConnectionAndRetriesATakenCode() throws Exception {
+    ExternalConnectionPool pool = mock(ExternalConnectionPool.class);
+    Connection connection = mock(Connection.class);
+    when(pool.getConnection()).thenReturn(connection);
+    PreparedStatement exists = mock(PreparedStatement.class);
+    ResultSet taken = mock(ResultSet.class);
+    when(taken.next()).thenReturn(true);
+    ResultSet free = mock(ResultSet.class);
+    when(free.next()).thenReturn(false);
+    when(exists.executeQuery()).thenReturn(taken, free);
+    PreparedStatement insert = mock(PreparedStatement.class);
+    when(connection.prepareStatement(argThat(sql -> sql != null && sql.startsWith("SELECT 1"))))
+        .thenReturn(exists);
+    when(connection.prepareStatement(argThat(sql -> sql != null && sql.startsWith("INSERT"))))
+        .thenReturn(insert);
+    OBDal dal = mock(OBDal.class);
+    long expiresAt = System.currentTimeMillis() + 1000L;
 
-    String code = withSession(session, () -> DocShareLinkService.create("c", "s", "r", "t", "k",
-        System.currentTimeMillis() + 1000L));
+    String code = withPool(pool, dal,
+        () -> DocShareLinkService.create("c", "s", "r", "t", "k", expiresAt));
 
     assertTrue(DocShareLinkService.isShareCode(code));
-    Mockito.verify(insert).setParameter("code", code);
-    Mockito.verify(insert).setParameter("record", "r");
-    Mockito.verify(insert).setParameter("client", "t");
+    Mockito.verify(exists, Mockito.times(2)).executeQuery();
+    Mockito.verify(connection).setAutoCommit(true);
+    Mockito.verify(insert).setString(2, "t");
+    Mockito.verify(insert).setString(8, code);
+    Mockito.verify(insert).setString(11, "r");
+    Mockito.verify(insert).setString(12, "k");
+    Mockito.verify(insert).setTimestamp(13, new Timestamp(expiresAt));
     Mockito.verify(insert).executeUpdate();
+    Mockito.verify(connection).close();
+    // The send transaction is never touched: no DAL session, no commit of the caller's work.
+    Mockito.verifyNoInteractions(dal);
+  }
+
+  /** A failed insert reaches the caller, which falls back to the signed token. */
+  @Test
+  public void failedInsertPropagatesAndReleasesTheConnection() throws Exception {
+    ExternalConnectionPool pool = mock(ExternalConnectionPool.class);
+    Connection connection = mock(Connection.class);
+    when(pool.getConnection()).thenReturn(connection);
+    PreparedStatement exists = mock(PreparedStatement.class);
+    ResultSet free = mock(ResultSet.class);
+    when(exists.executeQuery()).thenReturn(free);
+    PreparedStatement insert = mock(PreparedStatement.class);
+    when(insert.executeUpdate()).thenThrow(new SQLException("unique violation"));
+    when(connection.prepareStatement(argThat(sql -> sql != null && sql.startsWith("SELECT 1"))))
+        .thenReturn(exists);
+    when(connection.prepareStatement(argThat(sql -> sql != null && sql.startsWith("INSERT"))))
+        .thenReturn(insert);
+    OBDal dal = mock(OBDal.class);
+
+    try {
+      withPool(pool, dal,
+          () -> DocShareLinkService.create("c", "s", "r", "t", "k", System.currentTimeMillis()));
+      fail("the insert failure must propagate");
+    } catch (IllegalStateException expected) {
+      assertTrue(expected.getMessage(), expected.getMessage().contains("unique violation"));
+    }
+
+    Mockito.verify(connection).close();
+    Mockito.verifyNoInteractions(dal);
+  }
+
+  @Test
+  public void createWithoutAConnectionPoolFails() {
+    try {
+      withPool(null, mock(OBDal.class),
+          () -> DocShareLinkService.create("c", "s", "r", "t", "k", System.currentTimeMillis()));
+      fail("no pool, no row");
+    } catch (IllegalStateException expected) {
+      assertTrue(expected.getMessage(), expected.getMessage().contains("connection pool"));
+    }
   }
 
   @Test
@@ -155,8 +217,13 @@ public class DocShareLinkServiceTest {
     assertTrue(sql.getValue().contains("COALESCE(first_opened_at"));
   }
 
+  /**
+   * A failed open count rolls back to its savepoint, so the download request's transaction stays
+   * usable.
+   */
   @Test
-  public void failedInsertRollsBackToTheSavepointSoTheCallerTransactionSurvives() throws Exception {
+  public void failedOpenCountRollsBackToTheSavepointSoTheRequestTransactionSurvives()
+      throws Exception {
     Session session = mock(Session.class);
     Connection connection = mock(Connection.class);
     Savepoint savepoint = mock(Savepoint.class);
@@ -165,41 +232,22 @@ public class DocShareLinkServiceTest {
       invocation.<Work>getArgument(0).execute(connection);
       return null;
     }).when(session).doWork(Mockito.any(Work.class));
-    NativeQuery<?> free = query(Collections.emptyList());
-    when(session.createNativeQuery(argThat(sql -> sql != null && sql.startsWith("SELECT 1"))))
-        .thenReturn((NativeQuery) free);
-    NativeQuery<?> insert = query(Collections.emptyList());
-    when(insert.executeUpdate()).thenThrow(new IllegalStateException("unique violation"));
-    when(session.createNativeQuery(argThat(sql -> sql != null && sql.startsWith("INSERT"))))
-        .thenReturn((NativeQuery) insert);
+    NativeQuery<?> update = query(Collections.emptyList());
+    when(update.executeUpdate()).thenThrow(new IllegalStateException("lock timeout"));
+    when(session.createNativeQuery(anyString())).thenReturn((NativeQuery) update);
 
     try {
-      withSession(session,
-          () -> DocShareLinkService.create("c", "s", "r", "t", "k", System.currentTimeMillis()));
-      fail("the insert failure must propagate");
+      withSession(session, () -> {
+        DocShareLinkService.recordOpen(CODE);
+        return null;
+      });
+      fail("the update failure must propagate");
     } catch (IllegalStateException expected) {
-      assertEquals("unique violation", expected.getMessage());
+      assertEquals("lock timeout", expected.getMessage());
     }
 
     Mockito.verify(connection).rollback(savepoint);
     Mockito.verify(connection, Mockito.never()).releaseSavepoint(Mockito.any());
-  }
-
-  @Test
-  public void purgeDeletesRowsExpiredBeyondTheRetentionWindow() {
-    Session session = mock(Session.class);
-    NativeQuery<?> delete = query(Collections.emptyList());
-    when(delete.executeUpdate()).thenReturn(3);
-    when(session.createNativeQuery(argThat(sql -> sql != null && sql.startsWith("DELETE"))))
-        .thenReturn((NativeQuery) delete);
-    long now = System.currentTimeMillis();
-
-    assertEquals(3, DocShareLinkService.purgeExpired(session, now));
-
-    ArgumentCaptor<Timestamp> cutoff = ArgumentCaptor.forClass(Timestamp.class);
-    Mockito.verify(delete).setParameter(Mockito.eq("cutoff"), cutoff.capture());
-    long expected = now - DocShareLinkService.PURGE_RETENTION_DAYS * 24L * 3600L * 1000L;
-    assertEquals(expected, cutoff.getValue().getTime());
   }
 
   private static NativeQuery<?> query(List<?> rows) {
@@ -214,6 +262,18 @@ public class DocShareLinkServiceTest {
     when(dal.getSession()).thenReturn(session);
     try (MockedStatic<OBDal> obDal = Mockito.mockStatic(OBDal.class);
         MockedStatic<OBContext> context = Mockito.mockStatic(OBContext.class)) {
+      obDal.when(OBDal::getInstance).thenReturn(dal);
+      context.when(OBContext::getOBContext).thenReturn(null);
+      return action.get();
+    }
+  }
+
+  private static <T> T withPool(ExternalConnectionPool pool, OBDal dal, Supplier<T> action) {
+    try (MockedStatic<ExternalConnectionPool> poolStatic =
+        Mockito.mockStatic(ExternalConnectionPool.class);
+        MockedStatic<OBDal> obDal = Mockito.mockStatic(OBDal.class);
+        MockedStatic<OBContext> context = Mockito.mockStatic(OBContext.class)) {
+      poolStatic.when(ExternalConnectionPool::getInstance).thenReturn(pool);
       obDal.when(OBDal::getInstance).thenReturn(dal);
       context.when(OBContext::getOBContext).thenReturn(null);
       return action.get();

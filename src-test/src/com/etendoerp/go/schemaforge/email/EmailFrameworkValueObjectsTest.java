@@ -41,6 +41,7 @@ import java.util.concurrent.atomic.AtomicReference;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 
+import org.apache.logging.log4j.Level;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.Test;
@@ -50,6 +51,8 @@ import org.openbravo.base.exception.OBException;
 import org.openbravo.base.session.OBPropertiesProvider;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.model.ad.system.Client;
+
+import com.etendoerp.go.payment.TestLogCapture;
 
 /**
  * Unit tests for transactional email framework value objects.
@@ -305,18 +308,25 @@ public class EmailFrameworkValueObjectsTest {
   public void createDownloadLinkFallsBackToTheSignedTokenWhenTheRowCannotBeStored() {
     withDocumentDownloadProperties("https://go.example.test/etendo/sws/neo/document-download",
         "download-secret", "300", () -> {
+          TestLogCapture logs =
+              TestLogCapture.attachTo(DocumentDownloadTokenService.class, Level.WARN);
           try (MockedStatic<DocShareLinkService> links =
               Mockito.mockStatic(DocShareLinkService.class)) {
             links.when(() -> DocShareLinkService.create(anyString(), anyString(), anyString(),
                 anyString(), anyString(), anyLong())).thenThrow(new IllegalStateException("down"));
 
             String link = DocumentDownloadTokenService.createDownloadLink("sales-order-send",
-                "sales-order", "order-1", "tenant-1", "key").orElseThrow(AssertionError::new);
+                "sales-order", "order-1", "tenant-1", "send-key").orElseThrow(AssertionError::new);
 
             String token = link.substring(link.lastIndexOf('/') + 1);
             assertTrue(token.contains("."));
             assertEquals("order-1", DocumentDownloadTokenService.validate(token)
                 .orElseThrow(AssertionError::new).getRecordId());
+            // The fallback names the send it happened to, so it can be traced.
+            assertTrue(logs.messagesAt(Level.WARN).toString(), logs.messagesAt(Level.WARN)
+                .stream().anyMatch(line -> line.contains("send-key")));
+          } finally {
+            logs.detach();
           }
         });
   }
