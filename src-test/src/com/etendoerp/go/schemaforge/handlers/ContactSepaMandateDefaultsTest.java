@@ -19,7 +19,11 @@ package com.etendoerp.go.schemaforge.handlers;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -40,6 +44,7 @@ import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
+import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 
 import com.etendoerp.go.schemaforge.NeoContext;
@@ -71,6 +76,7 @@ class ContactSepaMandateDefaultsTest {
 
   private MockedStatic<ModelProvider> modelStatic;
   private MockedStatic<OBDal> dalStatic;
+  private MockedStatic<OBContext> contextStatic;
   private Entity bpEntity;
   private ModelProvider model;
   private Connection connection;
@@ -94,6 +100,7 @@ class ContactSepaMandateDefaultsTest {
 
     modelStatic = mockStatic(ModelProvider.class);
     modelStatic.when(ModelProvider::getInstance).thenReturn(model);
+    contextStatic = mockStatic(OBContext.class);
     dalStatic = mockStatic(OBDal.class);
     dalStatic.when(OBDal::getInstance).thenReturn(dal);
   }
@@ -101,6 +108,7 @@ class ContactSepaMandateDefaultsTest {
   @AfterEach
   void tearDown() {
     dalStatic.close();
+    contextStatic.close();
     modelStatic.close();
     Mockito.framework().clearInlineMocks();
   }
@@ -475,6 +483,44 @@ class ContactSepaMandateDefaultsTest {
     when(row.getString(3)).thenReturn(mandateId);
     when(row.getString(4)).thenReturn(mandateDate);
     when(row.getString(5)).thenReturn(created);
+  }
+
+  // ------------------------------------------- stored row read within the readable clients (ETP-6176)
+
+  private PreparedStatement givenSessionReading(boolean rowExists, String... clients)
+      throws Exception {
+    PreparedStatement statement = mock(PreparedStatement.class);
+    ResultSet stored = mock(ResultSet.class);
+    when(stored.next()).thenReturn(rowExists);
+    when(statement.executeQuery()).thenReturn(stored);
+    when(connection.prepareStatement(anyString())).thenReturn(statement);
+    when(connection.createArrayOf(eq("varchar"), any(Object[].class))).thenReturn(
+        mock(java.sql.Array.class));
+    OBContext session = mock(OBContext.class);
+    when(session.getReadableClients()).thenReturn(clients);
+    contextStatic.when(OBContext::getOBContext).thenReturn(session);
+    return statement;
+  }
+
+  /** The stored-row query carries the client filter, with the id and the clients bound. */
+  @Test
+  void theStoredRowQueryCarriesTheReadableClientsFilter() throws Exception {
+    PreparedStatement statement = givenSessionReading(true, "CLI-1", "0");
+    when(statement.executeQuery().getString(anyString())).thenReturn(null);
+
+    ContactSepaMandateDefaults.queryPersisted(RECORD_ID);
+
+    verify(connection).prepareStatement(argThat(sql -> sql.endsWith(" AND ad_client_id = ANY(?)")));
+    verify(statement).setString(1, RECORD_ID);
+    verify(statement).setArray(eq(2), any(java.sql.Array.class));
+  }
+
+  /** A row of another client is filtered out by the database: it reads as missing. */
+  @Test
+  void aRowOfAnotherClientReadsAsMissing() throws Exception {
+    givenSessionReading(false, "CLI-1");
+
+    assertNull(ContactSepaMandateDefaults.queryPersisted("FOREIGN"));
   }
 
   private static NeoContext context(String method, NeoEndpointType endpoint, JSONObject body) {

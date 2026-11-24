@@ -321,6 +321,67 @@ public class NeoReferenceSelectorValidationTest {
     assertNull(check(new JSONObject().put(PARTNER, PARTNER_ID).put(PARTNER + ".id", PARTNER_ID)));
   }
 
+  /** Object-wrapped ids are compared by their id: different ones conflict, the same one does not. */
+  @Test
+  public void testObjectWrappedIdsAreComparedByTheirId() throws Exception {
+    NeoReferenceSelectorValidation.RefusedReference differing = check(new JSONObject()
+        .put(PARTNER, new JSONObject().put("id", PARTNER_ID)).put(PARTNER + ".id", "OTHER-BP"));
+    assertEquals(PARTNER + ".id", differing.fieldName());
+    assertEquals("OTHER-BP", differing.value());
+
+    offers(Boolean.TRUE);
+    assertNull(check(new JSONObject().put(PARTNER, new JSONObject().put("id", PARTNER_ID))
+        .put(PARTNER + ".id", PARTNER_ID)));
+  }
+
+  /** A plain id against an object-wrapped {@code x.id}, or a null plain value against an id, conflicts. */
+  @Test
+  public void testPlainAgainstWrappedAndNullAgainstIdConflict() throws Exception {
+    NeoReferenceSelectorValidation.RefusedReference wrapped = check(new JSONObject()
+        .put(PARTNER, PARTNER_ID).put(PARTNER + ".id", new JSONObject().put("id", "OTHER-BP")));
+    assertEquals(PARTNER + ".id", wrapped.fieldName());
+    assertEquals("OTHER-BP", wrapped.value());
+
+    NeoReferenceSelectorValidation.RefusedReference nullId = check(new JSONObject()
+        .put(PARTNER, new JSONObject().put("id", JSONObject.NULL)).put(PARTNER + ".id", PARTNER_ID));
+    assertEquals(PARTNER + ".id", nullId.fieldName());
+
+    NeoReferenceSelectorValidation.RefusedReference nullValue = check(new JSONObject()
+        .put(PARTNER, JSONObject.NULL).put(PARTNER + ".id", PARTNER_ID));
+    assertEquals(PARTNER + ".id", nullValue.fieldName());
+    assertEquals(PARTNER_ID, nullValue.value());
+  }
+
+  /** On create an explicit parentId wins over the link value, whose header is never read. */
+  @Test
+  public void testOnCreateAnExplicitParentIdWinsOverTheBodyLink() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      offers(Boolean.TRUE);
+
+      NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
+          LineFixture.HEADER_ID, new JSONObject().put(LineFixture.LINK, "OTHER-HEADER")
+              .put(LineFixture.BIN, LineFixture.BIN_ID));
+
+      assertEquals(LineFixture.WAREHOUSE_ID, contextFor(LineFixture.BIN).get("M_Warehouse_ID"));
+      Mockito.verify(dal, never()).get(LineFixture.HEADER_ENTITY, "OTHER-HEADER");
+    }
+  }
+
+  /** With no stored parent, no parentId and no link value there is no parent: no parent fields. */
+  @Test
+  public void testWithoutAnyParentTheContextHasNoParentFields() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      offers(Boolean.TRUE);
+
+      NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null, null,
+          new JSONObject().put(LineFixture.BIN, LineFixture.BIN_ID));
+
+      Map<String, String> context = contextFor(LineFixture.BIN);
+      assertNull(context.get("M_Warehouse_ID"));
+      assertNull(context.get("M_InOut_ID"));
+    }
+  }
+
   /** The {@code <reference>.id} spelling is selector-validated like the plain key. */
   @Test
   public void testIdSpellingOfAReferenceIsValidated() throws Exception {
