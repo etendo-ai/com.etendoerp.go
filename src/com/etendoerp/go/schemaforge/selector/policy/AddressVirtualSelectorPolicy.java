@@ -219,7 +219,46 @@ public final class AddressVirtualSelectorPolicy {
       KEY_BUILDING_NUMBER, StructuredAddressComposer.buildingNumberMaxLength(),
       KEY_BUILDING_NAME, StructuredAddressComposer.buildingNameMaxLength());
 
+  /**
+   * ETP-5806 CP-13 (QA finding) — the {@code C_Location} columns the structured-address composer
+   * OWNS on write, keyed in upper case: whatever a caller sends for them is overwritten by
+   * {@link StructuredAddressComposer#composeAddressLines} while the flag is on.
+   *
+   * <p><b>The schema advertised them as writable and the write silently discarded them.</b>
+   * {@code etendo_schema contacts/locationAddress view:"create"} listed {@code addressLine1} and
+   * {@code addressLine2} under {@code optional} — "accepted but not needed" — so an agent that sent
+   * a hand-written second line got {@code 201}, saw no {@code adjustedFields} and no warning, and
+   * had to re-read the record to discover that {@code addressLine1} held the composed value and
+   * {@code addressLine2} had become {@code null}. The handler short-circuits the generic CRUD path,
+   * so the {@code adjustedFields} reconciliation never runs there and reporting the rewrite was not
+   * reachable; the honest fix is for the contract to stop offering them. They stay published as
+   * read-only fields, so they remain discoverable and readable — only the claim that a caller may
+   * set them goes away.
+   *
+   * <p>Structural and keyed by column, like {@link #MAX_LENGTH_OVERRIDES} and
+   * {@link #PUBLISHED_NAME_OVERRIDES} beside it: it applies to every entity that carries these
+   * columns, directly ({@code bp-location}) or through the wrapper path, and names no spec and no
+   * table. With the flag OFF nothing changes — the two lines are the legacy free-text address and
+   * remain editable.
+   */
+  private static final Set<String> COMPOSER_OWNED_COLUMNS = Set.of("ADDRESS1", "ADDRESS2");
+
   private AddressVirtualSelectorPolicy() {
+  }
+
+  /**
+   * Whether the structured-address composer owns this column's value on write — see
+   * {@link #COMPOSER_OWNED_COLUMNS} (ETP-5806 CP-13).
+   *
+   * <p>Says nothing about the flag: the caller decides whether the structured path is active, the
+   * same way {@code McpSchemaFieldBuilder}'s gate already does for the 3 structured columns.
+   *
+   * @param dbColumnName AD column DB name (any case); {@code null} answers {@code false}
+   * @return {@code true} when a caller's value for this column is replaced by the composer
+   */
+  public static boolean isComposerOwnedColumn(String dbColumnName) {
+    return dbColumnName != null
+        && COMPOSER_OWNED_COLUMNS.contains(dbColumnName.toUpperCase(java.util.Locale.ROOT));
   }
 
   /**

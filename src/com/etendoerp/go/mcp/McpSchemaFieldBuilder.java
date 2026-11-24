@@ -640,6 +640,46 @@ final class McpSchemaFieldBuilder {
     }
   }
 
+  /**
+   * ETP-5806 CP-13 (QA finding) — republishes the composer-owned address lines as read-only while
+   * {@code structured-address-for-sepa} is on for the caller's account.
+   *
+   * <p>{@code addressLine1}/{@code addressLine2} were advertised under {@code view:"create"}'s
+   * {@code optional} group, which its own hint describes as "accepted but not needed", while the
+   * structured-address handlers overwrite both from {@code streetName}/{@code buildingNumber}/
+   * {@code buildingName} on every write and report nothing. Read-only keeps them discoverable and
+   * readable — {@link #isAgentSuppliable} is what drops them from the create projection — and
+   * removes the only part of the descriptor that was false.
+   *
+   * <p>Applied as a post-processing overlay, for the same two reasons
+   * {@link #applyPreconditionRequirements} is: {@link #buildSchemaField} is at its parameter budget
+   * (Sonar S107) and cannot take the gate, and one overlay covers both the direct table walk
+   * ({@code bp-location}, whose entity IS {@code C_Location}) and the wrapper path
+   * ({@code contacts/locationAddress}, {@code warehouse/location}) with one rule instead of two.
+   *
+   * <p>The gate is consulted only after a composer-owned column is actually found, so a walk over a
+   * table that has none — almost every table — never resolves the account, and a table that has
+   * both resolves it once (see {@link StructuredAddressGate}).
+   *
+   * @param fieldsArray the fully assembled field array, mutated in place; may be {@code null}
+   * @throws JSONException if a descriptor cannot be rewritten
+   */
+  static void applyComposerOwnedVisibility(JSONArray fieldsArray) throws JSONException {
+    if (fieldsArray == null) {
+      return;
+    }
+    StructuredAddressGate gate = new StructuredAddressGate();
+    for (int i = 0; i < fieldsArray.length(); i++) {
+      JSONObject field = fieldsArray.optJSONObject(i);
+      String column = field == null ? null : field.optString("column", null);
+      if (NeoSelectorPolicy.isComposerOwnedColumn(column) && gate.isEnabled()) {
+        field.put(KEY_VISIBILITY, VISIBILITY_READ_ONLY);
+        field.put(KEY_READ_ONLY, true);
+        field.put(KEY_USER_REQUIRED, false);
+      }
+    }
+  }
+
   private static boolean shouldIncludeSchemaColumn(Column col, java.util.Set<String> systemColumns,
       FieldMetadata fieldMetadata, StructuredAddressGate structuredAddressGate) {
     if (!col.isActive() || systemColumns.contains(col.getDBColumnName().toUpperCase())) {
