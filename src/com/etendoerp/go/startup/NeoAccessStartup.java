@@ -225,9 +225,17 @@ public class NeoAccessStartup extends SessionAwareStartup {
       return ROLE_GONE;
     }
     Organization orgZero = OBDal.getInstance().get(Organization.class, ORG_ZERO);
-    int windowGranted = grantWindowAccess(role, orgZero, input.specWindowIds, pass);
-    int processGranted = grantProcessAccess(role, orgZero, input.specProcessIds, pass);
-    int reportGranted = grantReportAccess(role, orgZero, pass);
+    // One shared set per access type (ETP-6410): the DAL session flushes on COMMIT only, so a
+    // later query would not see the rows saved earlier in this same pass.
+    pass.at("existing-access lookup", "n/a");
+    Set<String> existingWindows = existingWindowIds(role);
+    Set<String> existingProcesses = existingProcessIds(role);
+    int windowGranted = grantWindowAccess(role, orgZero, input.specWindowIds, existingWindows,
+        pass);
+    int processGranted = grantProcessAccess(role, orgZero, input.specProcessIds,
+        existingProcesses, pass);
+    int reportGranted = grantReportAccess(role, orgZero, existingWindows, existingProcesses,
+        pass);
     pass.at("flush", "n/a");
     OBDal.getInstance().flush();
     pass.at("commit", "n/a");
@@ -300,8 +308,7 @@ public class NeoAccessStartup extends SessionAwareStartup {
   }
 
   private int grantWindowAccess(Role role, Organization orgZero, Set<String> windowIds,
-      RolePass pass) {
-    Set<String> existing = existingWindowIds(role);
+      Set<String> existing, RolePass pass) {
     int granted = 0;
     for (String windowId : windowIds) {
       if (!existing.contains(windowId)) {
@@ -323,8 +330,7 @@ public class NeoAccessStartup extends SessionAwareStartup {
   }
 
   private int grantProcessAccess(Role role, Organization orgZero, Set<String> processIds,
-      RolePass pass) {
-    Set<String> existing = existingProcessIds(role);
+      Set<String> existing, RolePass pass) {
     int granted = 0;
     for (String processId : processIds) {
       if (!existing.contains(processId)) {
@@ -358,9 +364,8 @@ public class NeoAccessStartup extends SessionAwareStartup {
    * that one row, same permissive-skip convention {@link #grantWindowAccess}/{@link
    * #grantProcessAccess} already use for a spec with no linked window/process.
    */
-  private int grantReportAccess(Role role, Organization orgZero, RolePass pass) {
-    Set<String> existingWindowIds = existingWindowIds(role);
-    Set<String> existingProcessIds = existingProcessIds(role);
+  private int grantReportAccess(Role role, Organization orgZero, Set<String> existingWindowIds,
+      Set<String> existingProcessIds, RolePass pass) {
     Set<String> existingObuiappProcessIds = existingObuiappProcessIds(role);
     int granted = 0;
     for (ReportAccessCatalog.Row row : ReportAccessCatalog.ROWS) {
