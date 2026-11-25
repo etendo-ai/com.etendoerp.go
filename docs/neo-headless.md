@@ -12455,9 +12455,9 @@ the same moment.
 
 **Access rule: `NeoAccessHelper.isAdminOrClientAdmin`, checked before anything is read or
 scheduled.** A caller with a restricted role, or with no role at all, gets the `notAuthorized`
-payload. The frontend's `acct-process-monitor` feature flag gates only the menu entry — the React
-route is registered unconditionally — so this check is the actual authorization boundary and must
-not be weakened on the assumption that the flag protects anything.
+payload. The frontend menu entry is gated by the `isAdminOrClientAdmin` capability, which is visual only — the
+React route is registered unconditionally — so this check is the actual authorization boundary and
+must not be weakened on the assumption that hiding the menu entry protects anything.
 
 It enters `OBContext.setAdminMode(true)` — the **stricter** variant, which keeps the cross-client
 write check, unlike the no-arg form its ten siblings in this package use. Admin mode is required
