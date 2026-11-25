@@ -2963,11 +2963,12 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     changes the account or switches between collection and payment (a payment, or an account without
     a valid one, clears it); an identifier the body carries is respected. The Classic form gets the
     same from the callout `RemittanceSepaDefaultsCallout` (module `org.openbravo.module.remittance`).
-    `confirm` and `generateFile` snapshot the account's
-    valid identifier into a remittance that has none, in their own transaction before the file is
+    `confirm` snapshots the account's
+    valid identifier into a remittance that has none, in its own transaction before the file is
     generated (`RemittanceCreditorId.forFile`), so remittances created before this change behave
-    as before and keep that file's identifier afterwards. They lock the remittance row first
-    (`lockRemittance`), as the write below does.
+    as before and keep that identifier afterwards; `downloadFile` takes the same copy but rolls it
+    back (it writes nothing). Both lock the remittance row first (`lockRemittance`), as the write
+    below does.
   - **Read** — `sepaFileData` (`{accountId, organizationId?, remittanceId?}`; the record id of a
     saved remittance counts as `remittanceId`, `new` as none). Besides the earlier fields:
     `remittanceCreditorId` (the remittance's copy; `null` when none, invalid, or the remittance is on
@@ -3011,10 +3012,10 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     a collection create, and on an update that changes the account or the kind of type); only a collection takes one (422
     `ETGO_RemittanceOptionsCollectionOnly` on a payment); never written to the account.
     `saveCreditorId` stays for the financial-account modal (`saveToAccount`).
-  - **fileReadiness / confirm / generateFile**: for a **collection** (`CORE`), a remittance with an own
+  - **fileReadiness / confirm / downloadFile**: for a **collection** (`CORE`), a remittance with an own
     copy or an account default that is valid needs nothing. With NONE at all but the identifier
-    computed from the organization can be formed, it is NOT a problem: confirm / generateFile keep
-    that computed one as the remittance's COPY (never the account's), in their own transaction,
+    computed from the organization can be formed, it is NOT a problem: confirm keeps
+    that computed one as the remittance's COPY (never the account's), in its own transaction,
     before generating. It is an `account` problem only when none is valid and none can be computed
     (organization without tax ID or country): `ETGO_RemittanceFileAccountNoCreditorId` with
     `suggestedCreditorId: null`; and for an own value that is present but invalid,
@@ -3039,8 +3040,9 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     no valid identifier is refused (`ETGO_RemittanceFileAccountNoCreditorId`) even if readiness was
     skipped.
   - **Existing remittances.** There is no backfill. An old remittance takes its account's default
-    when it is confirmed or its file regenerated and keeps it; with none anywhere, the next
-    `confirm` or `generateFile` of a collection reports the problem until the user saves one.
+    when it is confirmed and keeps it (a download uses it without keeping it); with none anywhere,
+    the next `confirm` or `downloadFile` of a collection reports the problem until the user saves
+    one.
 - **The remittance's own IBAN (ETP-6247).** The IBAN typed in the «Datos para el fichero SEPA»
   block is NOT saved on the account any more: the remittance keeps its own COPY of the account's
   IBAN in `REM_REMITTANCE.IBAN` (a column of `org.openbravo.module.remittance`, `NVARCHAR(34)`,
@@ -3053,8 +3055,8 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     the account or switches between collection and payment (any other type change keeps a typed IBAN);
     an IBAN the body carries is kept. The SPA sends a blank IBAN on an account change, and the server
     resolves it. The Classic form gets the same from the callout `RemittanceSepaDefaultsCallout`.
-    `confirm` / `generateFile` snapshot the account's valid IBAN into a
-    remittance without a copy (`RemittanceIban.forFile`), as for the creditor identifier.
+    `confirm` snapshots the account's valid IBAN into a remittance without a copy
+    (`RemittanceIban.forFile`), as for the creditor identifier; `downloadFile` rolls it back.
   - **Write: the header's CRUD, field `iBAN`** (decisions `entities.remittance.fields.iBAN`,
     editable, not in the generic form; needs `make regen ONLY=remittance PUSH_TO_NEO=1` and
     `export.database`). Chosen over an action because it is the only way to give the IBAN BEFORE
@@ -3253,8 +3255,7 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     SCT | null), problems: [{scope: org | account | line, code, message (request language), params
     (positional), organizationId | accountId | lineId + lineIds + businessPartnerId +
     businessPartnerName + invoiceId + documentNo}], summary: {invoiceCount (distinct invoices),
-    lineCount, totalAmount, currency (ISO), dueDate (yyyy-MM-dd)}, latestFile: {attachmentId,
-    fileName} | null}`. Writes nothing. The checks mirror what Classic's generators refuse, with the
+    lineCount, totalAmount, currency (ISO), dueDate (yyyy-MM-dd)}, returnedCount}`. Writes nothing. The checks mirror what Classic's generators refuse, with the
     parameters the provisioned types carry: **organization** — its own `AD_OrgInfo` (no parent
     fallback, as `SEPA_RemittanceCreateFile` reads it): an address with locality and country and
     the structured street name and building number (`OBSEPA_StreetName`/`BuildingNumber`, required
@@ -3275,7 +3276,9 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     (`SEPAUtil.getBusinessPartnerAddressError`); and, while not processed, `0 < amount ≤` the due's
     outstanding per line and, for a due split over several lines, their sum ≤ the outstanding
     (reported once per due, `lineIds` = its lines). A partner problem is reported once per partner and code (`lineIds` = every line it
-    affects). `latestFile` is the record's main `.xml` attachment.
+    affects). `returnedCount`: the receipts the bank returned (distinct payments with a processed
+    return row, `RemittanceReturnState.returnedCount`), which a download still lists, so the SPA
+    can warn before downloading.
   - `confirm` («Confirmar»; POST `{fieldValues: {grouping?: P | GGPD | GGP}}`) — all or nothing: 422
     `ETGO_RemittanceAlreadyProcessed` / `ETGO_RemittanceNoLines`; readiness, else 422
     `ETGO_RemittanceFileNotReady` with `error.problems`; then, in one transaction,
@@ -3283,17 +3286,35 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     `'N'` when an earlier version created the remittance automatic (`RemittanceProcessAction
     .disableAutomaticSettlement`), then `REMRemittanceProcess`, **without** the automatic
     settlement: the payments are created in status `REM_SENT` (Remitted), the invoices stay unpaid
-    and the remittance ends `PR` («Pendiente de envío»); the file is generated (`RemittanceFileGenerator`) and
-    stored as the record's main attachment. Any refusal rolls back everything: 422
+    and the remittance ends `PR` («Pendiente de envío»); the file is generated in memory
+    (`RemittanceFileGenerator`) only to prove it can be (schema and EPC rules) and is **not
+    stored**. Any refusal rolls back everything: 422
     `ETGO_RemittanceProcessFailed` (REM's text), `ETGO_RemittanceFileGenerationFailed` (the
     generator's `getMyError()` / `getLineErrorDetail()`), `ETGO_RemittanceFileInvalid` (schema),
-    `ETGO_RemittanceFileNoGenerator`, `ETGO_RemittanceFileSchemaMissing`. → `{status, attachmentId, fileName, downloadUrl}`
-    (`downloadUrl`: the signed short-lived `/sws/neo/document-download/` link the MCP hands out, or
-    `null` without a signing secret; the SPA downloads through `/sws/neo/attachments/file/{id}`).
-  - `generateFile` («Regenerar fichero»; POST `{}`) — processed remittances only, so `PR` and `SB`
-    (and later states; 422 `ETGO_RemittanceFileNotProcessed`), readiness without the amount check, then a **new** main
-    attachment; the earlier files are kept and lose the main flag
-    (`NeoAttachmentsHelper.markAsMain(attachment, keepPrevious = true)`). Same answer and refusals as `confirm`.
+    `ETGO_RemittanceFileNoGenerator`, `ETGO_RemittanceFileSchemaMissing`. → `{status, fileName}`;
+    the file is then taken with `downloadFile`.
+  - `downloadFile` («Descargar fichero»; read: GET or POST `{}`) — ETP-6247: the file is generated
+    **now, from the current data, on every download**, and answered in the response, as Classic's
+    «Create File» button (`CreateFile`) does: nothing is attached or stored (XML files earlier
+    versions attached stay as ordinary attachments, no migration). Any processed remittance is
+    served, `AN` included, as Classic's button (`@Processed@='Y'`); the SPA offers it on
+    `PR`/`SB`/`CT`/`PT`/`CP`/`PP`. Not processed: 422 `ETGO_RemittanceFileNotProcessed`; readiness
+    (without the amount check), else 422 `ETGO_RemittanceFileNotReady` with `error.problems`;
+    `RemittanceSepaFileSetup.ensure`, then the generator, the XSD and the EPC rules, with the same
+    422s as `confirm`. Every instruction is written, **returned receipts included** (Classic's
+    generator does), never refused for them. → `{fileName, contentType: "application/xml", content
+    (the XML document, UTF-8 text), returnedCount}`. `fileName` is Classic's:
+    `CreateFile.replaceStrangeCharacters(documentNo + "_" + name)` + `.` + the type's
+    `FILE_EXTENSION` parameter in lower case (`xml` without one; every provisioned type sets
+    `xml`). Read only: the transaction is rolled back before answering (unless a batch owns it), so
+    neither the type backfill, the creditor identifier / IBAN copy the generation takes nor a line
+    message Classic's generator writes on a refusal is kept. The MCP gets the XML in the action's
+    answer (no download link). **`MsgId` is stable** — the remittance's document number — so every
+    download of one remittance carries the same message identifier (a bank that rejects a repeated
+    `MsgId` refuses a second upload instead of collecting twice); only `CreDtTm` (now) changes, and
+    `PmtInfId` / `InstrId` / `EndToEndId` derive from the document number, line number and payment.
+    Partner data (IBAN, mandate, address) is read live, as in Classic. Telemetry:
+    `backend_remittance_file_generated` once per download (`docs/backend-observability.md`).
   - **Grouped payments in the file (ETP-6247).** The generators write one `DrctDbtTxInf` /
     `CdtTrfTxInf` per REM bank instruction, and REM makes one instruction per payment: with `GGP`
     (or `GGPD`) a customer's dues are ONE transaction whose amount is their sum, and `NbOfTxs` /
@@ -3373,7 +3394,7 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
   - **Step-by-step flow: `PE` → `PR` → `SB` → `CT`/`PT`** (`RemittanceStatusAction`, ETP-6247).
     Both actions are POST, no parameters, flag-gated (403), 405 otherwise, 404 unknown remittance.
     Both lock the remittance row (`lockRemittance`, `SELECT … FOR UPDATE` + refresh) BEFORE checking
-    its status, as `confirm` / `generateFile` / `saveCreditorId` do: two concurrent «Cobrada» (or
+    its status, as `confirm` / `downloadFile` / `saveCreditorId` do: two concurrent «Cobrada» (or
     «Enviada» racing «Cobrada») cannot both pass the check and settle twice; the second waits and
     then sees the status the first one left:
     - `markSent` («Enviada al banco») — `PR → SB`, purely informational: only the status changes
@@ -3444,9 +3465,9 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     ships it only as reference data, which a GO tenant never loads. `RemittanceSepaProvisioning
     .ensureReturnPaymentMethod` creates the client's own (idempotent; called by `ensureClient` and
     before every return as a backfill), and `RemittanceReturnProcess` hands the module that one.
-  - **Interactions.** `generateFile` on a remittance with returns is refused, 422
-    `ETGO_RemittanceFileHasReturns` (the Classic generator writes every line, returned ones too).
-    `fileReadiness.latestFile` is unchanged. «Reactivar» stays hidden (automatic = Y, set by
+  - **Interactions.** `downloadFile` on a remittance with returns still generates the whole file
+    (Classic's generator writes every line, returned ones too); `returnedCount` says how many
+    returned receipts it lists. «Reactivar» stays hidden (automatic = Y, set by
     `markCollected`) and the module refuses it anyway with settled or returned lines. No telemetry event.
 - **Status.** `REM_REMITTANCE.REMITTANCE_STATUS` (field `remittanceStatus`, list
   `REM_RemittanceStatus`: `PE`, `PR`, `SB`, `CT`/`PT`, `CP`/`PP`, `AN`) belongs to the remittance module

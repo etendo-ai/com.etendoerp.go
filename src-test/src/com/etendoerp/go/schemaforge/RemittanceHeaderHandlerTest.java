@@ -1194,7 +1194,7 @@ class RemittanceHeaderHandlerTest {
   void theHeaderDeclaresTheDueItemsAndProcessActions() {
     assertTrue(handler.servesActions());
     assertEquals(List.of("availableDueItems", "selectDueItems", "syncDueItems", "process",
-        "reactivate", "sepaFileData", "saveCreditorId", "fileReadiness", "confirm", "generateFile",
+        "reactivate", "sepaFileData", "saveCreditorId", "fileReadiness", "confirm", "downloadFile",
         "markSent", "markCollected", "returnState", "returnLines"),
         new ArrayList<>(handler.actionContracts().keySet()));
   }

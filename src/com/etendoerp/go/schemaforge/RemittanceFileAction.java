@@ -17,7 +17,8 @@
 
 package com.etendoerp.go.schemaforge;
 
-import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.Map;
 
 import javax.servlet.http.HttpServletResponse;
@@ -31,8 +32,9 @@ import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBError;
 import org.openbravo.module.remittance.Remittance;
+import org.openbravo.module.remittance.ad_actionbutton.CreateFile;
+import org.openbravo.sepa.iso20022.util.SEPAUtil;
 
-import com.etendoerp.go.mcp.McpAttachmentLinks;
 import com.etendoerp.go.schemaforge.util.NeoActionContract;
 
 /**
@@ -43,16 +45,23 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  *   <li>{@value #ACTION_CONFIRM} (write): «Confirmar» — readiness, then in ONE transaction the
  *       remittance is processed by Classic's {@code REMRemittanceProcess} WITHOUT the automatic
  *       settlement (the payments are created Remitted, the invoices stay unpaid, the status is
- *       {@code PR}), its file is generated with the remittance type's Classic generator and stored
- *       as the record's main attachment. Any failure rolls the whole of it back. The later steps
- *       «Enviada al banco» / «Cobrada» are {@link RemittanceStatusAction};</li>
- *   <li>{@value #ACTION_GENERATE} (write): «Regenerar fichero» on a processed remittance — a new
- *       main attachment, the earlier files kept. Refused ({@value #MSG_HAS_RETURNS}) once a line
- *       was returned.</li>
+ *       {@code PR}) and its file is generated in memory with the remittance type's Classic
+ *       generator, only to prove it can be: a file that fails rolls the confirmation back. The file
+ *       is NOT stored. The later steps «Enviada al banco» / «Cobrada» are
+ *       {@link RemittanceStatusAction};</li>
+ *   <li>{@value #ACTION_DOWNLOAD} (read): «Descargar fichero» — the file of a processed remittance,
+ *       generated now from its current data and answered in the response, the way Classic's
+ *       «Create File» button ({@link CreateFile}) does: nothing is stored, every instruction of the
+ *       remittance is written (returned receipts included, counted in
+ *       {@value #KEY_RETURNED_COUNT}), and the message identifier is the remittance's document
+ *       number, so every download of one remittance carries the same {@code MsgId} (only
+ *       {@code CreDtTm} changes).</li>
  * </ul>
  * A refusal is a 422 with the message key in {@code error.messageKeys}; the readiness refusal
- * ({@value #MSG_NOT_READY}) also carries {@code error.problems}. Both writes emit
- * {@code backend_remittance_file_generated} once they succeed ({@link RemittanceFileTelemetry}).
+ * ({@value #MSG_NOT_READY}) also carries {@code error.problems}. A download emits
+ * {@code backend_remittance_file_generated} ({@link RemittanceFileTelemetry}).
+ *
+ * <p>XML files earlier versions attached to a remittance stay as ordinary attachments.
  */
 final class RemittanceFileAction {
 
@@ -60,16 +69,20 @@ final class RemittanceFileAction {
 
   static final String ACTION_READINESS = RemittanceFileReadiness.ACTION;
   static final String ACTION_CONFIRM = "confirm";
-  static final String ACTION_GENERATE = "generateFile";
+  static final String ACTION_DOWNLOAD = "downloadFile";
 
   static final String MSG_NOT_READY = "ETGO_RemittanceFileNotReady";
   static final String MSG_NOT_PROCESSED = "ETGO_RemittanceFileNotProcessed";
-  static final String MSG_HAS_RETURNS = "ETGO_RemittanceFileHasReturns";
 
   static final String KEY_STATUS = "status";
-  static final String KEY_DOWNLOAD_URL = "downloadUrl";
-  /** The NEO spec of the remittance window, which the signed download link names. */
-  static final String SPEC = "remittance";
+  static final String KEY_FILE_NAME = "fileName";
+  static final String KEY_CONTENT_TYPE = "contentType";
+  static final String KEY_CONTENT = "content";
+  static final String KEY_RETURNED_COUNT = RemittanceFileReadiness.KEY_RETURNED_COUNT;
+  static final String CONTENT_TYPE = "application/xml";
+
+  /** Classic's type parameter naming the file extension ({@code CreateFile}). */
+  static final String PARAM_FILE_EXTENSION = RemittanceSepaFileSetup.PARAM_FILE_EXTENSION;
 
   private static final int SC_UNPROCESSABLE = NeoActionContract.SC_UNPROCESSABLE;
   private static final String POST = "POST";
@@ -87,32 +100,34 @@ final class RemittanceFileAction {
             + "(CORE collection or SCT payment), problems (each with scope org/account/line, code, "
             + "message, params and, for a line, lineId, lineIds, businessPartnerId, "
             + "businessPartnerName, invoiceId, documentNo), summary (invoiceCount, lineCount, "
-            + "totalAmount, currency, dueDate) and latestFile ({attachmentId, fileName} of the "
-            + "last generated file, or null). Fix the problems before calling confirm.")
+            + "totalAmount, currency, dueDate) and returnedCount (receipts the bank returned, "
+            + "which a download still lists). Fix the problems before calling confirm.")
         .withIdDescription(ID_DESCRIPTION));
     contracts.put(ACTION_CONFIRM, NeoActionContract.write(ACTION_CONFIRM,
         "Confirms the remittance: processes it (creates the payments of its lines, status "
-            + "Remitted; nothing is settled and the invoices stay unpaid), generates its SEPA "
-            + "file and attaches it as the remittance's main document, all or nothing; the "
-            + "remittance status becomes PR. Refused when it is already processed, has no lines or is not "
-            + "ready (the refusal lists the problems, as fileReadiness). Returns status (the "
-            + "remittance status code), attachmentId, fileName and downloadUrl (a short-lived "
-            + "link to the file, or null).",
+            + "Remitted; nothing is settled and the invoices stay unpaid) and checks that its "
+            + "SEPA file can be generated, all or nothing; the remittance status becomes PR. The "
+            + "file is not stored: get it with downloadFile. Refused when it is already "
+            + "processed, has no lines or is not ready (the refusal lists the problems, as "
+            + "fileReadiness). Returns status (the remittance status code) and fileName.",
         RemittanceProcessAction.groupingParam())
         .withIdDescription(ID_DESCRIPTION)
         .withFieldValuesBody());
-    contracts.put(ACTION_GENERATE, NeoActionContract.write(ACTION_GENERATE,
-        "Generates the SEPA file of a confirmed (processed) remittance again (while it is PR or "
-            + "SB, or later) and attaches it as its main document; the earlier files are kept. Takes no parameters. Returns "
-            + "status, attachmentId, fileName and downloadUrl, as confirm. Refused once a line "
-            + "of the remittance was returned (the file would still list it).")
+    contracts.put(ACTION_DOWNLOAD, NeoActionContract.read(ACTION_DOWNLOAD,
+        "Generates the SEPA file of a confirmed (processed) remittance now, from its current "
+            + "data, as Classic's Create File button does; nothing is stored, so every call "
+            + "generates it again (same MsgId, the remittance's document number). Returns "
+            + "fileName, contentType (application/xml), content (the XML document itself) and "
+            + "returnedCount (receipts the bank returned; the file still lists them, as "
+            + "Classic's). Refused when the remittance is not processed or the file is not "
+            + "ready (the refusal lists the problems, as fileReadiness). Takes no parameters.")
         .withIdDescription(ID_DESCRIPTION));
   }
 
   /** @return whether {@code action} is one of this class's actions */
   static boolean serves(String action) {
     return ACTION_READINESS.equals(action) || ACTION_CONFIRM.equals(action)
-        || ACTION_GENERATE.equals(action);
+        || ACTION_DOWNLOAD.equals(action);
   }
 
   /**
@@ -125,7 +140,7 @@ final class RemittanceFileAction {
    */
   static NeoResponse handle(RemittanceHeaderHandler handler, NeoContext context) {
     String action = context.getFieldName();
-    if (!ACTION_READINESS.equals(action) && !POST.equals(context.getHttpMethod())) {
+    if (ACTION_CONFIRM.equals(action) && !POST.equals(context.getHttpMethod())) {
       return NeoResponse.error(HttpServletResponse.SC_METHOD_NOT_ALLOWED,
           action + " only supports POST");
     }
@@ -146,8 +161,7 @@ final class RemittanceFileAction {
         return NeoResponse.ok(RemittanceFileReadiness.body(remittance));
       }
       handler.lockRemittance(remittance);
-      return ACTION_CONFIRM.equals(action) ? confirm(remittance, params)
-          : generateFile(remittance);
+      return ACTION_CONFIRM.equals(action) ? confirm(remittance, params) : download(remittance);
     } catch (Exception e) {
       log.error("remittance action {} failed on {}", action, context.getRecordId(), e);
       NeoErrorResponses.rollbackUnlessBatchOwned();
@@ -163,10 +177,9 @@ final class RemittanceFileAction {
    *
    * @param remittance a remittance of the tenant
    * @param params     {@value RemittanceProcessAction#P_GROUPING}, optional
-   * @return {@code {status, attachmentId, fileName, downloadUrl}}, or 422
+   * @return {@code {status, fileName}}, or 422
    */
-  static NeoResponse confirm(Remittance remittance, JSONObject params)
-      throws JSONException, IOException {
+  static NeoResponse confirm(Remittance remittance, JSONObject params) throws JSONException {
     if (Boolean.TRUE.equals(remittance.isProcessed())) {
       return NeoMessageText.error(SC_UNPROCESSABLE, RemittanceProcessAction.MSG_ALREADY_PROCESSED);
     }
@@ -197,58 +210,92 @@ final class RemittanceFileAction {
       return NeoMessageText.error(SC_UNPROCESSABLE, RemittanceProcessAction.MSG_PROCESS_FAILED,
           "-");
     }
-    return generateAndStore(processed, readiness, false);
-  }
-
-  /**
-   * «Regenerar fichero».
-   *
-   * @param remittance a remittance of the tenant
-   * @return {@code {status, attachmentId, fileName, downloadUrl}}, or 422
-   */
-  static NeoResponse generateFile(Remittance remittance) throws JSONException, IOException {
-    if (!Boolean.TRUE.equals(remittance.isProcessed())) {
-      return NeoMessageText.error(SC_UNPROCESSABLE, MSG_NOT_PROCESSED);
-    }
-    // ETP-6247: the Classic generator writes every line of the remittance, returned ones included,
-    // so the file of a remittance with returns would list receipts the bank did not collect.
-    if (RemittanceReturnState.hasReturns(remittance)) {
-      return NeoMessageText.error(SC_UNPROCESSABLE, MSG_HAS_RETURNS);
-    }
-    RemittanceFileReadiness.Result readiness = RemittanceFileReadiness.evaluate(remittance);
-    if (!readiness.isReady()) {
-      return notReady(readiness);
-    }
-    RemittanceSepaFileSetup.ensure(remittance.getRemittanceType(), readiness.scheme);
-    return generateAndStore(remittance, readiness, true);
-  }
-
-  // ---------------------------------------------------------------------------
-  // Steps
-  // ---------------------------------------------------------------------------
-
-  private static NeoResponse generateAndStore(Remittance remittance,
-      RemittanceFileReadiness.Result readiness, boolean regeneration)
-      throws JSONException, IOException {
-    byte[] content;
+    // The file is generated only to prove it can be (schema and EPC rules); a refusal rolls the
+    // confirmation back. Nothing is stored: «Descargar fichero» generates it again.
     try {
-      content = generate(remittance);
+      generate(processed);
     } catch (RemittanceFileGenerator.Refusal refusal) {
       RemittanceProcessAction.rollback();
       return NeoMessageText.error(SC_UNPROCESSABLE, refusal.getKey(), refusal.getArgs());
     }
-    RemittanceFileGenerator.Stored stored = store(remittance, content);
     JSONObject body = new JSONObject();
+    body.put(KEY_STATUS, statusOf(processed));
+    body.put(KEY_FILE_NAME, fileName(processed));
+    return NeoResponse.ok(body);
+  }
+
+  /**
+   * «Descargar fichero»: generates the file now and answers it. Read only: whatever the
+   * generation touches (the type's file parameters backfilled by
+   * {@link RemittanceSepaFileSetup#ensure}, the creditor identifier copy of
+   * {@link RemittanceCreditorId#forFile}, the line messages Classic's generator writes on a
+   * refusal) is rolled back before answering, unless a batch owns the transaction.
+   *
+   * <p>Any processed remittance is served, a voided one ({@code AN}) included, as Classic's
+   * «Create File» button (display logic {@code @Processed@='Y'}) does; the SPA offers the
+   * download only on the statuses that sent a file to the bank.
+   *
+   * @param remittance a remittance of the tenant
+   * @return {@code {fileName, contentType, content, returnedCount}}, or 422
+   */
+  static NeoResponse download(Remittance remittance) throws JSONException {
+    try {
+      if (!Boolean.TRUE.equals(remittance.isProcessed())) {
+        return NeoMessageText.error(SC_UNPROCESSABLE, MSG_NOT_PROCESSED);
+      }
+      RemittanceFileReadiness.Result readiness = RemittanceFileReadiness.evaluate(remittance);
+      if (!readiness.isReady()) {
+        return notReady(readiness);
+      }
+      RemittanceSepaFileSetup.ensure(remittance.getRemittanceType(), readiness.scheme);
+      byte[] content;
+      try {
+        content = generate(remittance);
+      } catch (RemittanceFileGenerator.Refusal refusal) {
+        return NeoMessageText.error(SC_UNPROCESSABLE, refusal.getKey(), refusal.getArgs());
+      }
+      JSONObject body = new JSONObject();
+      body.put(KEY_FILE_NAME, fileName(remittance));
+      body.put(KEY_CONTENT_TYPE, CONTENT_TYPE);
+      body.put(KEY_CONTENT, new String(content, StandardCharsets.UTF_8));
+      body.put(KEY_RETURNED_COUNT, RemittanceReturnState.returnedCount(remittance));
+      RemittanceFileTelemetry.fileDownloaded(remittance, readiness.isCollection(),
+          readiness.invoiceCount);
+      return NeoResponse.ok(body);
+    } finally {
+      RemittanceProcessAction.rollback();
+    }
+  }
+
+  private static Object statusOf(Remittance remittance) {
     Object status = remittance.get(
         org.openbravo.module.remittance.utility.RemittanceStatusUtil.PROPERTY_REMITTANCE_STATUS);
-    body.put(KEY_STATUS, status != null ? status : JSONObject.NULL);
-    body.put(RemittanceFileReadiness.KEY_ATTACHMENT_ID, stored.attachmentId);
-    body.put(RemittanceFileReadiness.KEY_FILE_NAME, stored.fileName);
-    String url = downloadUrl(remittance.getId(), stored.attachmentId);
-    body.put(KEY_DOWNLOAD_URL, url != null ? url : JSONObject.NULL);
-    RemittanceFileTelemetry.fileGenerated(remittance, readiness.isCollection(),
-        readiness.invoiceCount, regeneration);
-    return NeoResponse.ok(body);
+    return status != null ? status : JSONObject.NULL;
+  }
+
+  /**
+   * The file name Classic's «Create File» button gives it ({@code CreateFile#getFileName}):
+   * {@code <documentNo>_<name>}, its accents and spaces replaced by
+   * {@link CreateFile#replaceStrangeCharacters}, then a dot and the remittance type's
+   * {@value #PARAM_FILE_EXTENSION} parameter in lower case. Without that parameter it is
+   * {@value RemittanceSepaFileSetup#FILE_EXTENSION} (Classic says {@code DAT}; every type GO
+   * provisions sets {@code xml}).
+   *
+   * @param remittance the remittance
+   * @return the file name
+   */
+  static String fileName(Remittance remittance) {
+    String base = CreateFile.replaceStrangeCharacters(
+        StringUtils.defaultString(remittance.getDocumentNo()) + "_"
+            + StringUtils.defaultString(remittance.getName()));
+    return base + "." + extensionOf(remittance);
+  }
+
+  private static String extensionOf(Remittance remittance) {
+    String value = remittance.getRemittanceType() == null ? null
+        : StringUtils.trimToNull(
+            SEPAUtil.getStringPropertyValue(remittance, PARAM_FILE_EXTENSION));
+    return value != null ? value.toLowerCase(Locale.ROOT) : RemittanceSepaFileSetup.FILE_EXTENSION;
   }
 
   private static NeoResponse notReady(RemittanceFileReadiness.Result readiness)
@@ -274,21 +321,5 @@ final class RemittanceFileAction {
   /** Seam over {@link RemittanceFileGenerator#generate}. */
   static byte[] generate(Remittance remittance) throws RemittanceFileGenerator.Refusal {
     return RemittanceFileGenerator.generate(remittance);
-  }
-
-  /** Seam over {@link RemittanceFileGenerator#store}. */
-  static RemittanceFileGenerator.Stored store(Remittance remittance, byte[] content)
-      throws IOException {
-    return RemittanceFileGenerator.store(remittance, content);
-  }
-
-  /** The signed link to the stored file, or {@code null} (never fails the action). */
-  static String downloadUrl(String remittanceId, String attachmentId) {
-    try {
-      return McpAttachmentLinks.downloadUrl(SPEC, remittanceId, attachmentId);
-    } catch (RuntimeException e) {
-      log.debug("No download link for the SEPA file {}: {}", attachmentId, e.getMessage());
-      return null;
-    }
   }
 }

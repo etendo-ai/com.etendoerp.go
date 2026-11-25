@@ -172,7 +172,7 @@ final class RemittanceSepaFileDataAction {
    * The refusal of a {@value RemittanceSepaFileData#ACTION_SAVE_CREDITOR_ID} before anything is
    * written, or {@code null}. Without a remittance (the account form) the write is the account's
    * and must be asked for ({@code saveToAccount}); with one, it must exist (404), be a collection
-   * still not processed (its file and regenerations use the saved copy) and be on that account.
+   * still not processed (every download of its file uses the saved copy) and be on that account.
    * The row is locked first so the check and the write see the same remittance.
    */
   private static NeoResponse saveRefusal(RemittanceHeaderHandler handler, String remittanceRef,

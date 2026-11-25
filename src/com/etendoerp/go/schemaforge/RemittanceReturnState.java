@@ -196,13 +196,26 @@ final class RemittanceReturnState {
    * @return {@code true} when it has returns
    */
   static boolean hasReturns(Remittance remittance) {
+    return returnedCount(remittance) > 0;
+  }
+
+  /**
+   * ETP-6247 — how many receipts of the remittance the bank returned: the distinct payments with a
+   * processed return row. A receipt of the SEPA file is a payment (one instruction each), so this
+   * is how many returned receipts a download of the file still lists: Classic's generator writes
+   * every instruction of the remittance, returned or not.
+   *
+   * @param remittance the remittance
+   * @return the returned receipts, {@code 0} when none
+   */
+  static int returnedCount(Remittance remittance) {
     Long count = OBDal.getInstance().getSession().createQuery(
-        "select count(r.id) from " + RemittanceLineReturn.ENTITY_NAME + " as r"
+        "select count(distinct r.payment.id) from " + RemittanceLineReturn.ENTITY_NAME + " as r"
             + " where r.remittance.id = :remittance and r.processed = true and r.active = true",
         Long.class)
         .setParameter(P_REMITTANCE, remittance.getId())
         .uniqueResult();
-    return count != null && count > 0;
+    return count == null ? 0 : count.intValue();
   }
 
   static boolean isCollection(Remittance remittance) {

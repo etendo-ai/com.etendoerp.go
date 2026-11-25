@@ -29,10 +29,11 @@ import org.mockito.Mockito;
 import org.openbravo.module.remittance.Remittance;
 
 /**
- * Unit tests for {@link RemittanceFileTelemetry}, {@code backend_remittance_file_generated}: the
- * properties in their stable order (account, direction AR/AP, distinct invoices, regeneration,
- * channel, flag), {@code role_groups} only when there are groups, and the event never throwing
- * into the action. {@code NeoTelemetryServiceTest} specifies how the service sanitizes them.
+ * Unit tests for {@link RemittanceFileTelemetry}, {@code backend_remittance_file_generated}, sent
+ * on every download of the SEPA file (ETP-6247: the file is never stored): the properties in their
+ * stable order (account, direction AR/AP, distinct invoices, channel, flag), {@code role_groups}
+ * only when there are groups, and the event never throwing into the action.
+ * {@code NeoTelemetryServiceTest} specifies how the service sanitizes them.
  *
  * <p>A class of its own: {@code RemittanceFileTelemetry} is a new production class.
  *
@@ -43,37 +44,36 @@ class RemittanceFileTelemetryTest {
   @Test
   void thePropertiesOfACollectionCarryTheRoleGroups() {
     Map<String, Object> properties = RemittanceFileTelemetry.properties("CLIENT-1", true, 7,
-        false, "ui", List.of("finance"));
+        "ui", List.of("finance"));
 
-    assertEquals(List.of("account_id", "direction", "invoice_count", "is_regeneration",
-        "channel", "flag_enabled", "role_groups"), List.copyOf(properties.keySet()));
+    assertEquals(List.of("account_id", "direction", "invoice_count", "channel", "flag_enabled",
+        "role_groups"), List.copyOf(properties.keySet()));
     assertEquals("CLIENT-1", properties.get("account_id"));
     assertEquals("AR", properties.get("direction"));
     assertEquals(7, properties.get("invoice_count"));
-    assertEquals(false, properties.get("is_regeneration"));
     assertEquals("ui", properties.get("channel"));
     assertEquals(true, properties.get("flag_enabled"));
     assertEquals(List.of("finance"), properties.get("role_groups"));
+    assertFalse(properties.containsKey("is_regeneration"), "there is nothing to regenerate");
   }
 
   @Test
-  void aPaymentRegenerationIsApAndAnEmptyRoleGroupsIsLeftOff() {
+  void aPaymentIsApAndAnEmptyRoleGroupsIsLeftOff() {
     Map<String, Object> properties = RemittanceFileTelemetry.properties("CLIENT-1", false, 0,
-        true, "mcp", List.of());
+        "mcp", List.of());
 
     assertEquals("AP", properties.get("direction"));
-    assertEquals(true, properties.get("is_regeneration"));
     assertFalse(properties.containsKey("role_groups"));
-    assertFalse(RemittanceFileTelemetry.properties("C", true, 1, false, "ui", null)
+    assertFalse(RemittanceFileTelemetry.properties("C", true, 1, "ui", null)
         .containsKey("role_groups"));
   }
 
-  /** Telemetry is best effort: a remittance that cannot be read never fails the action. */
+  /** Telemetry is best effort: a remittance that cannot be read never fails the download. */
   @Test
-  void fileGeneratedNeverThrows() {
+  void fileDownloadedNeverThrows() {
     Remittance broken = Mockito.mock(Remittance.class);
     Mockito.when(broken.getClient()).thenThrow(new IllegalStateException("detached"));
 
-    assertDoesNotThrow(() -> RemittanceFileTelemetry.fileGenerated(broken, true, 1, false));
+    assertDoesNotThrow(() -> RemittanceFileTelemetry.fileDownloaded(broken, true, 1));
   }
 }

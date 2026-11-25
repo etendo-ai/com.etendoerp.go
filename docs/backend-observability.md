@@ -169,7 +169,7 @@ Allowed boolean keys (a non-boolean value is dropped):
 - `critical`
 - `flag_enabled`
 - `is_customer`
-- `is_regeneration` (ETP-6247)
+- `is_regeneration` (ETP-6247; no longer sent since the SEPA file is not stored, still allowed)
 - `is_vendor`
 - `previous_is_customer`
 - `preselected` (ETP-5581)
@@ -609,8 +609,9 @@ Example (`backend_bank_bounce_pair_decided` as submitted to Mixpanel):
 
 ## Remittance SEPA File KPIs (ETP-6247)
 
-`backend_remittance_file_generated` — a remittance's SEPA file was generated and stored, by
-«Confirmar» (`confirm`) or «Regenerar fichero» (`generateFile`). Emitted by
+`backend_remittance_file_generated` — a remittance's SEPA file was downloaded («Descargar fichero»,
+`downloadFile`). The file is generated on every download and never stored, so the event counts
+downloads; «Confirmar» (`confirm`) only checks the file and emits nothing. Emitted by
 `RemittanceFileTelemetry`, only with `sepa-remittances` on, through `NeoBatchScope.runAfterCommit`,
 on one bounded background thread. Outside a batch (the SPA and a single MCP call) the event is
 handed off **as soon as the action succeeds, before the request's own commit** — the same as the
@@ -622,7 +623,6 @@ waits for the batch commit and is dropped on rollback. A refused action (any 4xx
 | `account_id` | the tenant (`AD_Client_ID`) |
 | `direction` | `AR` (collection, CORE) or `AP` (payment, SCT) |
 | `invoice_count` | distinct invoices of the remittance's active lines |
-| `is_regeneration` | `false` for `confirm`, `true` for `generateFile` |
 | `channel` | `ui` or `mcp` (`NeoWriteChannel`, as the bounce KPIs) |
 | `flag_enabled` | always `true` |
 | `role_groups` | list, see *Payload Safety*; omitted when no role can be read |

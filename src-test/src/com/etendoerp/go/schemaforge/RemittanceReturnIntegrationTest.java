@@ -81,7 +81,8 @@ import org.openbravo.module.remittance.utility.RemittanceStatusUtil;
  *       gone, a Return row exists, a negative payment exists, the invoice's due is pending again
  *       with its outstanding amount restored and nothing paid, and the remittance status is
  *       {@code CP}; {@code returnState} then says {@code RETURNED} with the return date;</li>
- *   <li>the SEPA file can no longer be generated ({@code ETGO_RemittanceFileHasReturns});</li>
+ *   <li>the SEPA file is still downloaded whole, as Classic's «Create File», and says how many
+ *       returned receipts it lists ({@code returnedCount}; ETP-6247, nothing is stored);</li>
  *   <li>a reconciled settlement transaction refuses the return and changes nothing;</li>
  *   <li>grouping {@code GGPD}: two lines share one payment, one of them alone is refused
  *       ({@code SHARED_PAYMENT}) and both together are returned;</li>
@@ -229,16 +230,21 @@ public class RemittanceReturnIntegrationTest extends WeldBaseTest {
     assertEquals("ALREADY_RETURNED", afterLine.getString("reasonCode"));
     assertEquals(returnDay, afterLine.getString("returnDate"));
 
-    NeoResponse file = RemittanceFileAction.generateFile(reloaded);
-    assertEquals(422, file.getHttpStatus());
-    assertEquals("ETGO_RemittanceFileHasReturns", file.getBody().getJSONObject("error")
-        .getJSONArray("messageKeys").getString(0));
-
     NeoResponse again = RemittanceReturnAction.returnLines(handler, reloaded,
         params(null, lineId));
     assertEquals("a returned line cannot be returned twice", 422, again.getHttpStatus());
     assertEquals("ALREADY_RETURNED", again.getBody().getJSONObject("error")
         .getJSONArray("problems").getJSONObject(0).getString("reasonCode"));
+
+    // ETP-6247: as Classic's «Create File», the file is generated whole, the returned receipt
+    // included, and says so. LAST: the download rolls the transaction back (it writes nothing).
+    assertEquals(1, RemittanceReturnState.returnedCount(reloaded));
+    NeoResponse file = RemittanceFileAction.download(reloaded);
+    assertEquals(String.valueOf(file.getBody()), 200, file.getHttpStatus());
+    assertEquals(1, file.getBody().getInt("returnedCount"));
+    String xml = file.getBody().getString("content");
+    assertTrue(xml, xml.contains("<MsgId>" + reloaded.getDocumentNo() + "</MsgId>"));
+    assertTrue("the returned receipt is still listed: " + xml, xml.contains("DrctDbtTxInf"));
   }
 
   // ---------------------------------------------------------------- a refusal
@@ -329,7 +335,7 @@ public class RemittanceReturnIntegrationTest extends WeldBaseTest {
   // ---------------------------------------------------------------- the step flow
 
   @Test
-  public void confirmProcessesWithoutSettlingAttachesTheFileAndLeavesTheRemittanceInPr()
+  public void confirmProcessesWithoutSettlingAttachesNothingAndLeavesTheRemittanceInPr()
       throws Exception {
     Remittance remittance = built(RemittanceProcessAction.GROUPING_NONE, DUE_A);
     String remittanceId = remittance.getId();
@@ -338,10 +344,14 @@ public class RemittanceReturnIntegrationTest extends WeldBaseTest {
 
     assertEquals(String.valueOf(response.getBody()), 200, response.getHttpStatus());
     assertEquals("PR", response.getBody().getString("status"));
-    Attachment file = OBDal.getInstance().get(Attachment.class,
-        response.getBody().getString("attachmentId"));
-    assertNotNull("the SEPA file is attached", file);
-    assertTrue(file.getName(), file.getName().endsWith(".xml"));
+    String fileName = response.getBody().getString("fileName");
+    assertTrue(fileName, fileName.endsWith(".xml"));
+    // ETP-6247: the file is checked, not stored: «Descargar fichero» generates it every time.
+    assertFalse(response.getBody().has("attachmentId"));
+    OBDal.getInstance().flush();
+    assertEquals("no attachment on the remittance", 0L, count(
+        "select count(a.id) from " + Attachment.ENTITY_NAME + " a where a.record = :id",
+        remittanceId));
 
     Remittance reloaded = OBDal.getInstance().get(Remittance.class, remittanceId);
     OBDal.getInstance().refresh(reloaded);
