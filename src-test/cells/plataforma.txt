@@ -239,6 +239,7 @@ com.etendoerp.go.payment.TenantPlanPreferenceFallbackAdminModeTest
 com.etendoerp.go.payment.TenantPlanServiceTest
 com.etendoerp.go.payment.WebhookPayloadSummaryTest
 com.etendoerp.go.payment.classic.SubscriptionPlanChangeActionHandlerTest
+com.etendoerp.go.payment.invoicing.FiscalSnapshotTest
 com.etendoerp.go.payment.invoicing.PaymentLedgerTest
 com.etendoerp.go.payment.invoicing.PaymentMethodReaderTest
 com.etendoerp.go.payment.invoicing.PaymentStatusTest
