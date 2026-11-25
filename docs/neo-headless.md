@@ -3527,6 +3527,10 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
   - **Payment Reactivate / Eliminar** (`ReactivatePaymentHandler`) refuse a `REM_SENT` payment with
     `422 ETGO_PaymentInRemittance`: the remittance owns it until it is collected, reactivated or
     returned.
+  - **Payment Reactivate** (`ReactivatePaymentHandler.reactivationRefusal`) also refuses a voided
+    (`RPVOID`) payment — e.g. one a remittance return undid — with `422 ETGO_PaymentVoidNotReactivable`
+    (catalog-only key), on every channel: Classic offers no action on a void payment and the payment
+    windows no longer show Reactivar on it.
   - **`invoicePayments`** rows carry `remittanceId` / `remittanceDocumentNo` for every payment a
     remittance created (remitted, collected or returned; through `REM_RemittanceLine.FIN_Payment_ID`),
     plus `remittanceStatus` (`REM_REMITTANCE.REMITTANCE_STATUS`) and `remittanceStatusLabel`, its

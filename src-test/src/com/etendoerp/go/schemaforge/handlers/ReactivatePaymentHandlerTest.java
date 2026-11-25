@@ -2110,6 +2110,37 @@ public class ReactivatePaymentHandlerTest {
   }
 
   /**
+   * ETP-6247 — a voided payment (e.g. undone by a remittance return) cannot be reactivated, as in
+   * Classic, which offers no action on it. Refused with a keyed 422 on the same single load,
+   * before any remittance lookup, and nothing is delegated or written.
+   */
+  @Test
+  public void reactivateRefusesAVoidedPayment() throws Exception {
+    OBDal[] dal = new OBDal[1];
+    try (MockedStatic<NeoButtonActionHelper> buttons =
+             Mockito.mockStatic(NeoButtonActionHelper.class);
+        MockedStatic<FIN_Utility> util = Mockito.mockStatic(FIN_Utility.class)) {
+      NeoResponse result = runOnPaymentInStatus(actionCtx(REACTIVATE_ACTION, REMITTED_PAYMENT),
+          "RPVOID", dal);
+
+      assertNotNull(result);
+      assertEquals(422, result.getHttpStatus());
+      JSONObject error = result.getBody().getJSONObject("error");
+      assertEquals(ReactivatePaymentHandler.MSG_PAYMENT_VOID_NOT_REACTIVABLE,
+          error.getJSONArray("messageKeys").getString(0));
+      // Resolved from the neo_hints catalog, never the bare key.
+      String message = error.getString("message");
+      assertFalse(message.isEmpty());
+      assertFalse(ReactivatePaymentHandler.MSG_PAYMENT_VOID_NOT_REACTIVABLE.equals(message));
+      buttons.verify(() -> NeoButtonActionHelper.executeButtonActionCore(any(), anyString(),
+          anyString(), any()), never());
+      verify(dal[0], never()).save(any());
+      verify(dal[0], never()).createCriteria(RemittanceLine.class);
+      verify(dal[0], times(1)).get(FIN_Payment.class, REMITTED_PAYMENT);
+    }
+  }
+
+  /**
    * An unknown id is answered with the ownership 404 by the same single load that would have
    * found a remitted payment: no remittance lookup, nothing delegated.
    */
