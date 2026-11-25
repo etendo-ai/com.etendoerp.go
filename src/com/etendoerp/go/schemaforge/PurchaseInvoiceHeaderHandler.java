@@ -215,8 +215,11 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
     return PaymentActionHandlerSupport.AGENT_EXCLUDED_ACTIONS;
   }
 
-  @Override
-  public NeoResponse handle(NeoContext context) {
+  /**
+   * The answers given before anything is captured or written: the read-only actions and selectors
+   * this header serves itself, then the write guards. {@code null} lets the request continue.
+   */
+  private NeoResponse answerBeforeCapture(NeoContext context) {
     // ETP-6284: a read-only GET action, served before anything with side effects runs.
     NeoResponse siiDeferredVat = PurchaseInvoiceSiiDeferredVat.handleIfDeferredVat(context);
     if (siiDeferredVat != null) {
@@ -234,9 +237,14 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
       return invoiceGuard;
     }
     // ETP-6284: "Importación con DUA" on → DUA and DUA date required (unless Multiple DUA).
-    NeoResponse importDuaRefusal = PurchaseInvoiceImportDua.checkHeaderWrite(context);
-    if (importDuaRefusal != null) {
-      return importDuaRefusal;
+    return PurchaseInvoiceImportDua.checkHeaderWrite(context);
+  }
+
+  @Override
+  public NeoResponse handle(NeoContext context) {
+    NeoResponse early = answerBeforeCapture(context);
+    if (early != null) {
+      return early;
     }
     NeoHandlerUtils.mirrorAccountingDateOnCreate(context, "invoiceDate", "accountingDate");
     // ETP-5840 (QA CP-12b): an update that changes the invoice date copies it into the accounting
