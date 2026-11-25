@@ -27,7 +27,7 @@ import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
-import java.util.Date;
+import java.util.List;
 
 import org.junit.After;
 import org.junit.Before;
@@ -38,22 +38,24 @@ import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.common.businesspartner.Location;
 import org.openbravo.model.common.enterprise.Organization;
+import org.openbravo.model.common.enterprise.OrganizationInformation;
+import org.openbravo.model.common.geography.Country;
+import org.openbravo.model.common.geography.Region;
 import org.openbravo.model.common.invoice.Invoice;
-import org.openbravo.module.sii.data.AEATSIIConfig;
 import org.openbravo.module.sii.utils.SIIUtils;
 
 /**
  * Unit tests for {@link PurchaseInvoiceSiiDeferredVat}: the {@code siiDeferredVat} action of the
  * purchase-invoice header, which tells the SPA whether to offer the compensatory import-tax line.
- * {@code deferredVat} is true only for an F5/LC purchase invoice sent to SII by an IVA
- * organization and classified as deferred VAT by the SII module.
+ * {@code deferredVat} is true only for an import with DUA (the check, or type F5/LC) of an IVA
+ * organization whose supplier address the SII module classifies as deferred VAT — never depending on the SII
+ * configuration (adoption, tax type, invoice type).
  *
  * @covers com.etendoerp.go.schemaforge.PurchaseInvoiceSiiDeferredVat
  */
 public class PurchaseInvoiceSiiDeferredVatTest {
 
   private static final String INVOICE_ID = "pinv-dua";
-  private static final String IVA = "IVA";
 
   private MockedStatic<OBDal> obDal;
   private MockedStatic<OBContext> obContext;
@@ -62,7 +64,6 @@ public class PurchaseInvoiceSiiDeferredVatTest {
 
   private OBDal dal;
   private Invoice invoice;
-  private AEATSIIConfig config;
   private Location partnerAddress;
 
   @Before
@@ -79,27 +80,15 @@ public class PurchaseInvoiceSiiDeferredVatTest {
     dal = mock(OBDal.class);
     obDal.when(OBDal::getInstance).thenReturn(dal);
 
-    // A deferred-VAT F5 import, sent to SII by an IVA organization: every guard passes.
+    // An import with DUA whose supplier is of deferred VAT: every guard passes.
     invoice = mock(Invoice.class);
-    Organization org = mock(Organization.class);
     when(dal.get(Invoice.class, INVOICE_ID)).thenReturn(invoice);
     when(invoice.getId()).thenReturn(INVOICE_ID);
-    when(invoice.isSalesTransaction()).thenReturn(false);
-    when(invoice.getAeatsiiClaveTipoFc()).thenReturn("F5");
-    when(invoice.getOrganization()).thenReturn(org);
-    when(invoice.getAccountingDate()).thenReturn(new Date());
+    when(invoice.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn(true);
     partnerAddress = mock(Location.class);
     when(invoice.getPartnerAddress()).thenReturn(partnerAddress);
     when(partnerAddress.getLocationAddress())
         .thenReturn(mock(org.openbravo.model.common.geography.Location.class));
-
-    config = mock(AEATSIIConfig.class);
-    when(config.isAcogidaAlSII()).thenReturn(true);
-    when(config.getFechaAcogidaSII()).thenReturn(new Date());
-    when(config.getTaxtype()).thenReturn(IVA);
-    siiUtils.when(() -> SIIUtils.getSiiConfigFromOrg(org)).thenReturn(config);
-    siiUtils.when(SIIUtils::getIvaTaxType).thenReturn(IVA);
-    siiUtils.when(() -> SIIUtils.notSendingByDateCause(config, invoice)).thenReturn(false);
     siiUtils.when(() -> SIIUtils.isDeferredVATInvoice(invoice)).thenReturn(true);
   }
 
@@ -154,43 +143,70 @@ public class PurchaseInvoiceSiiDeferredVatTest {
   }
 
   @Test
-  public void aDeferredVatF5ImportIsTrue() throws Exception {
+  public void aDeferredVatImportIsTrue() throws Exception {
     assertTrue(answer());
   }
 
   @Test
-  public void aDeferredVatLcImportIsTrue() throws Exception {
-    when(invoice.getAeatsiiClaveTipoFc()).thenReturn("LC");
+  public void theCheckStoredAsYIsTrue() throws Exception {
+    when(invoice.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn("Y");
 
     assertTrue(answer());
   }
 
   @Test
-  public void aNonImportInvoiceTypeIsFalse() throws Exception {
-    when(invoice.getAeatsiiClaveTipoFc()).thenReturn("F1");
+  public void anInvoiceWithoutTheImportCheckIsFalse() throws Exception {
+    when(invoice.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn(false);
 
     assertFalse(answer());
   }
 
   @Test
-  public void aNonIvaOrganizationIsFalse() throws Exception {
-    when(config.getTaxtype()).thenReturn("IGIC");
+  public void theAnswerNeverReadsTheSiiConfiguration() throws Exception {
+    when(invoice.getAeatsiiClaveTipoFc()).thenReturn(null);
+
+    assertTrue(answer());
+    siiUtils.verify(() -> SIIUtils.getSiiConfigFromOrg(any()), org.mockito.Mockito.never());
+  }
+
+  @Test
+  public void aLegacyF5ImportWithoutTheCheckIsTrue() throws Exception {
+    when(invoice.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn(false);
+    when(invoice.getAeatsiiClaveTipoFc()).thenReturn("F5");
+
+    assertTrue(answer());
+  }
+
+  @Test
+  public void anIgicOrganizationIsFalse() throws Exception {
+    Organization org = orgIn("ES", "35");
+    when(invoice.getOrganization()).thenReturn(org);
 
     assertFalse(answer());
   }
 
   @Test
-  public void anOrganizationNotInSiiIsFalse() throws Exception {
-    when(config.isAcogidaAlSII()).thenReturn(false);
+  public void aPeninsulaOrganizationIsTrue() throws Exception {
+    Organization org = orgIn("ES", "28");
+    when(invoice.getOrganization()).thenReturn(org);
 
-    assertFalse(answer());
+    assertTrue(answer());
   }
 
-  @Test
-  public void anInvoiceBeforeTheSiiAdoptionDateIsFalse() throws Exception {
-    siiUtils.when(() -> SIIUtils.notSendingByDateCause(config, invoice)).thenReturn(true);
-
-    assertFalse(answer());
+  private static Organization orgIn(String countryCode, String regionCode) {
+    Organization org = mock(Organization.class);
+    OrganizationInformation info = mock(OrganizationInformation.class);
+    org.openbravo.model.common.geography.Location address =
+        mock(org.openbravo.model.common.geography.Location.class);
+    Country country = mock(Country.class);
+    Region region = mock(Region.class);
+    when(org.getOrganizationInformationList()).thenReturn(List.of(info));
+    when(info.getLocationAddress()).thenReturn(address);
+    when(address.getCountry()).thenReturn(country);
+    when(address.getRegion()).thenReturn(region);
+    when(country.getISOCountryCode()).thenReturn(countryCode);
+    when(region.getEsregRegionCode()).thenReturn(regionCode);
+    return org;
   }
 
   @Test

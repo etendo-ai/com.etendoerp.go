@@ -36,6 +36,7 @@ import com.etendoerp.go.portal.PortalDocumentKind;
 import com.etendoerp.go.portal.PortalLink;
 import com.etendoerp.go.portal.PortalLinkService;
 import com.etendoerp.go.portal.PortalLogoReference;
+import com.etendoerp.go.portal.PortalQuotationSends;
 import com.etendoerp.go.schemaforge.email.EmailAuthorizationResult;
 import com.etendoerp.go.schemaforge.email.EmailContract;
 import com.etendoerp.go.schemaforge.email.EmailContractCommand;
@@ -57,9 +58,11 @@ import com.etendoerp.go.schemaforge.email.render.EmailMessages;
  * Asks the customer to confirm the accept / reject they requested in the portal (ETP-6209 Part C):
  * the "second factor" of the decision.
  *
- * <p><b>One recipient:</b> the first To of the portal link's root send (user decision) — never CC,
- * never an address from the caller. The command names the session's link; the recipient is
- * re-derived here from that link's root, so a forged command cannot redirect it.</p>
+ * <p><b>Recipients: every To of the quotation's original send, never its CC</b> (ETP-6209 QA
+ * CP-45 as revised by the PO): the newest send of the quotation that reached the email of the
+ * session's link ({@link PortalQuotationSends}). Never an address from the caller: the command
+ * names the session's link and the quotation, and the recipients are re-derived here from them,
+ * so a forged command cannot redirect it. A standalone email with its own subject.</p>
  *
  * <p><b>Only the portal may send it</b> ({@link PortalDecisionScope}, set by
  * {@link PortalDecisionService} after its scope and state checks), like the renewal. The decision
@@ -156,10 +159,24 @@ final class PortalDecisionConfirmEmailContract implements EmailContract {
     if (!link.isPresent()) {
       return EmailRecipientResolution.rejected(409, MESSAGE_NO_LINK);
     }
-    String recipient = decisionService.confirmationRecipient(link.get().getRootLinkId());
-    return recipient == null
-        ? EmailRecipientResolution.noRecipient("The portal link's send has no To recipient")
-        : EmailRecipientResolution.serverResolved(EmailRecipientSet.singleTo(recipient));
+    // QA CP-45: every To (never CC) of the quotation's original send — the newest send that
+    // reached the link's email (QA CP-49) — re-derived here from the link and the quotation, never
+    // from the caller.
+    Optional<PortalQuotationSends.Send> send = originalSend(command, link.get());
+    EmailRecipientSet recipients = send.map(PortalQuotationSends::recipientsOf)
+        .orElse(null);
+    return recipients == null || recipients.isToEmpty()
+        ? EmailRecipientResolution.noRecipient(
+            "The quotation was not sent to the portal link's email")
+        : EmailRecipientResolution.serverResolved(recipients);
+  }
+
+  private Optional<PortalQuotationSends.Send> originalSend(EmailContractCommand command,
+      PortalLink link) {
+    String quotationId = EmailContractCommandSupport.text(command,
+        EmailContractCommandSupport.FIELD_RECORD_ID);
+    return quotationId == null ? Optional.empty()
+        : decisionService.originalSend(link.getId(), quotationId);
   }
 
   @Override
@@ -201,6 +218,8 @@ final class PortalDecisionConfirmEmailContract implements EmailContract {
         data.put("name", name);
       }
       data.put("link", minted.get().getUrl());
+      // Its own subject, a standalone email (QA CP-45 as revised: no "Re:" until the gateway can
+      // carry In-Reply-To / References).
       data.put("subject", EmailMessages.get(CONFIRM_PREFIX + "subject." + decision, language,
           quotation.number));
       data.put("body", EmailLayout.render(content));

@@ -416,7 +416,10 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
       if (taxIdError != null) {
         return taxIdError;
       }
-      NeoResponse formatError = validateContactFormats(ctx, body, method);
+      // The contact format and type rules read the persisted columns, so they see the inner
+      // section of a {"data": {...}} envelope, not the envelope itself.
+      JSONObject section = ContactIdentityRules.persistedSection(body);
+      NeoResponse formatError = validateContactFormats(ctx, section, method);
       if (formatError != null) {
         return formatError;
       }
@@ -427,7 +430,7 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
       if (identityError != null) {
         return identityError;
       }
-      NeoResponse contactTypeError = applyContactTypeRules(ctx, body, method);
+      NeoResponse contactTypeError = applyContactTypeRules(ctx, section, method);
       if (contactTypeError != null) {
         return contactTypeError;
       }
@@ -564,9 +567,8 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
    */
   private static String[] queryPersistedTaxIdParts(String recordId) throws Exception {
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(
-        "SELECT taxid, em_obtik_tax_id_key FROM c_bpartner WHERE c_bpartner_id = ?")) {
-      ps.setString(1, recordId);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        "SELECT taxid, em_obtik_tax_id_key FROM c_bpartner WHERE c_bpartner_id = ?", recordId)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (rs.next()) {
           return new String[]{ rs.getString(1), rs.getString(2) };
@@ -690,9 +692,9 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
    */
   private static String[] queryPersistedContactFormatParts(String recordId) throws Exception {
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(
-        "SELECT em_etgo_email, em_etgo_web, em_etgo_phone FROM c_bpartner WHERE c_bpartner_id = ?")) {
-      ps.setString(1, recordId);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        "SELECT em_etgo_email, em_etgo_web, em_etgo_phone FROM c_bpartner WHERE c_bpartner_id = ?",
+        recordId)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (rs.next()) {
           return new String[]{ rs.getString(1), rs.getString(2), rs.getString(3) };

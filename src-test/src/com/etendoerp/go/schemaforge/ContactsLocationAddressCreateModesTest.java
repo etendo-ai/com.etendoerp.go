@@ -279,11 +279,13 @@ class ContactsLocationAddressCreateModesTest {
     }
 
     /**
-     * ETP-5806 — streetName/buildingNumber/cityName are mandatory for Mode B, the same
-     * product decision as country, stricter than Classic (where the SEPA fields are optional).
+     * ETP-5806 — streetName/cityName are mandatory for Mode B, the same product decision as
+     * country, stricter than Classic (where the SEPA fields are optional). buildingNumber is
+     * never demanded from the caller: a blank number is stored as "s/n", so it is mandatory at
+     * row level but must not appear in the refusal.
      */
     @Test
-    @DisplayName("missing streetName/buildingNumber/cityName is a 400 naming each one")
+    @DisplayName("missing streetName/cityName is a 400 naming each one, never buildingNumber")
     void missingStructuredAddressFieldsIsA400() throws Exception {
       JSONObject body = new JSONObject();
       body.put("country", COUNTRY_ID);
@@ -295,7 +297,8 @@ class ContactsLocationAddressCreateModesTest {
         assertEquals(400, response.getHttpStatus());
         String message = response.getBody().toString();
         assertTrue(message.contains("streetName"), message);
-        assertTrue(message.contains("buildingNumber"), message);
+        assertFalse(message.contains("buildingNumber"),
+            "a missing buildingNumber falls back to s/n, never demanded: " + message);
         assertTrue(message.contains("cityName"), message);
         verify(obDal, never()).get(BusinessPartner.class, BP_ID);
       }
