@@ -18,7 +18,9 @@
 package com.etendoerp.go.schemaforge;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -59,6 +61,7 @@ public class PurchaseInvoiceImportDuaTest {
   private MockedStatic<OBContext> obContext;
   private MockedStatic<SalesRectificativeFiscalDefaults> fiscalDefaults;
   private MockedStatic<SIIUtils> siiUtils;
+  private OBDal dal;
   private Invoice stored;
   private AEATSIIConfig siiConfig;
 
@@ -67,7 +70,7 @@ public class PurchaseInvoiceImportDuaTest {
     flag = mockStatic(SiiImportDuaFlag.class, Mockito.CALLS_REAL_METHODS);
     flag.when(SiiImportDuaFlag::isEnabled).thenReturn(true);
     obDal = mockStatic(OBDal.class);
-    OBDal dal = mock(OBDal.class);
+    dal = mock(OBDal.class);
     obDal.when(OBDal::getInstance).thenReturn(dal);
     stored = mock(Invoice.class);
     when(dal.get(Invoice.class, INVOICE_ID)).thenReturn(stored);
@@ -263,5 +266,173 @@ public class PurchaseInvoiceImportDuaTest {
   @Test
   public void aReadIsNotChecked() {
     assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("GET", INVOICE_ID, null)));
+  }
+  // ── orgFilesSii(String, Date): Classic's "files SII for this date" criterion ─────────────
+
+  private static final String PLAIN_ORG_ID = "org-plain";
+  private static final long DAY = 86_400_000L;
+
+  @Test
+  public void aBlankOrgDoesNotFileSii() {
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii((String) null, new Date()));
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii("  ", new Date()));
+    fiscalDefaults.verifyNoInteractions();
+  }
+
+  @Test
+  public void anOrgWithoutAnActiveSiiConfigDoesNotFileSii() {
+    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(ORG_ID))
+        .thenReturn(false);
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date()));
+    siiUtils.verifyNoInteractions();
+  }
+
+  @Test
+  public void anOrgWhoseSiiConfigIsMissingDoesNotFileSii() {
+    siiUtils.when(() -> SIIUtils.getSiiConfigFromOrg(any(Organization.class))).thenReturn(null);
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date()));
+  }
+
+  @Test
+  public void anUnknownOrgDoesNotFileSii() {
+    when(dal.get(Organization.class, ORG_ID)).thenReturn(null);
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date()));
+    siiUtils.verifyNoInteractions();
+  }
+
+  @Test
+  public void aConfigWithoutAdoptionDateDoesNotFileSii() {
+    when(siiConfig.getFechaAcogidaSII()).thenReturn(null);
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date()));
+  }
+
+  @Test
+  public void anAccountingDateOnTheAdoptionDateFilesSii() {
+    assertTrue(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date(0L)));
+  }
+
+  @Test
+  public void anAccountingDateTheDayBeforeTheAdoptionDoesNotFileSii() {
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date(-DAY)));
+  }
+
+  @Test
+  public void anUnknownAccountingDateReadsAsAdopted() {
+    assertTrue(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, null));
+  }
+
+  @Test
+  public void aFailingLookupReadsAsNotFilingSiiAndRestoresTheMode() {
+    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
+        .thenThrow(new IllegalStateException("boom"));
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date()));
+    obContext.verify(() -> OBContext.setAdminMode(true));
+    obContext.verify(OBContext::restorePreviousMode);
+  }
+
+  // ── orgFilesSii(Invoice): accounting date, else invoice date ─────────────────────────────
+
+  @Test
+  public void aStoredInvoiceIsJudgedByItsAccountingDate() {
+    when(stored.getAccountingDate()).thenReturn(new Date(-DAY));
+    when(stored.getInvoiceDate()).thenReturn(new Date());
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(stored));
+  }
+
+  @Test
+  public void aStoredInvoiceWithoutAccountingDateFallsBackToItsInvoiceDate() {
+    when(stored.getAccountingDate()).thenReturn(null);
+    when(stored.getInvoiceDate()).thenReturn(new Date(-DAY));
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(stored));
+    when(stored.getInvoiceDate()).thenReturn(new Date(DAY));
+    assertTrue(PurchaseInvoiceImportDua.orgFilesSii(stored));
+  }
+
+  @Test
+  public void aStoredInvoiceWithoutOrgDoesNotFileSii() {
+    when(stored.getOrganization()).thenReturn(null);
+
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii(stored));
+    assertFalse(PurchaseInvoiceImportDua.orgFilesSii((Invoice) null));
+    fiscalDefaults.verifyNoInteractions();
+  }
+
+  // ── the request merged over the stored invoice: organization and dates ───────────────────
+
+  /** Only {@link #ORG_ID} files SII; {@link #PLAIN_ORG_ID} does not. */
+  private Organization onlyTheSiiOrgFilesSii() {
+    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
+        .thenReturn(false);
+    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(ORG_ID))
+        .thenReturn(true);
+    Organization plain = mock(Organization.class);
+    when(plain.getId()).thenReturn(PLAIN_ORG_ID);
+    when(dal.get(Organization.class, PLAIN_ORG_ID)).thenReturn(plain);
+    return plain;
+  }
+
+  @Test
+  public void aBodyOrgSentAsAnObjectOverridesTheStoredOne() throws Exception {
+    onlyTheSiiOrgFilesSii();
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
+        .put(PurchaseInvoiceImportDua.FIELD_ORG, new JSONObject().put("id", PLAIN_ORG_ID));
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
+    fiscalDefaults.verify(() -> SalesRectificativeFiscalDefaults.siiConfigActive(PLAIN_ORG_ID));
+  }
+
+  @Test
+  public void aBodyOrgSentAsAStringOverridesTheStoredOne() throws Exception {
+    Organization plain = onlyTheSiiOrgFilesSii();
+    when(stored.getOrganization()).thenReturn(plain);
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
+        .put(PurchaseInvoiceImportDua.FIELD_ORG, ORG_ID);
+
+    assertRefused(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)), 400);
+  }
+
+  @Test
+  public void aBodyWithoutOrgUsesTheStoredOne() throws Exception {
+    Organization plain = onlyTheSiiOrgFilesSii();
+    when(stored.getOrganization()).thenReturn(plain);
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true);
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
+    fiscalDefaults.verify(() -> SalesRectificativeFiscalDefaults.siiConfigActive(PLAIN_ORG_ID));
+    fiscalDefaults.verify(() -> SalesRectificativeFiscalDefaults.siiConfigActive(ORG_ID),
+        Mockito.never());
+  }
+
+  @Test
+  public void aBodyWithoutDatesUsesTheStoredAccountingDate() throws Exception {
+    when(stored.getAccountingDate()).thenReturn(new Date(-DAY));
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true);
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
+  }
+
+  @Test
+  public void withoutAnyAccountingDateTheBodyInvoiceDateDecides() throws Exception {
+    when(stored.getAccountingDate()).thenReturn(null);
+    when(stored.getInvoiceDate()).thenReturn(new Date());
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
+        .put(PurchaseInvoiceImportDua.FIELD_INVOICE_DATE, "1969-12-01");
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
+  }
+
+  @Test
+  public void turningTheCheckOffWhileTheFlagIsOffIsNotGated() throws Exception {
+    flag.when(SiiImportDuaFlag::isEnabled).thenReturn(false);
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, false);
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
   }
 }

@@ -243,6 +243,15 @@ public class PurchaseInvoiceTaxExtensionTest {
   }
 
   @Test
+  public void aMultiDuaImportRowWithoutDuaContinuesWhenDatedBeforeTheSiiAdoption()
+      throws Exception {
+    when(invoice.isAeatsiiMultiDua()).thenReturn(true);
+    when(invoice.getAccountingDate()).thenReturn(new Date(-86_400_000L));
+
+    assertNull(extension.handle(crud("POST", null, newRow())));
+  }
+
+  @Test
   public void multiDuaOnANonImportInvoiceDoesNotRequireLineDua() throws Exception {
     when(invoice.isAeatsiiMultiDua()).thenReturn(true);
     when(invoice.getAeatsiiClaveTipoFc()).thenReturn("F1");
