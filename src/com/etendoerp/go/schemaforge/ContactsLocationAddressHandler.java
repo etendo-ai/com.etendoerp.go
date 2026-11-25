@@ -38,7 +38,9 @@ import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.base.exception.OBException;
+import org.openbravo.base.exception.OBSecurityException;
 import org.openbravo.base.provider.OBProvider;
+import org.openbravo.base.validation.ValidationException;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.core.SessionHandler;
 import org.openbravo.dal.service.OBCriteria;
@@ -138,13 +140,46 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       if (("PUT".equals(method) || "PATCH".equals(method)) && recordId != null) {
         return handleUpdate(ctx);
       }
+    } catch (OBSecurityException e) {
+      SessionHandler.getInstance().rollback();
+      log.warn("ContactsLocationAddressHandler refused {}", method);
+      return NeoResponse.error(403, "Access denied");
+    } catch (InvalidAddressException | ValidationException e) {
+      // The caller's data (unresolvable region, DAL column validation): a descriptive 400 without
+      // a stack trace. A plain OBException (session, connection) is not client data and falls
+      // through to the 500 below.
+      SessionHandler.getInstance().rollback();
+      log.warn("ContactsLocationAddressHandler rejected {}: {}", method, e.getMessage());
+      return NeoResponse.error(400, e);
     } catch (Exception e) {
       SessionHandler.getInstance().rollback();
-      log.error("ContactsLocationAddressHandler error in {}", method, e);
+      log.error("ContactsLocationAddressHandler error in {} (recordId={}, parentId={}, cause={})",
+          method, recordId, parentIdOf(ctx), rootCauseOf(e).getClass().getName(), e);
       return NeoResponse.error(500, "Location handler error: " + e.getMessage());
     }
     // GET list and DELETE fall through to default CRUD
     return null;
+  }
+
+  /** A client-data refusal raised by this handler, as opposed to any other {@link OBException}. */
+  private static final class InvalidAddressException extends OBException {
+    private static final long serialVersionUID = 1L;
+
+    InvalidAddressException(String message) {
+      super(message);
+    }
+  }
+
+  private static String parentIdOf(NeoContext ctx) {
+    return ctx.getQueryParams() != null ? ctx.getQueryParams().get("parentId") : null;
+  }
+
+  private static Throwable rootCauseOf(Throwable t) {
+    Throwable root = t;
+    while (root.getCause() != null && root.getCause() != root) {
+      root = root.getCause();
+    }
+    return root;
   }
 
   /** An ISO 3166-1 alpha-2 code ({@code ES}); a {@code C_Country_ID} is never two letters. */
@@ -233,6 +268,10 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     }
     if (StringUtils.isBlank(bpId)) {
       return NeoResponse.error(400, "Missing parentId (Business Partner ID)");
+    }
+    if (body == null) {
+      // parentId came in the query string: let rejectUnusableCreatePayload answer the 400
+      body = new JSONObject();
     }
 
     String locationAddressId = nullIfEmpty(body.optString(FIELD_LOCATION_ADDRESS, null));
@@ -891,7 +930,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
    * disagree with its siblings.
    */
   private static OBException regionFailure(String shown, String detail) {
-    return new OBException("The region \"" + shown + "\" " + detail);
+    return new InvalidAddressException("The region \"" + shown + "\" " + detail);
   }
 
   /**

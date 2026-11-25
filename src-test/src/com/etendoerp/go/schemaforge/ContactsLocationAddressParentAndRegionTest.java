@@ -18,6 +18,7 @@
 package com.etendoerp.go.schemaforge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -45,6 +46,8 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.openbravo.base.exception.OBException;
+import org.openbravo.base.exception.OBSecurityException;
+import org.openbravo.base.validation.ValidationException;
 import org.openbravo.base.provider.OBProvider;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.core.SessionHandler;
@@ -193,6 +196,18 @@ class ContactsLocationAddressParentAndRegionTest {
     @DisplayName("a null request body with null queryParams is a 400 as well")
     void nullBodyAndNullQueryParamsIsA400() throws Exception {
       NeoResponse response = handler.handle(post(null, null));
+
+      assertNotNull(response);
+      assertEquals(400, response.getHttpStatus());
+    }
+
+    @Test
+    @DisplayName("a null request body with parentId in the query is a 400, not an NPE-driven 500")
+    void nullBodyWithQueryParentIsA400() throws Exception {
+      BusinessPartner bp = mock(BusinessPartner.class);
+      when(obDal.get(BusinessPartner.class, QUERY_BP)).thenReturn(bp);
+
+      NeoResponse response = handler.handle(post(null, params(QUERY_BP)));
 
       assertNotNull(response);
       assertEquals(400, response.getHttpStatus());
@@ -543,12 +558,67 @@ class ContactsLocationAddressParentAndRegionTest {
       NeoResponse response = handler.handle(post(withCountry(body), params(QUERY_BP)));
 
       assertNotNull(response);
+      assertEquals(400, response.getHttpStatus());
+      assertFalse(response.getBody().toString().contains("Location handler error"));
       verify(obDal, never()).save(any());
       verify(geoLoc, never()).setRegion(any());
       verify(geoLoc, never()).setRegionName(any());
       // The caller has to be told which value was rejected, or a failing import row is unfixable.
       assertTrue(response.getBody().toString().contains("ghost-region"),
           "the refusal must survive the handler's error wrapper: " + response.getBody());
+    }
+
+    private NeoResponse createFailingWith(RuntimeException failure) throws Exception {
+      BusinessPartner bp = mock(BusinessPartner.class);
+      when(bp.getClient()).thenReturn(mock(Client.class));
+      when(bp.getOrganization()).thenReturn(mock(Organization.class));
+      when(obDal.get(BusinessPartner.class, QUERY_BP)).thenReturn(bp);
+      when(obProvider.get(Location.class)).thenThrow(failure);
+      return handler.handle(post(withCountry(new JSONObject()), params(QUERY_BP)));
+    }
+
+    @Test
+    @DisplayName("a DAL ValidationException is a 400 carrying its message")
+    void validationExceptionIs400() throws Exception {
+      NeoResponse response = createFailingWith(new ValidationException() {
+            private static final long serialVersionUID = 1L;
+
+            @Override
+            public String getMessage() {
+              return "too long";
+            }
+          });
+
+      assertEquals(400, response.getHttpStatus());
+      assertTrue(response.getBody().toString().contains("too long"));
+      assertFalse(response.getBody().toString().contains("Location handler error"));
+    }
+
+    @Test
+    @DisplayName("an OBSecurityException is a 403 that does not leak its message")
+    void securityExceptionIs403() throws Exception {
+      NeoResponse response = createFailingWith(new OBSecurityException("secret detail"));
+
+      assertEquals(403, response.getHttpStatus());
+      assertFalse(response.getBody().toString().contains("secret detail"));
+    }
+
+    @Test
+    @DisplayName("a plain OBException (session-level) stays a 500")
+    void plainOBExceptionStays500() throws Exception {
+      NeoResponse response = createFailingWith(new OBException("connection lost"));
+
+      assertEquals(500, response.getHttpStatus());
+      assertTrue(response.getBody().toString().contains("Location handler error"));
+    }
+
+    @Test
+    @DisplayName("an unexpected RuntimeException stays a 500")
+    void runtimeExceptionStays500() throws Exception {
+      NeoResponse response = createFailingWith(new IllegalStateException("boom"));
+
+      assertEquals(500, response.getHttpStatus());
+      assertTrue(response.getBody().toString().contains("Location handler error"));
     }
 
     /**
