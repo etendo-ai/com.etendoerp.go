@@ -450,6 +450,35 @@ public class ClassicMessageRemapTest {
         ClassicMessageRemap.remapText(classic, "en_US"));
   }
 
+  /**
+   * VERI*FACTU country vs. Residence Country Tax ID Key check: the GO text names the dropdown
+   * labels the user sees («Pasaporte» / «No Censado»), never the raw codes 07 / 03, in both
+   * languages.
+   */
+  @Test
+  public void theVerifactuTaxIdKeyCheckNamesTheDropdownLabelsNotTheCodes() {
+    String classic = "El valor del Código País sólo puede ser ES cuando el \"Código NIF País "
+        + "Residencia\" del tercero es 07 or 03. Si el valor de este campo es 07 el Código País "
+        + "tiene que ser ES.";
+    ClassicMessageRemap.setTextsForTest(Map.of("ETVFAC_error_code_idtype", List.of(classic)));
+
+    String es = ClassicMessageRemap.remapText(classic, "es_ES");
+    String en = ClassicMessageRemap.remapText(classic, "en_US");
+
+    assertEquals("El país de la dirección de facturación solo puede ser España cuando la Clave "
+        + "NIF País Residencia del contacto es «Pasaporte» o «No Censado», y con «No Censado» el "
+        + "país debe ser España. Revisa el país de la dirección y la Clave NIF País Residencia del "
+        + "contacto en Contactos.", es);
+    assertEquals("The country of the billing address can only be Spain when the contact Residence "
+        + "Country Tax ID Key is \"Pasaporte\" or \"No Censado\", and with \"No Censado\" the "
+        + "country must be Spain. Check the address country and the contact Residence Country Tax "
+        + "ID Key in Contacts.", en);
+    for (String go : List.of(es, en)) {
+      assertFalse(go, go.contains("07"));
+      assertFalse(go, go.contains("03"));
+    }
+  }
+
   /** Messages a GO user cannot trigger are not catalogued. */
   @Test
   public void messagesGoNeverShowsAreNotCatalogued() {
