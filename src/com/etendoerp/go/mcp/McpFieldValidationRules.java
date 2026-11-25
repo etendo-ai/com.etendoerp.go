@@ -57,6 +57,8 @@ public final class McpFieldValidationRules {
   }
 
   /**
+   * Reads the declared {@code validation} constraints of every sendable field of an entity.
+   *
    * @param sfEntity the SchemaForge entity; {@code null} yields no rules
    * @return API key to constraints, empty when nothing is declared
    */

@@ -84,7 +84,6 @@ final class NeoDeclarativeValidation {
   private static final Logger log = LogManager.getLogger(NeoDeclarativeValidation.class);
   private static final String DATA_WRAPPER = "data";
   private static final String CODE = "code";
-  private static final Pattern EMAIL = Pattern.compile("^[^\\s@]+@[^\\s@.]+(\\.[^\\s@.]+)+$");
   private static final Pattern UUID_HEX = Pattern.compile("^[0-9a-fA-F]{32}$|^[0-9a-fA-F]{8}-"
       + "[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$");
   private static final Pattern ISO_DATE = Pattern.compile("^\\d{4}-\\d{2}-\\d{2}$");
@@ -269,7 +268,7 @@ final class NeoDeclarativeValidation {
   private static boolean matchesFormat(String format, String text) {
     switch (format.toLowerCase(Locale.ROOT)) {
       case "email":
-        return EMAIL.matcher(text).matches();
+        return isEmail(text);
       case "uuid":
         return UUID_HEX.matcher(text).matches();
       case "date":
@@ -299,6 +298,27 @@ final class NeoDeclarativeValidation {
       }
     }
     return false;
+  }
+
+  /**
+   * A single {@code @} with a non-blank local part and a dotted domain whose labels are non-empty;
+   * no whitespace. Linear scan, no backtracking regex.
+   */
+  private static boolean isEmail(String text) {
+    int at = text.indexOf('@');
+    if (at <= 0 || at != text.lastIndexOf('@') || StringUtils.containsWhitespace(text)) {
+      return false;
+    }
+    String domain = text.substring(at + 1);
+    if (domain.indexOf('.') < 0) {
+      return false;
+    }
+    for (String label : domain.split("\\.", -1)) {
+      if (label.isEmpty()) {
+        return false;
+      }
+    }
+    return true;
   }
 
   /** A relative reference ("abc", "foo/bar") is not a URI/URL here; a URL also needs a host. */

@@ -372,6 +372,7 @@ class NeoRequestBodyParserTest {
 
             @Override
             public void setReadListener(javax.servlet.ReadListener listener) {
+              // Blocking reads only: no listener is ever registered in these tests.
             }
           });
       return request;
