@@ -48,8 +48,11 @@ import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
 import org.mockito.MockedStatic;
+import org.openbravo.base.model.Entity;
+import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.structure.BaseOBObject;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.common.enterprise.DocumentType;
 import org.openbravo.model.common.invoice.Invoice;
 import org.openbravo.model.common.order.Order;
 import org.openbravo.model.materialmgmt.transaction.ShipmentInOut;
@@ -63,6 +66,7 @@ import org.openbravo.model.materialmgmt.transaction.ShipmentInOut;
  * parameters that were bound.
  *
  * @covers com.etendoerp.go.portal.PortalDocumentQuery
+ * @covers com.etendoerp.go.portal.PortalDocumentKind
  */
 @SuppressWarnings({ "unchecked", "rawtypes" })
 public class PortalDocumentQueryTest {
@@ -203,6 +207,49 @@ public class PortalDocumentQueryTest {
     assertEquals(Arrays.asList(null, 4L, null, null), Arrays.asList(shipments.get(0)));
   }
 
+  /**
+   * The invoices' "tipo" quick filter (ETP-6209 QA CP-16): credit notes only, invoices only (the
+   * negated condition) or both; the localization's rectificative flag joins the condition only
+   * where that module declares it, and the filter never narrows another kind.
+   */
+  @Test
+  public void theCreditNoteFilterNarrowsInvoicesOnlyAndUsesTheRectificativeFlagWhenInstalled() {
+    String categories = "e.transactionDocument.documentCategory in ('ARC', 'ARI_RM')";
+    String flag = "coalesce(e.transactionDocument.etsgIsRectificative, false) = true";
+    // Columns: kind, creditNote filter, rectificative flag installed, expected fragment (null: no
+    // credit-note condition at all), whether the flag is part of it.
+    Object[][] cases = {
+        { PortalDocumentKind.INVOICE, Boolean.TRUE, true, " and (" + categories + " or ", true },
+        { PortalDocumentKind.INVOICE, Boolean.TRUE, false, " and (" + categories + ")", false },
+        { PortalDocumentKind.INVOICE, Boolean.FALSE, false, " and not (" + categories + ")",
+            false },
+        { PortalDocumentKind.INVOICE, null, true, null, false },
+        { PortalDocumentKind.ORDER, Boolean.TRUE, true, null, false },
+    };
+    for (Object[] c : cases) {
+      built.clear();
+      Entity documentType = mock(Entity.class);
+      when(documentType.hasProperty("etsgIsRectificative")).thenReturn((Boolean) c[2]);
+      ModelProvider provider = mock(ModelProvider.class);
+      when(provider.getEntity(DocumentType.ENTITY_NAME)).thenReturn(documentType);
+      try (MockedStatic<ModelProvider> model = mockStatic(ModelProvider.class)) {
+        model.when(ModelProvider::getInstance).thenReturn(provider);
+
+        PortalDocumentQuery.list(SESSION, (PortalDocumentKind) c[0], new PortalDocumentQuery.Filter(
+            null, null, null, null, null, null, (Boolean) c[1]), 0, 10);
+      }
+
+      String hql = built.values().iterator().next();
+      String label = c[0] + "/" + c[1] + "/flag " + c[2] + ": " + hql;
+      if (c[3] == null) {
+        assertFalse(label, hql.contains("documentCategory"));
+      } else {
+        assertTrue(label, hql.contains((String) c[3]));
+      }
+      assertEquals(label, c[4], hql.contains(flag));
+    }
+  }
+
   @Test
   public void aBlankIdIsNotFoundWithoutQuerying() {
     assertNull(PortalDocumentQuery.findInScope(SESSION, PortalDocumentKind.INVOICE, " "));
@@ -238,15 +285,19 @@ public class PortalDocumentQueryTest {
     Date today = new Date(86_400_000L);
     // Columns: kind, group, statuses bound, a fragment of its condition (null: none), binds :today.
     Object[][] cases = {
-        { PortalDocumentKind.QUOTATION, "awaiting", Arrays.asList("UE", "CO"), null, false },
+        // An expired quotation (validUntil before today) awaits nothing; one with no validUntil,
+        // or valid until today itself, still does (ETP-6209 QA).
+        { PortalDocumentKind.QUOTATION, "awaiting", Arrays.asList("UE", "CO"),
+            "(e.validUntil is null or e.validUntil >= :today)", true },
         { PortalDocumentKind.QUOTATION, "accepted", Arrays.asList("ETGO_AC", "CA", "ETGO_CI"),
             null, false },
         { PortalDocumentKind.QUOTATION, "rejected", Arrays.asList("CJ"), null, false },
         { PortalDocumentKind.ORDER, "inProgress", Arrays.asList("CO"), "from OrderLine l", false },
         { PortalDocumentKind.ORDER, "voided", Arrays.asList("VO"), null, false },
         { PortalDocumentKind.SHIPMENT, "delivered", Arrays.asList("CO", "CL"), null, false },
+        // Owed only: a credit note in the customer's favour is not pending (ETP-6209 QA).
         { PortalDocumentKind.INVOICE, "pending", Arrays.asList("CO", "CL"),
-            "e.outstandingAmount <> 0", false },
+            "e.outstandingAmount > 0", false },
         { PortalDocumentKind.INVOICE, "overdue", Arrays.asList("CO", "CL"),
             "ps.dueDate < :today", true },
         { PortalDocumentKind.INVOICE, "paid", Arrays.asList("CO", "CL"),

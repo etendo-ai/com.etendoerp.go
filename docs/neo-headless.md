@@ -5587,7 +5587,7 @@ Answer: `{system, territory, created:[{system, spec, entity, id}], certificate:{
 `system` is the resulting SIF — `SII+TBAI` after "Añadir SII", whose `created` holds only the
 SII record — and `territory` the one the records were built for. When
 the organization has no active signing certificate, a `warning` message
-(`ETGO_FiscalSifNoCertificate`) says it must be uploaded from Configuración fiscal (agents cannot
+(`ETGO_FiscalSifNoCertificate`) says it must be uploaded from Configuración Fiscal (agents cannot
 write the certificate, see §4.12.9, *Fiscal Configuration*). The records are then read and edited
 on `sii-config/siiConfiguration`, `tbai-config/header` and
 `verifactu-config/cabeceraDeConfiguraciónVerifactu` — the window's detail step, or
@@ -8886,7 +8886,7 @@ leaves NEO as:
 
 ```json
 {"error":{"status":400,
-          "message":"El contacto no está marcado como Factura Simplificada, así que su NIF/CIF es obligatorio. Complétalo en Contactos.",
+          "message":"El contacto no está marcado como Factura Simplificada, así que su NIF es obligatorio. Complétalo en Contactos.",
           "messageKeys":["TBAI_EmptyNifCode"]}}
 ```
 
