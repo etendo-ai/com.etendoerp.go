@@ -111,7 +111,12 @@ final class PurchaseInvoiceImportDua {
         : null;
   }
 
-  /** The values of the four import fields once the write is applied. */
+  /**
+   * The values of the four import fields once the write is applied: the request merged over the
+   * stored invoice, never the stored values alone. So a save that turns the check off AND moves the
+   * SII type away from F5 / LC in one request (what the SPA sends when the user unchecks an
+   * import it checked itself) is no longer an import and needs no DUA.
+   */
   static final class HeaderState {
     final boolean importDua;
     final boolean multiDua;

@@ -141,6 +141,33 @@ public class PurchaseInvoiceImportDuaTest {
   }
 
   @Test
+  public void uncheckingAndMovingTheTypeAwayFromF5InOneSaveNeedsNoDua() throws Exception {
+    when(stored.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn("Y");
+    when(stored.getAeatsiiClaveTipoFc()).thenReturn("F5");
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, "N")
+        .put(PurchaseInvoiceImportDua.FIELD_SII_TYPE, "F1");
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
+  }
+
+  @Test
+  public void uncheckingAStoredImportWithNoTypeNeedsNoDua() throws Exception {
+    when(stored.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn(true);
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, false);
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
+  }
+
+  @Test
+  public void uncheckingWhileTheStoredTypeStaysF5StillNeedsTheDua() throws Exception {
+    when(stored.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn("Y");
+    when(stored.getAeatsiiClaveTipoFc()).thenReturn("F5");
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, "N");
+
+    assertRefused(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)), 400);
+  }
+
+  @Test
   public void turningTheCheckOnWhileTheFlagIsOffIs403() throws Exception {
     flag.when(SiiImportDuaFlag::isEnabled).thenReturn(false);
     JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
