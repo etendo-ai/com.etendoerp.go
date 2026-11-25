@@ -33,6 +33,8 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
 /**
  * ETP-6406: the {@code post} / {@code unpost} contracts of Internal Consumption, Physical Inventory
  * and Goods Movement — declared in order, judged on each document's own state property.
+ *
+ * @covers com.etendoerp.go.schemaforge.InventoryPostingContracts
  */
 class InventoryPostingContractsTest {
 
