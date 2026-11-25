@@ -6218,6 +6218,66 @@ undiscoverable-without-the-AGENT_PROMPT as the pending item above describes, but
 from the schema. **While on**, the schema carries them as described below, still subject to the
 pending `AGENT_PROMPT` gap.
 
+**ETP-5806 CP-12h (QA finding) — a wrapper's injected read keys must be DECLARED, or the projection
+calls them unknown while returning them.** `etendo_list`/`etendo_get` validate a caller's
+`fields:[…]` whitelist against `NeoFieldFilter.emittableResponseKeys()`, which is built from the
+spec's own `ETGO_SF_FIELD` rows. For `contacts/locationAddress` those rows describe
+`C_BPartner_Location`; every address field lives one table over in `C_Location` and reaches the
+response only because `ContactsLocationAddressHandler.afterHandle` injects it. So
+`etendo_list contacts/locationAddress fields:[streetName, buildingNumber, buildingName, cityName]`
+returned all four values AND reported all four in `unknownFields` — the self-contradiction IMP-18
+exists to avoid, which an agent reads as a silent failure. The same request against `bp-location`
+showed no symptom, because that entity IS `C_Location` and the names are real curated fields there;
+the asymmetry is the wrapper, not the field. Fixed by `ContactsLocationAddressHandler` overriding
+`NeoHandler#responseEnrichedFields()` with everything `putGeoLocFields` injects —
+`addressLine1`, `addressLine2`, `cityName`, `postalCode`, `country`, `countryCode`, `region`,
+`regionName`, plus `streetName`/`buildingNumber`/`buildingName` **only while the flag is on for the
+caller's account**, since with it off those 3 are genuinely absent and must stay reportable.
+Base property names only: the validator reduces `country$_identifier` to `country` before judging.
+**`warehouse/location` — CLOSED, and not by declaring anything. An earlier revision of this note
+recorded it as an open CP-12h gap deferred behind the ETP-5588 migration; both halves of that were
+wrong.** `WarehouseLocationHandler` does inject the same keys and does not override
+`responseEnrichedFields()`, but it does not exhibit CP-12h, because it is a different route end to
+end. Verified live against the deployed backend:
+`etendo_get(warehouse, location, fields:[streetName, buildingNumber, buildingName, cityName,
+postalCode, country, region, addressLine1, name])` returns every value with **no** `unknownFields`,
+while the same call with an invented name reports that one and only that one — so the validator is
+active on the route and already honest.
+
+Why the wrapper fix does not transfer: `contacts/locationAddress` is a **tabbed** wrapper, so its
+read runs the generic path and is judged against the spec's `ETGO_SF_FIELD` rows.
+`warehouse/location` is **tab-less**, so `handle()` serves the whole read in the READ pre-phase
+(`McpHookExecutor#runReadProvider`) and the answer is shaped by `McpProvidedReadShaper#project`,
+which derives the emittable set from **the rows themselves**. `McpQuerySupport#applyProjection` is
+therefore never reached on this entity (and would raise `entityHasNoTab` if it were), and
+`etendo_schema` — whose `McpSchemaResponseHints#withEnrichedReadFields` is the only other reader of
+`responseEnrichedFields()` — refuses the entity outright with a 405 *"served by a dedicated handler,
+not by a window"*. An override here would have **no reader at all**: dead code that would also
+contradict the mechanism that actually keeps the route honest. The deferral reason was stale too —
+the handler carries `@NeoExtension(spec = "warehouse", entity = "location")` alongside its `@Named`
+since ETP-5806, consistently double-bound, so nothing about it drags in ETP-5588.
+
+**What keeps it honest, and the one change that would break it.** `buildRecord` names every
+emittable key unconditionally, writing `JSONObject.NULL` for an absent value rather than omitting
+the key. "Optimizing" that to skip nulls is exactly what would reintroduce CP-12h here: the key
+would vanish from the row, the shaper would stop seeing it as emittable, and
+`fields:["postalCode"]` on a record with no postal code would come back as
+`unknownFields:["postalCode"]`. Pinned by
+`WarehouseLocationHandlerTest#testGetByIdNamesEveryProjectableKeyEvenWhenTheValueIsAbsent` (flag on,
+all 13 keys) and `#testGetByIdFlagOffStillNamesEveryNonStructuredProjectableKey` (flag off, the 10
+that do not follow the flag — the 3 structured ones stay absent on purpose, so a caller asking for
+them while the flag is off keeps being told they are unknown).
+
+**Scope: this handler serves TWO windows, not one.** Besides Warehouse's *Location / Address*, the
+**Organization fiscal address** is served by it — `OrganizationPage.jsx` passes
+the `warehouse` base URL (`neoBase(apiBaseUrl) + '/warehouse'`) to `LocationModalField` (`saveMode="location"`)
+deliberately, because no `location` entity was ever registered under the `organization` spec. Note
+the asymmetry with the shared `LocationEditorModal`, which routes its own CRUD through
+`contacts/locationAddress` on purpose so that `AD_Window_Access` to Contacts is enough for the user;
+Organization uses the other mode and points explicitly at `warehouse`. That fiscal address is the
+one feeding ETP-5806's SEPA remittance acceptance criterion, so any change to this handler's read or
+write shape must be exercised on both windows.
+
 **ETP-5806 follow-up — `bp-location`/`BpLocationHandler`.** The AD window behind the `bp-location`
 spec (AD_Window 121 "Location", inactive in the menu but served regardless via NEO Headless/MCP)
 maps `C_Location` directly through generic CRUD, with no prior dedicated handler — found to accept
@@ -6263,10 +6323,24 @@ was "confirmed".) Two consequences, both of which the handler now owns explicitl
   all and so still deliver the raw `EM_OBSEPA_StrtNm`/`BldgNb`/`BldgNm` verbatim), case-
   insensitively, and removes them from the body once read so it remains the sole writer of the 3
   columns — this multi-spelling tolerance is now defense-in-depth (batch, and any instance that has
-  not yet run `export.database`), not the fix itself. It still writes the response under both the
-  published name and the raw DAL property name (`putStructuredFields`) for the same reason: an MCP
-  agent reads `streetName` from `etendo_schema`, while an instance mid-rollout (SPA built against
-  the old contract) may still expect `oBSEPAStreetName`.
+  not yet run `export.database`), not the fix itself. **The response, by contrast, carries ONE
+  spelling (ETP-5806 CP-10b, QA finding).** `putStructuredFields` used to write each value twice —
+  published name and raw DAL property — as a mid-rollout hedge for an SPA built against the old
+  contract. With the qualifiers pinned and exported that hedge is dead weight with a cost: the
+  `oBSEPAStreetName`/`oBSEPABuildingNumber`/`oBSEPABuildingName` keys appear in no view of
+  `etendo_schema`, so an agent that read one off a response and then asked for it by name got it
+  back in `unknownFields` while the response carried its value. The canonical names are
+  `streetName`/`buildingNumber`/`buildingName` — what the schema advertises, what the generated SPA
+  reads, and what the other three address handlers use. Input tolerance is unchanged; only the
+  output narrowed.
+- **The write response's `_identifier` is recomputed after the lines are rewritten (ETP-5806
+  CP-12i, QA finding).** Generic CRUD serializes the row, `_identifier` included, inside
+  `executeUpdate` — before `BpLocationHandler`'s post-hook writes the recomposed `Address1`. Since
+  `C_Location`'s identifier is built from `Address1`/`Postal`/`City`/country, an `etendo_update`
+  that changed `buildingNumber` answered with the NEW `addressLine1` next to the OLD `_identifier`,
+  and only a later GET showed the current one. `persistPendingFields` now re-reads
+  `geoLoc.getIdentifier()` after the flush and overwrites the key — only when the response already
+  carries it, so a projection that left it out does not gain one.
 - **While the flag is off, the handler strips the 3 fields from the response as well as from the
   write body.** Declining to enrich is not enough here: with `ISINCLUDED=Y` the generic projection
   returns them under the curated key with no handler involvement, so an untargeted account could
@@ -6274,11 +6348,102 @@ was "confirmed".) Two consequences, both of which the handler now owns explicitl
   spelling, on every verb, while `addressLine1`/`addressLine2`/`postalCode`/`cityName`/`country`/
   `region` behave exactly as they did before ETP-5806.
 
-`etendo_schema`/`etendo_get` still report `streetName`/`buildingNumber`/`buildingName` in
-`unknownFields` for this entity — not because the columns are uncurated, but because the published
-name resolves to no DAL property and `bpLocation` is a direct table, not a wrapper, so
-`McpWriteRequestSupport.virtualFieldNames` is empty for it. The value is accepted and persisted
-regardless (IMP-18 reports, it does not refuse).
+**Published `maxLength` is the ENFORCED cap, not the AD column's (ETP-5806 CP-6b, QA finding).**
+`EM_OBSEPA_StrtNm` is `VARCHAR(70)` on purpose — it is a real SEPA/ISO20022 field other consumers
+fill to that width — while `StructuredAddressComposer` rejects a street over **60**, because that
+is what fits the composed `C_Location.Address1` line. `McpSchemaFieldBuilder#addMaxLength` derived
+`maxLength` from `AD_Column.FIELDLENGTH`, so `etendo_schema` advertised 70 and a 61-character
+street came back `400 validation_error "Field(s) exceed maximum length: streetName"` — the schema
+promising a width the write path refuses. The builder now consults
+`AddressVirtualSelectorPolicy.MAX_LENGTH_OVERRIDES` first: **60 / 16 / 35** for
+`streetName` / `buildingNumber` / `buildingName`, read from the composer's own constants so the two
+cannot drift. Structural and keyed by column, exactly like `PUBLISHED_NAME_OVERRIDES` beside it, so
+it applies to `bp-location`'s direct table walk and to every wrapper entity, on the `create` and
+`update` views alike. The column itself is NOT narrowed: shrinking it would break existing 61-70
+character data on `update.database` and restrict SEPA export for callers unrelated to the composer.
+
+**Published mandatoriness is the ENFORCED one too (ETP-5806 CP-13, QA finding).** Same defect class
+as the `maxLength` note above, one field over. None of `EM_OBSEPA_StrtNm`, `EM_OBSEPA_BldgNb` or
+`C_Location.City` is `NOT NULL` in AD, so the generic rule derived "optional" from the column and
+`etendo_schema bp-location view:"create"` answered `requiredCount: 0`, listing `streetName` and
+`cityName` under `optional` beneath a hint reading *"accepted but not needed"* — while
+`etendo_create bp-location {cityName, country}` came back `400 Missing required field(s):
+streetName`. The schema published the flag-OFF truth to an account the flag was ON for, on both
+specs (`bp-location`, `contacts/locationAddress`) and in both views. The 3 handlers that wrap a
+`C_Location` now declare the contract through the existing customization hooks — as default methods
+on the `StructuredAddressCustomization` mixin they each `implement`, so the declaration is written
+once, stays visible in every handler's own class declaration, and nothing identity-shaped enters a
+generic service:
+
+| Field | Published, flag ON | Declared by |
+|---|---|---|
+| `streetName`, `cityName` | `required` (`userRequired: true`) | `StructuredAddressCustomization#callerRequiredCreateFields()` → `StructuredAddressComposer.callerRequiredFields` |
+| `buildingNumber` | `optional` + **`serverDefaulted: true`** | `StructuredAddressCustomization#serverResolvedCreateFields()` → `StructuredAddressComposer.serverDefaultedFields` |
+| `buildingName` | `optional` | nothing — genuinely optional |
+| `country` | `required` | its AD column, which IS mandatory |
+
+`buildingNumber` is deliberately NOT in `required`: it is mandatory at the level of the stored row
+and never at the level of what a caller supplies, because a blank value becomes `"s/n"`.
+`serverDefaulted: true` is the vocabulary `view:"create"`'s own hint already defines for exactly
+that — *"mandatory in Etendo but the server already has a value for them, so do not ask the user"*.
+With the flag OFF both declarations are empty, so the pre-ETP-5806 (country-only) contract is
+republished byte-for-byte.
+
+Two consequences recorded with it:
+- **`missingMandatoryFields` no longer takes or names `buildingNumber`.** The parameter went with
+  the check — it was the only reason a caller had to resolve `effectiveBuildingNumber` before
+  validating, and `requiresMergeOnUpdate` lost it for the same reason. It used to, in the one case a blank
+  Street Name suppresses the fallback, so a create missing only the street answered `400 Missing
+  required field(s): streetName, buildingNumber` while the same create *with* a street and *without*
+  a number succeeded at `201` and persisted `"s/n"`. The two answers contradicted each other; the
+  400 was the wrong one.
+- **`view:"full"` now reports `required: true` alongside `userRequired: true` for any
+  caller-required declared field** (`McpServerResolvedFields#markCallerRequired`). `required` is
+  otherwise a copy of `AD_Column.isMandatory()`, which is exactly the signal that cannot see a
+  customization's rule — so the full dump was publishing `required: false` next to
+  `userRequired: true` for a field the write path refuses a create without. This applies to every
+  entity that uses the ETP-5473 declaration, not only to addresses.
+
+**`addressLine1`/`addressLine2` are published read-only while the flag is on (ETP-5806 CP-13, QA
+finding).** With the structured fields active the composer is the only writer of the two lines: a
+create sending `addressLine1: "LINEA LIBRE"` plus the 3 structured fields answered `201`, persisted
+the *composed* `addressLine1`, left `addressLine2` `null`, and reported no `adjustedFields` and no
+warning — the caller had to re-read the record to find out. Reporting the rewrite was not reachable:
+these handlers short-circuit the generic CRUD path, so the `adjustedFields` reconciliation never
+runs for them. The contract is corrected on the side that can be: `AddressVirtualSelectorPolicy`
+declares `Address1`/`Address2` as composer-owned and
+`McpSchemaFieldBuilder#applyComposerOwnedVisibility` republishes them `visibility: "readOnly"`,
+which drops them from `view:"create"` (`isAgentSuppliable`) while keeping them listed and readable
+in `view:"full"`. Structural and keyed by column, so it covers `bp-location`'s direct table walk and
+the wrapper path (`contacts/locationAddress`, `warehouse/location`) with one rule. **Flag OFF
+changes nothing** — there the two lines are the legacy free-text address and stay editable. The
+write path is unchanged: a value sent for them is still accepted and still ignored, it is simply no
+longer advertised.
+
+**`composeAddressLines`' street-truncating branch is REACHABLE, and its javadoc said twice that it
+was not (ETP-5806 CP-13, QA finding).** `streetAndNumber` is `street + ", " + number`, so a street
+of exactly 60 — the maximum the composer itself publishes and accepts — plus any non-blank number
+measures 63 and takes the third branch. Nothing is lost: `Address1` holds the street (60 chars, so
+`StringUtils.left` does not cut it) and `Address2` holds `number - name`. The javadoc now describes
+this. One deliberate consequence, **not a bug**: because a blank Building Number resolves to `"s/n"`,
+a street of 58 characters or more with no number and no building name composes `Address2 == "s/n"`
+on its own. That is faithful to Classic's `LocationSEPA::fillAddressLines`, which this method ports
+line for line, and diverges from Classic for the same input only because `"s/n"` is Etendo Go's own
+convention. Left as is: changing it would either break the parity this port exists for, or make the
+`"s/n"` convention conditional on the street's length.
+
+**A write to `bp-location` under these 3 published names reports no `unknownFields` (ETP-5806
+CP-12g).** `bpLocation` IS `C_Location` rather than a wrapper around it, so
+`McpWriteRequestSupport.virtualFieldNames` is indeed empty for it — but
+`McpWriteRequestSupport#reportIfUnknown` returns before reporting anything, because
+`NeoSelectorPolicy.ownPropertyForPublishedName(dalEntity, key)` resolves the published name against
+the entity's **own** table (`streetName` → `EM_OBSEPA_StrtNm` → an existing `C_Location` property).
+That branch was added for exactly this entity shape. The published name is also the emittable one:
+`ETGO_SF_FIELD.JAVA_QUALIFIER` is pinned to `streetName`/`buildingNumber`/`buildingName`, so
+`NeoFieldFilter` renames the raw DAL property on the way out and schema key, write key and response
+key are the same string on every verb. Verified live: an `etendo_update` sending `streetName` and
+`buildingName` applies both, recomposes `addressLine1`, refreshes `_identifier`, and answers with no
+`unknownFields` key at all.
 
 **MCP naming unification.** The three handlers that read/write the SEPA columns
 (`ContactsLocationAddressHandler`, `WarehouseLocationHandler`, `BpLocationHandler`) all agree on
@@ -7991,9 +8156,32 @@ between the caller's values as the pre-hook receives them (snapshot taken in `ha
 before the CREATE pre-hook dispatch, `McpSupersededReconciler.snapshotCallerValues`) and the body it
 leaves, so representation changes made earlier (type coercion, an identifier resolved to an id) are
 never reported. Fields the caller did not send (a placeholder the pre-hook replaced, a
-`taxCategory` it injected) are never reported. A key the pre-hook removed reports `persisted: null`.
+`taxCategory` it injected) are never reported. A key the pre-hook removed reports `persisted: null`
+**unless the customization declared what it will persist for it** — see *Deferred writes* below.
 Equality is text, number or Yes/No flag. `adjustedFieldsHint` accompanies it; the key is absent when
 nothing was adjusted.
+
+**Deferred writes (ETP-5806 QA pass 3).** "The key left the body" and "the value was dropped" are
+not the same thing. A pre-hook that removes a key *because it has taken over the write* — it
+validates the value, remembers it, and its post-hook persists it directly via DAL — was reported as
+having discarded it. Live case: every MCP `etendo_create` on `bp-location` answered
+`"streetName": {"sent": "Calle Retest P3", "persisted": null}` for the three structured address
+fields it had just saved correctly, because `BpLocationHandler.prepareStructuredAddress` strips them
+on purpose so it is their only writer. Since `adjustedFieldsHint` presents `persisted` as what was
+stored, an agent reads that as data loss and retries or reports it — the same "applied but reported
+as not applied" failure as CP-12g, which QA classified as blocking. `contacts/locationAddress` never
+showed it (its handler short-circuits generic CRUD, so this diagnostic never runs for it) and an
+update never showed it (the reconciler is create-only), which is why it survived earlier passes.
+
+`NeoHandler.deferredCreateValues(NeoContext)` (default: empty) closes it: the customization maps
+each key it removed to the value it will persist for it, and the reconciler uses that as the
+`persisted` value. The body always wins — a declaration can only answer for a key that is gone —
+and a removed key nobody declared still reports `persisted: null`, the honest answer for a genuine
+drop. It corrects the diagnostic rather than silencing it: a value the customization really did
+rewrite is still reported, now with what was actually stored (a blank Building Number saved as
+`"s/n"` comes back as an adjustment with `persisted: "s/n"`). Declare **every spelling** of a
+removed key — the lookup is by the key the caller sent, and the channel decides which one that is.
+Shared code names no entity and no field; an exception counts as "none".
 
 **`supersededDefaults`** (callout vs sent, recorded before the pre-hook) is then reconciled:
 
@@ -13727,6 +13915,12 @@ wrapper fields. A new generic extension point lets the customization say so:
   pre-hook ran (so it may look at the final body); it silences a diagnostic and changes no value;
   an exception counts as "none". First user: `ProductDefaultsHandler` (`taxCategory` for a valid
   `productType`, `stocked`/`returnable` for S, E, R).
+- `NeoHandler#deferredCreateValues(NeoContext)` (ETP-5806 QA pass 3) — key → the value the
+  customization will itself persist for a create-body key its pre-hook **removed**, so
+  `adjustedFields` reports what was really saved instead of `persisted: null` (§4.12.14). Read once
+  by the MCP create path, after the pre-hook ran; it corrects a diagnostic and writes nothing; an
+  exception counts as "none". First user: `BpLocationHandler` (the 3 structured SEPA fields under
+  every spelling, plus the composed `addressLine1`/`addressLine2`).
 - `SalesQuotationLineHandler` and `SalesOrderLineHandler` both declare
   `OrderLineDiscountSupport.SERVER_RESOLVED_CREATE_FIELDS` = `tax`, `lineNetAmount` (ETP-5528, QA
   observation: the create view listed `lineNetAmount` as required although every create without it
