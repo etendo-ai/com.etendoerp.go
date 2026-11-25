@@ -559,6 +559,120 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
     }
   }
 
+  /**
+   * ETP-6179 CP-12: the SPA asks a validateOnly dry run BEFORE confirming the draft return. A
+   * customer without payment terms/method is refused right there (same 400 and message as the
+   * real call), so the return is never confirmed without its rectificativa. Nothing is saved.
+   */
+  @Test
+  public void testValidateOnlyOnADraftRefusesACustomerWithoutPaymentTermsAndSavesNothing()
+      throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      when(provider.get(Invoice.class)).thenReturn(mock(Invoice.class));
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      ShipmentInOut receipt = draftReceiptWithOneLine(dal);
+      stubRectificativeDocType(dal);
+      BusinessPartner bp = mock(BusinessPartner.class);
+      when(receipt.getBusinessPartner()).thenReturn(bp);
+      when(bp.getPaymentTerms()).thenReturn(null);
+
+      NeoResponse result = handler.handle(NeoContext.builder()
+          .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+          .fieldName("createReturnInvoice").recordId("rec-1")
+          .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+      assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
+      assertEquals(BP_FINANCIALS_MISSING, errorMessage(result));
+      Mockito.verify(dal, Mockito.never()).save(any());
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: a dry run that passes every check answers 200 {validateOnly:true} on the
+   * draft, saving no invoice and completing nothing.
+   */
+  @Test
+  public void testValidateOnlyOnADraftThatPassesAnswersOkAndSavesNothing() throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class);
+         MockedStatic<NeoBackgroundDefaultsService> defaults =
+             Mockito.mockStatic(NeoBackgroundDefaultsService.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      Invoice invoice = mock(Invoice.class);
+      when(provider.get(Invoice.class)).thenReturn(invoice);
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      ShipmentInOut receipt = draftReceiptWithOneLine(dal);
+      stubRectificativeDocType(dal);
+      BusinessPartner bp = mock(BusinessPartner.class);
+      when(receipt.getBusinessPartner()).thenReturn(bp);
+      when(invoice.getCurrency()).thenReturn(mock(org.openbravo.model.common.currency.Currency.class));
+      InvoiceLine il = mock(InvoiceLine.class);
+      when(handler.createDraftInvoiceHandler.createShipmentInvoiceLine(
+          any(), any(), any(), anyLong())).thenReturn(il);
+      when(il.getUnitPrice()).thenReturn(new BigDecimal("10.00"));
+      Invoice source = mock(Invoice.class);
+      Session session = mock(Session.class);
+      when(dal.getSession()).thenReturn(session);
+      Query invoiceQuery = mock(Query.class);
+      when(session.createQuery(anyString(), eq(Invoice.class))).thenReturn(invoiceQuery);
+      when(invoiceQuery.setParameter(anyString(), any())).thenReturn(invoiceQuery);
+      when(invoiceQuery.setMaxResults(anyInt())).thenReturn(invoiceQuery);
+      when(invoiceQuery.list()).thenReturn(Collections.singletonList(source));
+      ShipmentInOutLine line = receipt.getMaterialMgmtShipmentInOutLineList().get(0);
+      when(line.getCanceledInoutLine()).thenReturn(mock(ShipmentInOutLine.class));
+
+      NeoResponse result = handler.handle(NeoContext.builder()
+          .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+          .fieldName("createReturnInvoice").recordId("rec-1")
+          .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+      assertEquals(200, result.getHttpStatus());
+      JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+      assertTrue(data.getBoolean("validateOnly"));
+      assertEquals("inv-src-1", data.getJSONArray("rectifiedInvoices").getString(0));
+      Mockito.verify(dal, Mockito.never()).save(any());
+      Mockito.verify(dal, Mockito.never()).flush();
+    }
+  }
+
+  private static ShipmentInOut draftReceiptWithOneLine(OBDal dal) {
+    ShipmentInOut receipt = mock(ShipmentInOut.class);
+    when(dal.get(ShipmentInOut.class, "rec-1")).thenReturn(receipt);
+    when(receipt.getDocumentStatus()).thenReturn("DR");
+    ShipmentInOutLine line = mock(ShipmentInOutLine.class);
+    when(line.getProduct()).thenReturn(mock(Product.class));
+    when(line.getMovementQuantity()).thenReturn(new BigDecimal("5.00"));
+    when(receipt.getMaterialMgmtShipmentInOutLineList())
+        .thenReturn(Collections.singletonList(line));
+    Organization org = mock(Organization.class);
+    when(receipt.getOrganization()).thenReturn(org);
+    when(org.getId()).thenReturn("org-1");
+    return receipt;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static void stubRectificativeDocType(OBDal dal) {
+    DocumentType docType = mock(DocumentType.class);
+    Organization docOrg = mock(Organization.class);
+    when(docType.getOrganization()).thenReturn(docOrg);
+    when(docOrg.getId()).thenReturn("org-1");
+    OBCriteria<DocumentType> criteria = mock(OBCriteria.class);
+    when(dal.createCriteria(DocumentType.class)).thenReturn(criteria);
+    when(criteria.add(any())).thenReturn(criteria);
+    when(criteria.addOrderBy(anyString(), anyBoolean())).thenReturn(criteria);
+    when(criteria.list()).thenReturn(Collections.singletonList(docType));
+  }
+
   @Test
   public void testHandleCreateReturnInvoiceNoProductLinesReturnsBadRequest() throws Exception {
     try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);

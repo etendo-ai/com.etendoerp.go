@@ -440,6 +440,39 @@ class NeoActionContractTest {
     }
 
     @Test
+    @DisplayName("an object param accepts a JSON object (it was judged as a string)")
+    void objectParamAcceptsObject() throws Exception {
+      assertNull(NeoActionContract.validate(objectCatalog(), "create",
+          new JSONObject().put("fields", new JSONObject().put("k", "R2"))));
+    }
+
+    @Test
+    @DisplayName("an object param accepts a string holding a JSON object")
+    void objectParamAcceptsJsonObjectString() throws Exception {
+      assertNull(NeoActionContract.validate(objectCatalog(), "create",
+          new JSONObject().put("fields", "{\"k\":\"R2\"}")));
+    }
+
+    @Test
+    @DisplayName("an object param rejects a plain string, a number and an array")
+    void objectParamRejectsNonObjects() throws Exception {
+      for (Object value : new Object[] {"R2", "[1]", 7, new JSONArray().put("R2")}) {
+        JSONObject error = errorOf(NeoActionContract.validate(objectCatalog(), "create",
+            new JSONObject().put("fields", value)));
+        assertEquals("fields", error.getString("field"));
+        assertEquals("object", error.getString("expectedType"));
+        assertEquals("Parameter 'fields' must be a JSON object.", error.getString("message"));
+      }
+    }
+
+    private Map<String, NeoActionContract> objectCatalog() {
+      Map<String, NeoActionContract> map = new LinkedHashMap<>();
+      map.put("create", NeoActionContract.write("create", "Creates.",
+          NeoActionContract.Param.optional("fields", NeoActionContract.TYPE_OBJECT, "Fields.")));
+      return map;
+    }
+
+    @Test
     @DisplayName("an explicit null on an optional parameter is not type-checked")
     void nullOptionalIsSkipped() throws Exception {
       assertNull(NeoActionContract.validate(catalog(), "list",

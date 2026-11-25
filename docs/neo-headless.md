@@ -14472,6 +14472,12 @@ for a document type configured `F2`), with no SII motive and no TicketBAI code. 
 
 - **Body key `sifFields`** (optional object, declared in every one of those contracts through
   `InvoiceSifPreset.sifFieldsParam(sales)`): `{field: value}` with the DAL property names of the SIF tab.
+  It is a JSON object; a string holding a JSON object is accepted too (some MCP clients serialize
+  nested objects). QA CP-16: `NeoActionContract` judged every non-array, non-scalar declared type as
+  a string, so MCP refused the object with 422 "must be a string" and the handler refused the string
+  with `ETGO_InvoiceSifFieldInvalid` — `sifFields` could not be sent over MCP at all. A
+  `TYPE_OBJECT` parameter is now validated as an object (or a string that parses as one), and
+  handlers read it with `NeoActionContract.asObject`.
   The contract text is worded per direction: the sales actions (`createDraftInvoice`, the customer
   return's `createReturnInvoice`) describe the VERI\*FACTU type of the document type, the
   rectification codes a rectificative needs (`R1` preselected on a return's rectificative, and `R1`
@@ -14549,6 +14555,18 @@ for a document type configured `F2`), with no SII motive and no TicketBAI code. 
   `AbstractReturnDocumentHeaderHandler`, `createReturnInvoice` reads the key through the shared
   `ReturnInvoiceSupport`. A purchase rectificative only has SII fields, and no motive (purchase-side
   corrective support is not implemented, CP-10).
+- **`createReturnInvoice` dry run (`validateOnly:true`, customer return; QA CP-12).** The SPA
+  completes the return and then creates the rectificativa in a second request, so a refusal of the
+  second (a customer without payment terms or payment method, no price list, an unpriced product,
+  no invoice to rectify) left the return confirmed without its invoice. With `validateOnly:true`,
+  `ReturnInvoiceSupport.createReturnInvoice` runs every check that precedes its first save — they
+  only read, the header is still transient — and answers `{data:{validateOnly:true,
+  rectifiedInvoices:[id]}}` or the same refusal as the real call, creating nothing. The customer
+  return's handler accepts it on a DRAFT return (the real call still needs it completed), and the
+  SPA's confirm modal (`ConfirmInOutModal` `validateInvoiceFirst`, set by the return-material-receipt
+  window) sends it before `documentAction`. Only the JSON boolean `true` turns it on. The SIF
+  fields and the rectification guard need the saved header and are not part of the dry run.
+  The return to vendor does not declare it (not in this ticket's scope).
 - **Ordinary document types only for an ordinary invoice:** `CreateDraftInvoiceHandler.findARInvoiceDocType`
   and `CreatePurchaseInvoiceHandler.findAPInvoiceDocType` skip return (`IsReturn`) and rectificative
   types (`RectificativeSupport.isCorrective`); before, the org's default "Factura rectificativa" could
