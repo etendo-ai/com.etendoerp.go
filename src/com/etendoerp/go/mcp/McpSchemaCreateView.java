@@ -76,7 +76,7 @@ final class McpSchemaCreateView {
   static final String VIEW_FULL = "full";
 
   private static final String KEY_NAME = "name";
-  private static final String KEY_REQUIRED = "required";
+  static final String KEY_REQUIRED = "required";
   /** ETP-5184: entity-level curated guidance, mirrored from {@code etendo_discover}. */
   private static final String KEY_AGENT_PROMPT = "agentPrompt";
   private static final String KEY_OPTIONAL = "optional";

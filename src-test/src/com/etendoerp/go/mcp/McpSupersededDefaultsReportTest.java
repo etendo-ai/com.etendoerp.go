@@ -22,7 +22,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 
 import org.codehaus.jettison.json.JSONObject;
@@ -232,6 +234,90 @@ class McpSupersededDefaultsReportTest {
     assertTrue(adjusted.has("persisted"), "the key is present, explicitly null");
     assertTrue(adjusted.isNull("persisted"));
     assertFalse(superseded.has("paymentTerms"));
+  }
+
+  /**
+   * ETP-5806 QA pass 3 (repro): a pre-hook that removes a key BECAUSE it has taken over the write
+   * must not be reported as having dropped the value. Every MCP create on {@code bp-location}
+   * answered {@code "streetName": {"sent": "...", "persisted": null}} for values the post-hook
+   * saved a moment later, and {@code adjustedFieldsHint} told the agent that {@code persisted} is
+   * what was stored — i.e. data loss, reported on a correct write.
+   */
+  @Test
+  @DisplayName("reconcile: a removed key the customization declared it persists is not adjusted")
+  void aRemovedKeyWithADeclaredDeferredValueIsNotAdjusted() throws Exception {
+    JSONObject body = recon(null, new JSONObject().put("streetName", "Calle Retest P3"),
+        new JSONObject(), deferring(Map.of("streetName", "Calle Retest P3")));
+
+    assertFalse(body.has("adjustedFields"), "the value WAS persisted, by the customization itself");
+    assertFalse(body.has("adjustedFieldsHint"));
+  }
+
+  /**
+   * ETP-5806 QA pass 3 — the fix corrects the diagnostic, it does not silence it: a customization
+   * that genuinely rewrote the caller's value (a blank Building Number stored as {@code "s/n"})
+   * is still reported, now with what was really saved instead of {@code null}.
+   */
+  @Test
+  @DisplayName("reconcile: a declared deferred value that differs is still adjusted, with the real value")
+  void aDeclaredDeferredValueThatDiffersIsStillReported() throws Exception {
+    JSONObject body = recon(null, new JSONObject().put("buildingNumber", ""),
+        new JSONObject(), deferring(Map.of("buildingNumber", "s/n")));
+
+    JSONObject adjusted = body.getJSONObject("adjustedFields").getJSONObject("buildingNumber");
+    assertEquals("", adjusted.getString("sent"));
+    assertEquals("s/n", adjusted.getString("persisted"));
+  }
+
+  /**
+   * ETP-5806 QA pass 3 — a declaration can only answer for a key the pre-hook REMOVED. A key the
+   * body still carries is persisted from the body, so the body always wins.
+   */
+  @Test
+  @DisplayName("reconcile: a key still in the final body ignores the declaration")
+  void theFinalBodyWinsOverADeclaration() throws Exception {
+    JSONObject body = recon(null, new JSONObject().put("streetName", "Sent"),
+        new JSONObject().put("streetName", "Rewritten"),
+        deferring(Map.of("streetName", "Sent")));
+
+    JSONObject adjusted = body.getJSONObject("adjustedFields").getJSONObject("streetName");
+    assertEquals("Rewritten", adjusted.getString("persisted"));
+  }
+
+  /**
+   * ETP-5806 QA pass 3 — a customization that declares nothing, returns {@code null}, or throws
+   * keeps the pre-existing answer: a removed key reports {@code persisted: null}. A diagnostic
+   * correction must never turn a successful create into a failure.
+   */
+  @Test
+  @DisplayName("reconcile: a null or throwing declaration falls back to persisted null")
+  void anAbsentOrFailingDeclarationKeepsTheOldAnswer() throws Exception {
+    NeoHandler silent = mock(NeoHandler.class);
+    when(silent.deferredCreateValues(org.mockito.ArgumentMatchers.any())).thenReturn(null);
+    JSONObject fromNull = recon(null, new JSONObject().put("streetName", "Sent"),
+        new JSONObject(), silent);
+    assertTrue(fromNull.getJSONObject("adjustedFields").getJSONObject("streetName")
+        .isNull("persisted"));
+
+    NeoHandler failing = mock(NeoHandler.class);
+    when(failing.deferredCreateValues(org.mockito.ArgumentMatchers.any()))
+        .thenThrow(new IllegalStateException("boom"));
+    JSONObject fromThrow = recon(null, new JSONObject().put("streetName", "Sent"),
+        new JSONObject(), failing);
+    assertTrue(fromThrow.getJSONObject("adjustedFields").getJSONObject("streetName")
+        .isNull("persisted"));
+  }
+
+  /**
+   * A customization declaring what it persists for the create-body keys it removed
+   * ({@link NeoHandler#deferredCreateValues}, ETP-5806 QA pass 3). {@code HashMap} rather than
+   * {@code Map.of} so a declared {@code null} — "I will persist nothing for this" — is expressible.
+   */
+  private static NeoHandler deferring(Map<String, Object> declared) {
+    NeoHandler handler = mock(NeoHandler.class);
+    when(handler.deferredCreateValues(org.mockito.ArgumentMatchers.any()))
+        .thenReturn(new HashMap<>(declared));
+    return handler;
   }
 
   /** W3: a final value equal to the sent one is not an adjustment. */

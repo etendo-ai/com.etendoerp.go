@@ -95,9 +95,18 @@ final class McpServerResolvedFields {
   }
 
   /**
-   * Flags {@code userRequired:true} on the schema fields named in {@code callerRequired}, so the
-   * full dump and {@code view:"create"} both tell the agent to send them (ETP-5473). Fields not
-   * named are left untouched.
+   * Flags {@code userRequired:true} — and {@code required:true} — on the schema fields named in
+   * {@code callerRequired}, so the full dump and {@code view:"create"} both tell the agent to send
+   * them (ETP-5473). Fields not named are left untouched.
+   *
+   * <p><b>Why {@code required} too (ETP-5806 CP-13, QA finding).</b> {@code required} is otherwise
+   * a straight copy of {@code AD_Column.isMandatory()}, and a declaration here exists precisely
+   * because AD does not know the field is mandatory — so {@code view:"full"} published
+   * {@code required:false} next to {@code userRequired:true} for a field the write path refuses a
+   * create without. {@code view:"create"} drops both keys and partitions by the declaration, so it
+   * was already right; the full dump is the one an agent reads to understand the contract, and it
+   * was the one contradicting it. Both keys now say the same thing for a declared field, and
+   * nothing else about the derivation of {@code required} changes.
    *
    * @param fieldsArray    the schema field array, mutated in place; may be {@code null}
    * @param callerRequired the names from {@link #callerRequiredOnCreate}
@@ -114,6 +123,7 @@ final class McpServerResolvedFields {
       String name = field != null ? field.optString("name", null) : null;
       if (name != null && callerRequired.contains(name)) {
         field.put(McpSchemaFieldBuilder.KEY_USER_REQUIRED, true);
+        field.put(McpSchemaCreateView.KEY_REQUIRED, true);
       }
     }
   }
