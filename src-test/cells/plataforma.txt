@@ -4,7 +4,7 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=plataforma [-Pkind=mock|integration|all]
 
-# --- con mocks (659)
+# --- con mocks (658)
 com.etendoerp.go.accounts.AccountDemoExpiryHandlerTest
 com.etendoerp.go.accounts.AccountGroupKeyHandlerTest
 com.etendoerp.go.agentchat.AgentChatConversationsServletTest
@@ -477,8 +477,7 @@ com.etendoerp.go.schemaforge.TenantIsolationPolicyTest
 com.etendoerp.go.schemaforge.TenantOwnershipTest
 com.etendoerp.go.schemaforge.WidgetAccessPolicyTest
 com.etendoerp.go.schemaforge.WidgetActivityHandlerTest
-com.etendoerp.go.schemaforge.WidgetBestProductsHandlerTest
-com.etendoerp.go.schemaforge.WidgetBestSellersHandlerTest
+com.etendoerp.go.schemaforge.WidgetBestProductsAndSellersHandlerTest
 com.etendoerp.go.schemaforge.WidgetKpisHandlerTest
 com.etendoerp.go.schemaforge.WidgetPendingAmountsHandlerTest
 com.etendoerp.go.schemaforge.WidgetPendingTasksHandlerTest
@@ -572,8 +571,7 @@ com.etendoerp.go.schemaforge.webhooks.SFAssignUserRolesTest
 com.etendoerp.go.schemaforge.webhooks.SFDebugInvitationBypassTest
 com.etendoerp.go.schemaforge.webhooks.SFDocumentEmailHistoryTest
 com.etendoerp.go.schemaforge.webhooks.SFListMenuTest
-com.etendoerp.go.schemaforge.webhooks.SFListProcessesTest
-com.etendoerp.go.schemaforge.webhooks.SFListWindowsTest
+com.etendoerp.go.schemaforge.webhooks.SFListWindowsAndProcessesTest
 com.etendoerp.go.schemaforge.webhooks.SFMyReportAccessTest
 com.etendoerp.go.schemaforge.webhooks.SFPopulateSpecTest
 com.etendoerp.go.schemaforge.webhooks.SFPromoteUserRoleTest
@@ -666,7 +664,7 @@ com.etendoerp.go.usageevents.UsageEventTypesTest
 com.etendoerp.go.usageevents.UsageEventWriterJdbcTest
 com.etendoerp.go.usageevents.UsageEventWriterTest
 
-# --- integración (BD) (52)
+# --- integración (BD) (53)
 com.etendoerp.go.accounts.AccountGroupServiceIntegrationTest
 com.etendoerp.go.accounts.DemoExpiryIntegrationTest
 com.etendoerp.go.hubspot.DalHubSpotOutboxStoreIntegrationTest
@@ -716,6 +714,7 @@ com.etendoerp.go.schemaforge.handlers.NeoListAggregateQueryIntegrationTest
 com.etendoerp.go.schemaforge.webhooks.McpFeedbackTriageWebhooksIntegrationTest
 com.etendoerp.go.session.JdbcGoSessionStoreIntegrationTest
 com.etendoerp.go.startup.TemplateRoleSyncStoreIntegrationTest
+com.etendoerp.go.support.DalSupportConversationStoreIntegrationTest
 com.etendoerp.go.usage.IsolatedDalReadIntegrationTest
 com.etendoerp.go.usage.UsageAggregationServiceIntegrationTest
 com.etendoerp.go.usage.quota.DalConsumptionReaderPeriodWindowIntegrationTest
