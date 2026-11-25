@@ -20,7 +20,9 @@ package com.etendoerp.go.schemaforge;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
@@ -58,19 +60,24 @@ import com.etendoerp.go.schemaforge.util.StructuredAddressComposer.ComposedAddre
  * remembers the effective values, a post-hook writes them once the base record exists (POST) or
  * has been updated (PUT/PATCH — see {@link #isUpdateMethod}), and enriches every GET so a caller
  * sees them under the SAME names the other 3 handlers use
- * ({@code streetName}/{@code buildingNumber}/{@code buildingName}) <em>as well as</em> the curated
- * API key the SPA reads ({@code oBSEPAStreetName}/{@code oBSEPABuildingNumber}/
- * {@code oBSEPABuildingName}) — see {@code AddressVirtualSelectorPolicy#PUBLISHED_NAME_OVERRIDES}
- * for the matching {@code etendo_schema} fix. Composition and the mandatory-together rule have to
+ * ({@code streetName}/{@code buildingNumber}/{@code buildingName}) — see
+ * {@code AddressVirtualSelectorPolicy#PUBLISHED_NAME_OVERRIDES} for the matching
+ * {@code etendo_schema} fix. <b>Those 3 names are now the only ones a response carries</b>
+ * (ETP-5806 CP-10b): the curated {@code ETGO_SF_FIELD.JAVA_QUALIFIER} rows pin them, so
+ * {@code NeoFieldFilter} renames the DAL property on its own and the SPA's generated form reads
+ * the same key — see {@link #putStructuredFields}. Composition and the mandatory-together rule have to
  * run somewhere, and curation alone cannot express either.
  *
- * <p><b>Both spellings, on the way in as well as on the way out (ETP-5806 follow-up).</b> The
- * curated API key for this entity IS the DAL property name — {@code NeoFieldFilter} registers an
- * alias only when the Java qualifier differs from the property name, and for these 3 rows it does
- * not — so REST and the SPA send {@code oBSEPAStreetName} while MCP sends {@code streetName}.
- * Reading only the published spelling answered a valid REST create with
- * {@code 400 Missing required field(s)} and silently reverted a valid REST update. Every key the
- * flag-off path strips is now a key the flag-on path reads: see {@link #KEYS_STREET_NAME}.
+ * <p><b>Every spelling on the way IN, one spelling on the way out (ETP-5806 follow-up + CP-10b).</b>
+ * The curated API key for this entity used to BE the DAL property name — {@code NeoFieldFilter}
+ * registers an alias only when the Java qualifier differs from the property name, and for these 3
+ * rows it did not — so REST and the SPA sent {@code oBSEPAStreetName} while MCP sent
+ * {@code streetName}. Reading only the published spelling answered a valid REST create with
+ * {@code 400 Missing required field(s)} and silently reverted a valid REST update. The qualifiers
+ * have since been pinned to the published names, so the wire key is now the same on every channel;
+ * the input tolerance stays, because {@code /batch} and {@code etendo_batch} map no keys at all and
+ * a caller may still send the DAL property or the raw column. Every key the flag-off path strips is
+ * a key the flag-on path reads: see {@link #KEYS_STREET_NAME}.
  *
  * <p><b>The 3 columns ARE curated — and that is why the flag-off branch strips rather than just
  * declines (ETP-5806 follow-up).</b> An earlier revision of this javadoc asserted the opposite
@@ -104,7 +111,7 @@ import com.etendoerp.go.schemaforge.util.StructuredAddressComposer.ComposedAddre
  * {@code SalesOrderLineHandler} for the same choice).
  */
 @NeoExtension(spec = "bp-location", entity = "bpLocation")
-public class BpLocationHandler implements NeoHandler {
+public class BpLocationHandler implements StructuredAddressCustomization {
 
   private static final Logger log = LogManager.getLogger(BpLocationHandler.class);
 
@@ -122,25 +129,26 @@ public class BpLocationHandler implements NeoHandler {
    * <p><b>ETP-5806 follow-up — the flag-on path reads all three, not just the published one.</b>
    * The flag-off path has stripped all three since {@code 7ed80a64d}; the flag-on path read only
    * the published spelling, and the two states were therefore gated on different key sets. That
-   * asymmetry was a live defect, not a theoretical one, because the curated API key for this
-   * entity <b>is the DAL property name</b>: {@code NeoFieldFilter#processFieldMappings} registers
-   * an alias only when the Java qualifier differs from the property name, and for these 3 rows it
-   * does not — so {@code artifacts/bp-location/contract.json} publishes
+   * asymmetry was a live defect, not a theoretical one, because at the time the curated API key
+   * for this entity <b>was the DAL property name</b>: {@code NeoFieldFilter#processFieldMappings}
+   * registers an alias only when the Java qualifier differs from the property name, and for these
+   * 3 rows it did not — so {@code artifacts/bp-location/contract.json} published
    * {@code "apiKey": "oBSEPAStreetName"} and the generated {@code BpLocationForm.jsx} /
-   * {@code BpLocationPage.jsx} send exactly that. Reading only {@code streetName} meant a REST
+   * {@code BpLocationPage.jsx} sent exactly that. Reading only {@code streetName} meant a REST
    * create carrying both structured values was answered
    * {@code 400 Missing required field(s): streetName, buildingNumber}, and a REST update was
    * persisted by generic CRUD and then silently reverted by {@link #persistPendingFields} from the
    * pre-update record, 200 OK and no log line.
    *
-   * <p>Which spelling actually arrives depends on the channel, so no single one is "the" wire
-   * format: the SPA and REST send the curated key (the DAL property name); an MCP agent sends the
-   * published name {@code etendo_schema} advertises
-   * ({@code AddressVirtualSelectorPolicy#PUBLISHED_NAME_OVERRIDES}), which
-   * {@code mapFieldsToDalProperties} passes through untouched because it resolves to no property;
-   * an MCP agent that sends the DAL property or the DB column gets the property name; and
-   * {@code /batch} + {@code etendo_batch} run no mapping at all, so whatever the agent typed —
-   * including the raw column — reaches the body verbatim.
+   * <p><b>Since then the qualifiers have been pinned</b> ({@code decisions.json}
+   * {@code "name": "streetName"} → {@code ETGO_SF_FIELD.JAVA_QUALIFIER}, committed in
+   * {@code ETGO_SF_FIELD.xml}), so the contract and the generated SPA now publish and send
+   * {@code streetName} too. The list below is therefore no longer load-bearing for the SPA — but
+   * it stays, because a spelling can still arrive: an MCP agent that sends the DAL property or the
+   * DB column gets the property name, and {@code /batch} + {@code etendo_batch} run no key mapping
+   * at all, so whatever the agent typed — including the raw column — reaches the body verbatim.
+   * Output is the opposite and is deliberately narrow: one canonical name, see
+   * {@link #putStructuredFields} (ETP-5806 CP-10b).
    */
   private static final List<String> KEYS_STREET_NAME = List.of(
       FIELD_STREET_NAME, Location.PROPERTY_OBSEPASTREETNAME, "EM_OBSEPA_StrtNm");
@@ -186,6 +194,9 @@ public class BpLocationHandler implements NeoHandler {
    * both places — see {@link #writeSections}.
    */
   private static final String KEY_DATA = "data";
+
+  /** The record's own display label in a NEO response row — see {@link #refreshIdentifier}. */
+  private static final String KEY_IDENTIFIER = "_identifier";
 
   private static final String METHOD_POST = "POST";
   private static final String METHOD_PUT = "PUT";
@@ -442,7 +453,7 @@ public class BpLocationHandler implements NeoHandler {
   private static NeoResponse validateStructuredAddress(String streetName, String buildingNumber,
       String buildingName, String cityName, String countryId) {
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-        streetName, buildingNumber, cityName, countryId);
+        streetName, cityName, countryId);
     if (!missing.isEmpty()) {
       return NeoResponse.error(400, "Missing required field(s): " + String.join(", ", missing));
     }
@@ -452,6 +463,60 @@ public class BpLocationHandler implements NeoHandler {
       return NeoResponse.error(400, "Field(s) exceed maximum length: " + String.join(", ", tooLong));
     }
     return null;
+  }
+
+  /**
+   * ETP-5806 QA pass 3 — what this handler writes itself for the create-body keys it removed, so
+   * {@code etendo_create}'s {@code adjustedFields} reports the truth.
+   *
+   * <p><b>The bug this closes.</b> {@code prepareStructuredAddress} removes the 3 structured keys
+   * from the body once it has read them, precisely so this handler is their only writer
+   * ({@link #removeStructuredAddressKeys}). {@code McpSupersededReconciler} computes
+   * {@code adjustedFields} by diffing the body before the pre-hook against the body handed to
+   * persistence, so every MCP create answered
+   * {@code "streetName": {"sent": "Calle Retest P3", "persisted": null}} for values that WERE
+   * saved a moment later by {@link #persistPendingFields}. With {@code adjustedFieldsHint} telling
+   * the agent that {@code persisted} is what was stored, that reads as data loss — the same
+   * "applied but reported as not applied" shape as CP-12g. {@code contacts/locationAddress} never
+   * showed it because its handler short-circuits generic CRUD entirely and never reaches this
+   * diagnostic; an update never showed it because the reconciler runs on create only.
+   *
+   * <p><b>The two legacy address lines are declared too</b>, not just the 3 structured fields:
+   * {@link #persistPendingFields} overwrites {@code Address1}/{@code Address2} with the composed
+   * value whatever the body carried, so a caller that managed to send one of them would otherwise
+   * be told its own text was persisted. Every spelling is declared, because the lookup is by the
+   * key the caller actually sent and the channel decides which one that is
+   * (see {@link #KEYS_STREET_NAME}).
+   *
+   * <p>This does NOT silence the diagnostic: a value this handler genuinely rewrote is still
+   * reported, now with what was really stored — a blank Building Number saved as {@code "s/n"}
+   * still comes back as an adjustment, which is exactly the signal an agent needs.
+   *
+   * @param context the create context; unused — the values come from the pre-hook's own record of
+   *                what it resolved, which is what persistence will use
+   * @return the declared values, or empty when this request has no pending write (flag off, or a
+   *     verb this handler does not intercept)
+   */
+  @Override
+  public Map<String, Object> deferredCreateValues(NeoContext context) {
+    if (!hasPendingWrite) {
+      return Map.of();
+    }
+    Map<String, Object> values = new LinkedHashMap<>();
+    declareAll(values, KEYS_STREET_NAME, pendingStreetName);
+    declareAll(values, KEYS_BUILDING_NUMBER, pendingBuildingNumber);
+    declareAll(values, KEYS_BUILDING_NAME, pendingBuildingName);
+    values.put(FIELD_ADDRESS_LINE_1, pendingAddress1);
+    values.put(FIELD_ADDRESS_LINE_2, pendingAddress2);
+    return values;
+  }
+
+  /** Maps every spelling of one logical field to the single value this handler will persist. */
+  private static void declareAll(Map<String, Object> values, List<String> aliases,
+      String persisted) {
+    for (String alias : aliases) {
+      values.put(alias, persisted);
+    }
   }
 
   @Override
@@ -583,12 +648,42 @@ public class BpLocationHandler implements NeoHandler {
       // showing the pre-edit value after an edit made through bp-location.
       syncLinkedContactNames(geoLoc);
       OBDal.getInstance().flush();
+      // ETP-5806 CP-12i (QA finding) — recomputed HERE, after the lines above have been written
+      // and flushed, and while the admin context is still open. See refreshIdentifier.
+      refreshIdentifier(recordJson, geoLoc);
     } finally {
       OBContext.restorePreviousMode();
     }
     putStructuredFields(recordJson, pendingStreetName, pendingBuildingNumber, pendingBuildingName);
     recordJson.put(FIELD_ADDRESS_LINE_1, orNull(pendingAddress1));
     recordJson.put(FIELD_ADDRESS_LINE_2, orNull(pendingAddress2));
+  }
+
+  /**
+   * Re-reads the record's {@code _identifier} from the just-written DAL object (ETP-5806 CP-12i,
+   * QA finding).
+   *
+   * <p><b>Why the response's own value is stale.</b> Generic CRUD serializes the row — including
+   * {@code _identifier} — as part of {@code executeUpdate}, i.e. <em>before</em> this handler's
+   * post-hook runs. {@code C_Location}'s identifier is built from {@code Address1}, {@code Postal},
+   * {@code City} and the country, and {@link #persistPendingFields} is what writes the recomposed
+   * {@code Address1}; so an {@code etendo_update} that changed {@code buildingNumber} answered
+   * with the NEW {@code addressLine1} (this handler patches that key explicitly) next to the OLD
+   * {@code _identifier} — "Calle Retest P3, 9 - …" after the record already said 11. A plain GET
+   * afterwards showed the correct value, which is exactly what makes the divergence expensive: an
+   * agent that trusts the write response caches a label the server no longer holds.
+   *
+   * <p>Only refreshed when the response already carries the key: this fixes a stale value, it does
+   * not add an identifier to a projection that deliberately left it out.
+   *
+   * @param recordJson the response row, mutated in place
+   * @param geoLoc     the record as written and flushed
+   */
+  private static void refreshIdentifier(JSONObject recordJson, Location geoLoc) throws Exception {
+    if (!recordJson.has(KEY_IDENTIFIER)) {
+      return;
+    }
+    recordJson.put(KEY_IDENTIFIER, orNull(geoLoc.getIdentifier()));
   }
 
   /**
@@ -632,24 +727,32 @@ public class BpLocationHandler implements NeoHandler {
   }
 
   /**
-   * Writes the 3 structured fields into a response row under BOTH the published name and the
-   * curated API key (which on this entity is the DAL property name — see
-   * {@link #KEYS_STREET_NAME}).
+   * Writes the 3 structured fields into a response row under the ONE canonical published name:
+   * {@code streetName} / {@code buildingNumber} / {@code buildingName}.
    *
-   * <p>Both, because both are on the wire: an MCP agent reads {@code streetName} from
-   * {@code etendo_schema} while the SPA reads {@code oBSEPAStreetName} from the contract. Writing
-   * only the published name left the curated key carrying whatever the generic projection had —
-   * which, now that {@link #prepareStructuredAddress} strips the key before generic CRUD runs, is
-   * the value from before this write (or {@code null} on a create). One value, both spellings.
+   * <p><b>ETP-5806 CP-10b (QA finding) — the second spelling is gone.</b> This method used to put
+   * each value twice, once under the published name and once under the raw DAL property
+   * ({@code oBSEPAStreetName}…), because the curated {@code ETGO_SF_FIELD} rows for this entity
+   * originally had no {@code JAVA_QUALIFIER} and the SPA therefore read the DAL spelling from the
+   * contract. That is no longer true: {@code artifacts/bp-location/decisions.json} pins
+   * {@code "name": "streetName"} (and siblings), {@code push-to-neo} wrote those as
+   * {@code ETGO_SF_FIELD.JAVA_QUALIFIER} — committed in {@code ETGO_SF_FIELD.xml}, so
+   * {@code update.database} reproduces them — and the generated {@code BpLocationForm.jsx} /
+   * {@code BpLocationPage.jsx} already use {@code streetName}. {@code NeoFieldFilter} renames the
+   * property to that key on its own, so the duplicate was pure noise: a key no view of
+   * {@code etendo_schema} advertises, which an agent that asked for it by name got back in
+   * {@code unknownFields} while the response carried it — the mirror image of the contradiction
+   * {@code ContactsLocationAddressHandler#responseEnrichedFields} fixes for its own spec.
+   *
+   * <p>Only the OUTPUT spelling narrowed. The input side still accepts all three spellings
+   * ({@link #KEYS_STREET_NAME}) — {@code /batch} and {@code etendo_batch} map no keys at all, so a
+   * caller can legitimately still send the DAL property or the raw column.
    */
   private static void putStructuredFields(JSONObject recordJson, String streetName,
       String buildingNumber, String buildingName) throws Exception {
     recordJson.put(FIELD_STREET_NAME, orNull(streetName));
     recordJson.put(FIELD_BUILDING_NUMBER, orNull(buildingNumber));
     recordJson.put(FIELD_BUILDING_NAME, orNull(buildingName));
-    recordJson.put(Location.PROPERTY_OBSEPASTREETNAME, orNull(streetName));
-    recordJson.put(Location.PROPERTY_OBSEPABUILDINGNUMBER, orNull(buildingNumber));
-    recordJson.put(Location.PROPERTY_OBSEPABUILDINGNAME, orNull(buildingName));
   }
 
   private Location loadExisting(String recordId) {

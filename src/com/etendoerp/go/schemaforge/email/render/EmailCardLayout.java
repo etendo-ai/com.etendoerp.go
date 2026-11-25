@@ -40,8 +40,11 @@ import org.apache.commons.lang3.StringUtils;
  * palette yet, so the document declares {@code color-scheme: light} instead of letting a client
  * half-apply the standard letter's dark overrides.</p>
  *
- * <p>Order: issuer avatar + badge, title + subtitle, summary box (the details as columns), note +
- * button, link fallback, warning, footer. Each block is optional except the title.</p>
+ * <p>Order: issuer avatar + badge, title + subtitle, body (greeting and paragraphs), summary box
+ * (the details as columns), note + button, link fallback, notes and signature, warning, footer.
+ * Each block is optional except the title. The body and the notes are used by the document email
+ * that carries a portal link (ETP-6209 QA CP-48), whose message is the operator's; the decision
+ * confirmations set neither, so they render exactly as before.</p>
  */
 final class EmailCardLayout {
 
@@ -71,6 +74,11 @@ final class EmailCardLayout {
   private static final String BORDER_ATTR = ";border:";
   private static final String FULL_WIDTH = " width=\"100%\" style=\"width:100%;\">";
   private static final String HEIGHT_ATTR = "\" height=\"";
+  private static final String BODY_P_OPEN = "<p style=\"margin:0 0 12px 0;" + FONT
+      + "font-size:14px;line-height:22px;font-weight:400;color:" + BODY_TEXT + ";\">";
+  private static final String NOTE_P_OPEN = "<p style=\"margin:0 0 6px 0;" + FONT
+      + "font-size:12px;line-height:18px;font-weight:400;color:" + MUTED_TEXT + ";"
+      + TEXT_CENTER + "\">";
   /** Diagonal of a fitted logo: inside the 50px inner circle with a little air around it. */
   private static final int LOGO_DIAGONAL = 44;
 
@@ -82,8 +90,10 @@ final class EmailCardLayout {
     openDocument(html, htmlLang(content.getLanguage()));
     boolean first = appendIssuer(html, content, true);
     first = appendTexts(html, content, first);
+    first = appendBody(html, content, first);
     first = appendSummary(html, content, first);
     first = appendCta(html, content, first);
+    first = appendNotes(html, content, first);
     first = appendWarning(html, content, first);
     if (content.getFooter() != null) {
       openSection(html, first);
@@ -243,6 +253,45 @@ final class EmailCardLayout {
           .append("font-size:12px;line-height:20px;font-weight:400;color:").append(BODY_TEXT)
           .append(';').append(TEXT_CENTER).append(TAG_END).append(escape(content.getSubtitle()))
           .append(P_CLOSE);
+    }
+    html.append(ROW_CLOSE);
+    return false;
+  }
+
+  /**
+   * The greeting and the paragraphs, left-aligned body text. A paragraph's markup has already been
+   * escaped by its author ({@link EmailContent.Paragraph}); plain text is escaped here.
+   */
+  private static boolean appendBody(StringBuilder html, EmailContent content, boolean first) {
+    String greeting = StringUtils.trimToNull(content.getGreeting());
+    if (greeting == null && content.getParagraphs().isEmpty()) {
+      return first;
+    }
+    openSection(html, first);
+    if (greeting != null) {
+      html.append(BODY_P_OPEN).append(content.isGreetingHtml() ? greeting : escape(greeting))
+          .append(P_CLOSE);
+    }
+    for (EmailContent.Paragraph paragraph : content.getParagraphs()) {
+      html.append(BODY_P_OPEN).append(paragraph.getHtml() != null ? paragraph.getHtml()
+          : escape(paragraph.getText())).append(P_CLOSE);
+    }
+    html.append(ROW_CLOSE);
+    return false;
+  }
+
+  /** The closing notes and the signature, small muted text under the button. */
+  private static boolean appendNotes(StringBuilder html, EmailContent content, boolean first) {
+    String signature = StringUtils.trimToNull(content.getSignature());
+    if (content.getNotes().isEmpty() && signature == null) {
+      return first;
+    }
+    openSection(html, first);
+    for (String note : content.getNotes()) {
+      html.append(NOTE_P_OPEN).append(escape(note)).append(P_CLOSE);
+    }
+    if (signature != null) {
+      html.append(NOTE_P_OPEN).append(escape(signature)).append(P_CLOSE);
     }
     html.append(ROW_CLOSE);
     return false;

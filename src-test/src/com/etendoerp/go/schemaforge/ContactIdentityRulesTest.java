@@ -23,6 +23,10 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -30,6 +34,11 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
 
+import java.sql.SQLException;
+import java.sql.ResultSet;
+import java.sql.PreparedStatement;
+import java.sql.Connection;
+import java.sql.Array;
 import java.util.Optional;
 import java.util.function.Function;
 
@@ -658,5 +667,54 @@ class ContactIdentityRulesTest {
     assertNotEquals(ContactIdentityRules.MSG_COMPANY_PERSON_NAMES_NOT_ALLOWED,
         notAllowed.getString("message"));
     assertEquals(400, notAllowed.getInt("status"));
+  }
+
+  // ── the stored row is read only within the caller's clients (ETP-6176) ─────────────────────────
+
+  private PreparedStatement storedRowStatement(boolean rowExists) throws Exception {
+    Connection conn = mock(Connection.class);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    ResultSet rs = mock(ResultSet.class);
+    OBDal dal = mock(OBDal.class);
+    when(dal.getConnection()).thenReturn(conn);
+    obDal.when(OBDal::getInstance).thenReturn(dal);
+    when(conn.prepareStatement(anyString())).thenReturn(ps);
+    when(conn.createArrayOf(eq("varchar"), any(Object[].class))).thenReturn(mock(Array.class));
+    when(ps.executeQuery()).thenReturn(rs);
+    when(rs.next()).thenReturn(rowExists);
+    OBContext session = mock(OBContext.class);
+    when(session.getReadableClients()).thenReturn(new String[] {"CLI-1", "0"});
+    obContext.when(OBContext::getOBContext).thenReturn(session);
+    return ps;
+  }
+
+  @Test
+  void anUpdateReadsTheStoredRowWithTheReadableClientsFilterAndAnotherTenantsRowReadsAsGone()
+      throws Exception {
+    PreparedStatement ps = storedRowStatement(false);
+
+    assertNull(ContactIdentityRules.apply(ctx, json().put("name", "New name"), "PATCH"));
+
+    verify(ps).setString(1, REC);
+    verify(ps).setArray(eq(2), any(Array.class));
+  }
+
+  @Test
+  void aFailedStoredRowReadFailsTheWriteInsteadOfLettingItThroughUnvalidated() throws Exception {
+    PreparedStatement ps = storedRowStatement(true);
+    when(ps.executeQuery()).thenThrow(new SQLException("down"));
+
+    assertThrows(IllegalStateException.class,
+        () -> ContactIdentityRules.apply(ctx, json().put("name", "New name"), "PATCH"));
+  }
+
+  @Test
+  void theStoredRowQueryCarriesTheClientFilter() throws Exception {
+    storedRowStatement(false);
+    Connection conn = OBDal.getInstance().getConnection();
+
+    ContactIdentityRules.apply(ctx, json().put("name", "New name"), "PATCH");
+
+    verify(conn).prepareStatement(argThat(sql -> sql.endsWith(" AND ad_client_id = ANY(?)")));
   }
 }

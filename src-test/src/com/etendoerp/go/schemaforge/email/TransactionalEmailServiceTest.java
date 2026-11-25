@@ -228,6 +228,53 @@ public class TransactionalEmailServiceTest {
     assertFalse(data.has("to"));
   }
 
+  /**
+   * ETP-6209 (MCP parity): a contract's delivered facts join the SENT answer without ever
+   * overwriting a field of the service's own, and a contract that fails to give them loses only
+   * the facts — the email has left and the answer is still SENT.
+   */
+  @Test
+  public void aSentAnswerCarriesTheContractsDeliveredFactsWithoutOverwritingItsOwn()
+      throws Exception {
+    EmailContract withFacts = new FixtureContract() {
+      @Override
+      public JSONObject deliveredFacts(EmailSendContext context) {
+        try {
+          return new JSONObject().put("portalLink", true).put("status", "FORGED")
+              .put("providerStatus", 999);
+        } catch (JSONException e) {
+          throw new IllegalStateException(e);
+        }
+      }
+    };
+    EmailContract throwing = new FixtureContract() {
+      @Override
+      public JSONObject deliveredFacts(EmailSendContext context) {
+        throw new IllegalStateException("facts unavailable");
+      }
+    };
+    // Columns: label, contract, expected portalLink fact (null: absent).
+    Object[][] cases = { { "facts", withFacts, Boolean.TRUE },
+        { "no facts (default)", new FixtureContract(), null },
+        { "throwing", throwing, null } };
+    for (Object[] c : cases) {
+      FakeProviderAdapter adapter = new FakeProviderAdapter(true,
+          new EmailProviderResponse(202, "{}"));
+      JSONObject command = new JSONObject();
+      command.put(EmailContractCommandSupport.FIELD_RECORD_ID, "ABC123");
+
+      NeoResponse response = service((EmailContract) c[1], adapter)
+          .send("fixture-contract", command);
+
+      JSONObject data = responseData(response);
+      String label = (String) c[0];
+      assertEquals(label, 200, response.getHttpStatus());
+      assertEquals(label, TransactionalEmailService.STATUS_SENT, data.getString("status"));
+      assertEquals(label, 202, data.getInt("providerStatus"));
+      assertEquals(label, c[2], data.opt("portalLink"));
+    }
+  }
+
   @Test
   public void safetyStoreIgnoresNullContextWhenCheckingDuplicateKeys() {
     InMemoryEmailSafetyStore safetyStore = new InMemoryEmailSafetyStore();

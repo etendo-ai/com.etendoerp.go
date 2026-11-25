@@ -20,6 +20,7 @@ package com.etendoerp.go.mcp;
 import java.util.ArrayList;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 import org.codehaus.jettison.json.JSONException;
@@ -122,7 +123,11 @@ final class McpSupersededReconciler {
    * changed ({@code preHookValues} vs {@code finalBody}), independent of any callout: a rewrite
    * no callout ever proposed anything for (a service's {@code returnable}) is as much a silent
    * change of the caller's value as one that was. Fields the caller did not send are never
-   * reported. A key the pre-hook removed reports {@code persisted: null}.</p>
+   * reported. A key the pre-hook removed reports {@code persisted: null} — <b>unless the
+   * customization declared what it will persist for it</b>
+   * ({@link NeoHandler#deferredCreateValues}, ETP-5806 QA pass 3), which is how a pre-hook that
+   * removed the key in order to own the write itself stops being reported as having dropped the
+   * value.</p>
    *
    * <p>The recorded {@code superseded} entries (callout vs sent, recorded before the pre-hook
    * ran) are then reconciled: an entry whose field was adjusted moves to {@code adjustedFields}
@@ -141,7 +146,8 @@ final class McpSupersededReconciler {
     if (body == null || preHookValues == null || finalBody == null) {
       return;
     }
-    JSONObject adjusted = changedValues(preHookValues, finalBody);
+    JSONObject adjusted = changedValues(preHookValues, finalBody,
+        deferredValues(handler, hookCtx));
     pruneSuperseded(superseded, adjusted, handler, hookCtx);
     if (adjusted.length() > 0) {
       putAdjustedReport(body, adjusted);
@@ -149,14 +155,48 @@ final class McpSupersededReconciler {
   }
 
   /** field -> {sent, persisted} for every snapshot key whose final value is not the same one. */
-  private static JSONObject changedValues(JSONObject preHookValues, JSONObject finalBody) {
+  private static JSONObject changedValues(JSONObject preHookValues, JSONObject finalBody,
+      Map<String, Object> deferred) {
     JSONObject adjusted = new JSONObject();
     for (String field : keysOf(preHookValues)) {
-      if (!NeoValueEquivalence.same(preHookValues.opt(field), finalBody.opt(field))) {
-        putAdjusted(adjusted, field, preHookValues.opt(field), finalBody.opt(field));
+      Object persisted = persistedValue(field, finalBody, deferred);
+      if (!NeoValueEquivalence.same(preHookValues.opt(field), persisted)) {
+        putAdjusted(adjusted, field, preHookValues.opt(field), persisted);
       }
     }
     return adjusted;
+  }
+
+  /**
+   * What {@code field} actually ends up holding: the body's own value while the key is still
+   * there, and otherwise whatever the customization declared it will persist for it
+   * ({@link NeoHandler#deferredCreateValues}). The body always wins — a declaration can only
+   * answer for a key the pre-hook removed, never override one it kept — and a removed key nobody
+   * declared keeps answering {@code null}, the honest result for a genuine drop.
+   */
+  private static Object persistedValue(String field, JSONObject finalBody,
+      Map<String, Object> deferred) {
+    if (finalBody.has(field)) {
+      return finalBody.opt(field);
+    }
+    return deferred.containsKey(field) ? deferred.get(field) : finalBody.opt(field);
+  }
+
+  /**
+   * The customization's {@link NeoHandler#deferredCreateValues}, never {@code null}. A diagnostic
+   * correction must never turn a successful create into a failure, so a throwing or absent
+   * customization answers "nothing declared" and the pre-existing behaviour applies.
+   */
+  private static Map<String, Object> deferredValues(NeoHandler handler, NeoContext hookCtx) {
+    if (handler == null) {
+      return Map.of();
+    }
+    try {
+      Map<String, Object> declared = handler.deferredCreateValues(hookCtx);
+      return declared != null ? declared : Map.of();
+    } catch (RuntimeException e) {
+      return Map.of();
+    }
   }
 
   /** Removes from {@code superseded}, in place, the adjusted entries and the governed ones. */

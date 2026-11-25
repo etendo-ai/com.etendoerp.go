@@ -589,6 +589,150 @@ class McpToolRouterRouteTest {
       }
     }
 
+    /** ETP-5810: a misspelled or unsupported operation key is refused by name, not dropped. */
+    @Test
+    @DisplayName("an unknown key in an operation is refused as unknown_argument naming it")
+    void batchRefusesUnknownOperationKey() throws Exception {
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        JSONObject args = buildBatchArgs();
+        args.getJSONArray("operations").getJSONObject(0).put("parentRf", "op0");
+
+        JSONObject result = router.handleBatch(args);
+
+        JSONObject body = new JSONObject(
+            result.getJSONArray("content").getJSONObject(0).getString("text"));
+        assertFalse(body.getBoolean("committed"));
+        assertEquals(0, body.getJSONObject("failedAt").getInt("index"));
+        assertEquals("op1", body.getJSONObject("failedAt").getString("id"));
+        JSONObject error = body.getJSONObject("error");
+        assertEquals("unknown_argument", error.getString("error"));
+        assertEquals("operations[0].parentRf", error.getString("field"));
+        assertTrue(error.getString("detail").contains("operations[0].parentRf"));
+        assertEquals(new JSONArray(List.of("id", "spec", "entity", "parentRef", "body")).toString(),
+            error.getJSONArray("available").toString());
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.never())
+            .executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+      }
+    }
+
+    /** ETP-5810: an operation using only declared keys still reaches BatchService. */
+    @Test
+    @DisplayName("an operation with only declared keys is not refused by the key guard")
+    void batchAcceptsDeclaredOperationKeys() throws Exception {
+      SFSpec spec = mockSpec();
+      supportMock.when(() -> McpToolRouterSupport.findActiveSpecByName(SPEC_NAME))
+          .thenReturn(spec);
+      supportMock.when(() -> McpToolRouterSupport.hasSpecAccess(spec, "W", "POST"))
+          .thenReturn(true);
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        JSONObject batchResult = new JSONObject();
+        batchResult.put("committed", true);
+        when(mockBatch.executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+            org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(batchResult);
+        JSONObject args = buildBatchArgs();
+        args.getJSONArray("operations").getJSONObject(0).put("parentRef", "op0");
+
+        JSONObject result = router.handleBatch(args);
+
+        assertFalse(result.has("isError"));
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.times(1)).executeBatch(any(),
+            any(), org.mockito.ArgumentMatchers.anyBoolean(),
+            org.mockito.ArgumentMatchers.anyBoolean());
+      }
+    }
+
+    /**
+     * ETP-5810: MCP batch is create-only. The DELETE operation the REST /sws/neo/batch caller may
+     * send ({@code method}/{@code recordId}) is refused over MCP — on the atomic path and on the
+     * default async one — and nothing runs: a delete goes through etendo_delete.
+     */
+    @Test
+    @DisplayName("a DELETE operation (method/recordId) is refused and neither the batch nor a job runs")
+    void batchRefusesDeleteOperation() throws Exception {
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class);
+          MockedStatic<McpBatchJobTools> jobMock = mockStatic(McpBatchJobTools.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        for (boolean sync : new boolean[] { true, false }) {
+          JSONObject args = buildBatchArgs();
+          if (!sync) {
+            args.remove("async");
+          }
+          JSONObject op = args.getJSONArray("operations").getJSONObject(0);
+          op.remove("body");
+          op.put("method", "DELETE");
+          op.put("recordId", "ABCDEF0123456789ABCDEF0123456789");
+
+          JSONObject result = router.handleBatch(args);
+
+          JSONObject body = new JSONObject(
+              result.getJSONArray("content").getJSONObject(0).getString("text"));
+          assertFalse(body.getBoolean("committed"), body.toString());
+          assertEquals(0, body.getJSONObject("failedAt").getInt("index"));
+          JSONObject error = body.getJSONObject("error");
+          assertEquals("unknown_argument", error.getString("error"));
+          String field = error.getString("field");
+          assertTrue(field.equals("operations[0].method") || field.equals("operations[0].recordId"),
+              field);
+        }
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.never())
+            .executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+        jobMock.verify(() -> McpBatchJobTools.submitBatchJob(any(), any(), any()),
+            org.mockito.Mockito.never());
+      }
+    }
+
+    /**
+     * ETP-5810: the IMP-40 root-argument guard covers etendo_batch. A mistyped {@code asyn:false}
+     * used to be dropped, and the batch ran async and row by row instead of atomically.
+     */
+    @Test
+    @DisplayName("an undeclared root argument of etendo_batch is refused before anything runs")
+    void batchRejectsUnknownRootArgument() throws Exception {
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class);
+          MockedStatic<McpBatchJobTools> jobMock = mockStatic(McpBatchJobTools.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        JSONObject args = buildBatchArgs();
+        args.remove("async");
+        args.put("asyn", false);
+
+        JSONObject result = router.route("etendo_batch", args, WRITE_SCOPES);
+
+        assertTrue(result.getBoolean("isError"), result.toString());
+        JSONObject envelope = new JSONObject(
+            result.getJSONArray("content").getJSONObject(0).getString("text"));
+        assertEquals("unknown_argument", envelope.getString("error"));
+        assertEquals("asyn", envelope.getString("field"));
+        String available = envelope.getJSONArray("available").toString();
+        assertTrue(available.contains("\"async\"") && available.contains("\"operations\""),
+            available);
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.never())
+            .executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+        jobMock.verify(() -> McpBatchJobTools.submitBatchJob(any(), any(), any()),
+            org.mockito.Mockito.never());
+      }
+    }
+
     /** ETP-5676: the etendo_batch argument reaches BatchService with the REST option's meaning. */
     @Test
     @DisplayName("an etendo_batch forwards _onlyReturnIds and _skipRedundantCallouts")
@@ -2873,6 +3017,105 @@ class McpToolRouterRouteTest {
       assertTrue(result.getBoolean("isError"));
       String text = result.getJSONArray("content").getJSONObject(0).getString("text");
       assertTrue(text.contains("topic"));
+    }
+
+    private JSONObject docsFailure(Throwable failure) throws Exception {
+      return docsFailure(failure, null);
+    }
+
+    private JSONObject docsFailure(Throwable failure, String token) throws Exception {
+      Context7DocsClient mockClient = mock(Context7DocsClient.class);
+      when(mockClient.fetchDocs(anyString(), org.mockito.ArgumentMatchers.anyInt(),
+          anyString(), org.mockito.ArgumentMatchers.any())).thenThrow((RuntimeException) failure);
+      McpToolRouter docsRouter = new McpToolRouter() {
+        @Override
+        String resolveContext7Token() {
+          return token;
+        }
+      };
+      JSONObject args = new JSONObject();
+      args.put("topic", "finance");
+      return docsRouter.handleDocs(args, mockClient);
+    }
+
+    private String errorText(JSONObject result) throws Exception {
+      assertTrue(result.getBoolean("isError"));
+      return result.getJSONArray("content").getJSONObject(0).getString("text");
+    }
+
+    @Test
+    @DisplayName("docs 401 points the agent to the ETGO_Context7Token preference")
+    void docsUnauthorizedMentionsToken() throws Exception {
+      String text = errorText(docsFailure(new Context7DocsException("status 401", 401, null)));
+      assertTrue(text.contains("ETGO_Context7Token"), text);
+    }
+
+    @Test
+    @DisplayName("docs 429 mentions the rate limit and the token")
+    void docsRateLimitMentionsToken() throws Exception {
+      String text = errorText(docsFailure(new Context7DocsException("status 429", 429, null)));
+      assertTrue(text.contains("rate limit"), text);
+      assertTrue(text.contains("ETGO_Context7Token"), text);
+    }
+
+    @Test
+    @DisplayName("docs 503 and network failures tell the agent to retry later")
+    void docsUnavailableMentionsRetry() throws Exception {
+      assertTrue(errorText(docsFailure(new Context7DocsException("status 503", 503, null)))
+          .contains("retry later"));
+      assertTrue(errorText(docsFailure(new Context7DocsException("timeout", -1, null)))
+          .contains("retry later"));
+    }
+
+    @Test
+    @DisplayName("docs failure log level: 401/403/404 ERROR, others WARN")
+    void docsFailureLogLevelByStatus() {
+      for (int status : new int[] { 401, 403, 404 }) {
+        assertEquals(org.apache.logging.log4j.Level.ERROR, Context7DocsException.logLevel(status));
+      }
+      for (int status : new int[] { 429, 500, 503, -1 }) {
+        assertEquals(org.apache.logging.log4j.Level.WARN, Context7DocsException.logLevel(status));
+      }
+    }
+
+    @Test
+    @DisplayName("docs failure text never contains the configured Context7 API key")
+    void docsFailureNeverLeaksApiKey() throws Exception {
+      String apiKey = "ctx7-secret-api-key";
+      Throwable[] failures = {
+          new Context7DocsException("status 401", 401, null),
+          new Context7DocsException("status 403", 403, null),
+          new Context7DocsException("status 404", 404, null),
+          new Context7DocsException("status 429", 429, null),
+          new Context7DocsException("status 503", 503, null),
+          new Context7DocsException("timeout", -1, null),
+          new IllegalStateException("boom") };
+      for (Throwable failure : failures) {
+        String text = errorText(docsFailure(failure, apiKey));
+        assertFalse(text.contains(apiKey), text);
+      }
+    }
+
+    @Test
+    @DisplayName("docsFailureMessage covers 403 and 404 and keeps the cause chain for -1")
+    void docsFailureMessageCases() {
+      assertTrue((new Context7DocsException("x", 403, null)).agentMessage()
+          .contains("ETGO_Context7Token"));
+      assertTrue((new Context7DocsException("x", 404, null)).agentMessage()
+          .contains("library or URL not found (status 404)"));
+      java.net.ConnectException cause = new java.net.ConnectException("c");
+      cause.initCause(new java.net.UnknownHostException("context7.com"));
+      String text = new Context7DocsException(
+          "Context7 request failed: " + Context7DocsException.describeCauseChain(cause),
+          -1, null).agentMessage();
+      assertTrue(text.contains("UnknownHostException: context7.com"), text);
+    }
+
+    @Test
+    @DisplayName("docs unexpected exception keeps the generic error message")
+    void docsUnexpectedExceptionKeepsGenericPath() throws Exception {
+      String text = errorText(docsFailure(new IllegalStateException("boom")));
+      assertTrue(text.startsWith("Error fetching docs:"), text);
     }
 
     @Test

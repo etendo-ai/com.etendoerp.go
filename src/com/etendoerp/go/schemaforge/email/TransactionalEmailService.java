@@ -510,6 +510,7 @@ public class TransactionalEmailService {
         extra.put(FIELD_PROVIDER_STATUS, providerResponse.getStatusCode());
         extra.put(FIELD_DUPLICATE, false);
         extra.put(FIELD_RETRY_AFTER_SECONDS, JSONObject.NULL);
+        putDeliveredFacts(extra, context);
         recordDeliveredAudit(context, idempotencyKey, providerResponse.getStatusCode());
         return observedResponse(startedAtNanos, context.getCommand(), context,
             ResponseOutcome.of(HttpServletResponse.SC_OK, STATUS_SENT, context.getContractName(),
@@ -690,6 +691,29 @@ public class TransactionalEmailService {
     }
   }
 
+  /**
+   * Adds the contract's {@link EmailContract#deliveredFacts} to a {@code SENT} answer, never
+   * overwriting a field of the service's own. A failure only loses the facts: the email has left.
+   */
+  private void putDeliveredFacts(JSONObject extra, EmailSendContext context) {
+    try {
+      Optional<EmailContract> contract = contractRegistry.find(context.getContractName());
+      JSONObject facts = contract.isPresent() ? contract.get().deliveredFacts(context) : null;
+      if (facts == null) {
+        return;
+      }
+      for (java.util.Iterator<?> keys = facts.keys(); keys.hasNext();) {
+        String key = String.valueOf(keys.next());
+        if (!extra.has(key)) {
+          extra.put(key, facts.opt(key));
+        }
+      }
+    } catch (JSONException | RuntimeException e) {
+      log.warn("Could not add the delivered facts of contract [{}]: {}",
+          context.getContractName(), e.getClass().getSimpleName());
+    }
+  }
+
   private static JSONObject suppressionExtra(EmailKillSwitchResult killSwitch) {
     try {
       JSONObject extra = new JSONObject();
@@ -713,9 +737,13 @@ public class TransactionalEmailService {
         data.put("message", message);
       }
       if (extra != null) {
+        // The service's own fields (status, contract, message) are never overwritten by an extra
+        // key: a contract's deliveredFacts reach the answer only under keys of their own.
         for (java.util.Iterator<?> keys = extra.keys(); keys.hasNext();) {
           String key = String.valueOf(keys.next());
-          data.put(key, extra.opt(key));
+          if (!data.has(key)) {
+            data.put(key, extra.opt(key));
+          }
         }
       }
 

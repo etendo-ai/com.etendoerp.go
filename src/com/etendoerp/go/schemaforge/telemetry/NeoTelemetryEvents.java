@@ -142,9 +142,10 @@ public final class NeoTelemetryEvents {
   public static final String BACKEND_PORTAL_DOCUMENT_SENT = "backend_portal_document_sent";
 
   /**
-   * ETP-6209 — the first portal download of a document sent with a portal link. Emitted by
-   * {@code PortalKpiTelemetry}; properties {@code account_id}, {@code type}. Never a record
-   * identifier.
+   * ETP-6209 — the first portal download of a document sent with a portal link (the first PDF
+   * served, the detail's automatic preview included). Emitted by {@code PortalKpiTelemetry};
+   * properties {@code account_id}, {@code type}, {@code purpose} ({@code preview|download}). Never a
+   * record identifier.
    */
   public static final String BACKEND_PORTAL_DOCUMENT_DOWNLOADED =
       "backend_portal_document_downloaded";
@@ -157,12 +158,56 @@ public final class NeoTelemetryEvents {
   public static final String BACKEND_QUOTATION_DECIDED = "backend_quotation_decided";
 
   /**
-   * ETP-6209 — a customer portal visit opened from a link (the first valid {@code /me} of a link
-   * after 30 minutes without one). Emitted by {@code PortalKpiTelemetry}; properties
-   * {@code account_id}, {@code third_party} (keyed pseudonym of the customer),
-   * {@code entry_doc_type}, {@code origin}. Never a record identifier.
+   * ETP-6209 — a customer portal session started: once per session ({@code PortalSessionTracker},
+   * 30 minutes idle, 12 hours at most), so a reload does not count again and two tabs opened from
+   * the email are two. Emitted by {@code PortalKpiTelemetry}; properties {@code account_id},
+   * {@code third_party} (keyed pseudonym of the customer), {@code entry_doc_type}, {@code origin}
+   * (the link's: send, renewal, decision, shared), {@code portal_session} (keyed pseudonym of the
+   * session), {@code in_universe} (entered from a send or renewal link with an origin document).
+   * The denominator of the value-session KPI ({@code in_universe = true}). Never a record id.
    */
   public static final String BACKEND_PORTAL_OPENED = "backend_portal_opened";
+
+  /**
+   * ETP-6209 — a user opened a document in the portal, once per session and document. Properties
+   * {@code account_id}, {@code portal_session}, {@code in_universe}, {@code origin}
+   * ({@code link|home|search|list|related}), {@code doc_type}, {@code is_origin_doc}.
+   */
+  public static final String BACKEND_PORTAL_DOCUMENT_OPENED = "backend_portal_document_opened";
+
+  /**
+   * ETP-6209 — the first value interaction of its type in a portal session (rule v1): a document
+   * other than the origin opened from Home or the search ({@code home_document}), a related one
+   * ({@code related_document}), a quotation decision request sent ({@code quotation_decision}).
+   * Properties {@code account_id}, {@code portal_session}, {@code in_universe}, {@code interaction},
+   * {@code doc_type}.
+   */
+  public static final String BACKEND_PORTAL_VALUE_INTERACTION =
+      "backend_portal_value_interaction";
+
+  /**
+   * ETP-6209 — a portal session's first value interaction: the numerator of the value-session KPI
+   * ({@code in_universe = true}). Properties {@code account_id}, {@code portal_session},
+   * {@code in_universe}, {@code first_interaction}, {@code entry_doc_type}, {@code rule}
+   * ({@code v1}).
+   */
+  public static final String BACKEND_PORTAL_SESSION_ENGAGED = "backend_portal_session_engaged";
+
+  /**
+   * ETP-6209 — a PDF downloaded on purpose in the portal (never the detail's automatic preview),
+   * once per session and document; never a value interaction. Properties {@code account_id},
+   * {@code portal_session}, {@code in_universe}, {@code doc_type}, {@code is_origin_doc},
+   * {@code origin} ({@code detail|list|unknown}).
+   */
+  public static final String BACKEND_PORTAL_PDF_DOWNLOADED = "backend_portal_pdf_downloaded";
+
+  /**
+   * ETP-6209 — the customer clicked an etendo.ai link of the portal, once per session and link.
+   * Properties {@code account_id}, {@code portal_session}, {@code in_universe}, {@code reference}
+   * ({@code learnMore|startFree}), {@code location} ({@code header|mobile|rail}). No URL, no
+   * recipient data.
+   */
+  public static final String BACKEND_PORTAL_ETENDO_CLICK = "backend_portal_etendo_click";
 
   /**
    * ETP-6209 — a portal-related email left: {@code piece} {@code document_send} (with

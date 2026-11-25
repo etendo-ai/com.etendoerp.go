@@ -21,6 +21,7 @@ import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.function.BiFunction;
 import java.util.function.BooleanSupplier;
 
 import org.apache.commons.lang3.StringUtils;
@@ -31,6 +32,7 @@ import org.openbravo.base.exception.OBException;
 import com.etendoerp.go.portal.PortalDocumentKind;
 import com.etendoerp.go.portal.PortalLink;
 import com.etendoerp.go.portal.PortalLinkService;
+import com.etendoerp.go.portal.PortalLogoReference;
 import com.etendoerp.go.portal.PortalRenewalScope;
 import com.etendoerp.go.schemaforge.email.EmailAuthorizationResult;
 import com.etendoerp.go.schemaforge.email.EmailContract;
@@ -79,14 +81,27 @@ final class PortalLinkRenewalEmailContract implements EmailContract {
 
   private final PortalLinkService linkService;
   private final BooleanSupplier renewalCaller;
+  private final BiFunction<String, String, Optional<PortalLogoReference.PublicLogo>> logoFinder;
 
   PortalLinkRenewalEmailContract() {
     this(new PortalLinkService(), PortalRenewalScope::isActive);
   }
 
   PortalLinkRenewalEmailContract(PortalLinkService linkService, BooleanSupplier renewalCaller) {
+    this(linkService, renewalCaller, PortalLogoReference::find);
+  }
+
+  /**
+   * Full constructor: the public logo lookup is a seam, so a test pins it instead of depending on
+   * runtime configuration or the DAL.
+   *
+   * @param logoFinder the tenant's public logo, by client id and organization id
+   */
+  PortalLinkRenewalEmailContract(PortalLinkService linkService, BooleanSupplier renewalCaller,
+      BiFunction<String, String, Optional<PortalLogoReference.PublicLogo>> logoFinder) {
     this.linkService = linkService;
     this.renewalCaller = renewalCaller;
+    this.logoFinder = logoFinder;
   }
 
   @Override
@@ -168,14 +183,18 @@ final class PortalLinkRenewalEmailContract implements EmailContract {
     String documentNumber = link.getDocumentKind().documentNumber(link.getRecordId()).orElse("");
     Instant now = Instant.now();
     long hours = ValidityWindow.hoursUntil(now, now.plus(minted.get().getValidity()));
-    EmailContent content = EmailContent.builder()
+    // ETP-6209 QA: the card design of the other customer emails (issuer logo or initials, title,
+    // message, button, link fallback, the validity note, the etendo.ai footer). No "Saludos,
+    // Equipo de Etendo": it is sent on behalf of our customer, not by Etendo.
+    EmailContent content = issuer(link, tenantName)
+        .title(EmailMessages.get(KEY_PREFIX + "title", language))
+        .language(language)
         .paragraphHtml(EmailEscape.applyBold(EmailMessages.get(KEY_PREFIX + "body", language,
             EmailEscape.escapeHtml(tenantName), EmailEscape.escapeHtml(documentType),
             EmailEscape.escapeHtml(documentNumber))))
         .cta(EmailMessages.get(KEY_PREFIX + "cta", language), minted.get().getUrl())
         .linkFallbackText(EmailMessages.get("link.fallback", language))
         .note(EmailMessages.get(KEY_PREFIX + "note.expiry", language, hours))
-        .signature(EmailMessages.get("signature", language))
         .footer(EmailFooter.etendo(EmailFooter.Piece.LINK_RENEWAL, language))
         .build();
     try {
@@ -227,6 +246,23 @@ final class PortalLinkRenewalEmailContract implements EmailContract {
     }
     EmailRecipientSet recipients = context.getRecipientSet();
     linkService.confirm(newLinkId, sendLogId, recipients == null ? 0 : recipients.totalCount());
+  }
+
+  /**
+   * Starts the card with its issuer: the company name and, when the tenant has a PNG/JPEG logo,
+   * its token-free public URL; no logo, the initials. As the decision confirmation's.
+   */
+  private EmailContent.Builder issuer(PortalLink link, String tenantName) {
+    EmailContent.Builder content = EmailContent.builder();
+    Optional<PortalLogoReference.PublicLogo> logo = logoFinder.apply(link.getClientId(),
+        link.getOrganizationId());
+    if (logo.isPresent()) {
+      content.issuer(tenantName, logo.get().getUrl())
+          .issuerLogoSize(logo.get().getWidth(), logo.get().getHeight());
+    } else {
+      content.issuer(tenantName, null);
+    }
+    return content;
   }
 
   private Optional<PortalLink> findLink(EmailContractCommand command) {

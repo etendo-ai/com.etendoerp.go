@@ -20,75 +20,67 @@ package com.etendoerp.go.schemaforge.email.render;
 import org.apache.commons.lang3.StringUtils;
 
 /**
- * The "Creado con Etendo" marketing footer of the emails that reach our customers' customers
- * (ETP-6209): the customer portal emails and the document emails that carry a portal link.
+ * The "Creado con etendo.ai" footer of the emails that reach our customers' customers (ETP-6209):
+ * the document email that carries a portal link, the portal link renewal and the accept / reject
+ * confirmations. The seller's decision notice goes to our own customer and carries none.
  *
  * <p>An email carries it only when its contract asks for one with
  * {@link EmailContent.Builder#footer(EmailFooter)}; every other email renders exactly as before.
  * The markup lives in {@link EmailLayout}, like every other block.</p>
  *
- * <h2>Links</h2>
- * <p>Every link is built by {@link #link(String, Piece)}, the one place a per-piece tracking query
- * (UTM) is appended. Marketing will send one per {@link Piece}; adding it means filling
- * {@link Piece}'s query, never touching a contract.</p>
+ * <h2>Design (marketing / legal spec, ETP-6209 QA)</h2>
+ * <p>One small, discreet line: «Creado con» followed by the brand «etendo.ai» as a plain link — no
+ * button, no «Conoce más», no social links, no privacy link. The spec asks for the horizontal
+ * etendo.ai logo after «Creado con»; no such asset is published anywhere an email can load it
+ * (the app's public assets hold the square icon and the old "Etendo" wordmark only), so the brand
+ * is text until marketing publishes one: then it becomes an image with {@value #BRAND} as its alt
+ * text, in {@code EmailLayout#appendFooter} only.</p>
+ *
+ * <h2>Link</h2>
+ * <p>The etendo.ai home page with the UTM of the email it goes out in. The UTM is declared per
+ * {@link Piece}, and each contract passes its own piece, so the shared layout never names a
+ * contract.</p>
  */
 public final class EmailFooter {
 
-  /** PROVISIONAL — marketing will send the final pricing page URL. */
-  static final String PRICING_URL = "https://etendo.ai";
-  /**
-   * Cookie and privacy policy URL. Empty on purpose: the footer omits the privacy link until
-   * marketing sends the real URL — a privacy link to the home page would mislead. Set the real URL
-   * from marketing here to show it; nothing else changes (copy {@code footer.privacy} is kept).
-   */
-  static final String PRIVACY_URL = "";
-  /** The public site shown as text in the footer. */
-  static final String SITE_URL = "https://www.etendo.ai";
+  /** The brand as the footer writes it: lower case, the alt text of a future logo. */
+  public static final String BRAND = "etendo.ai";
+  /** The page the brand links to. */
+  static final String HOME_URL = "https://etendo.ai/";
+  /** The UTM every customer email shares; each piece adds its own {@code utm_content}. */
+  static final String TRACKING_PREFIX =
+      "utm_source=portal_clientes&utm_medium=email&utm_campaign=portal_clientes&utm_content=";
 
   private static final String KEY_PREFIX = "footer.";
 
-  /** The email a footer goes out in, so each can carry its own tracking query. */
+  /** The email a footer goes out in: its {@code utm_content}, verbatim from marketing. */
   public enum Piece {
     /** A sales document email carrying a customer portal link. */
-    DOCUMENT_SEND(""),
+    DOCUMENT_SEND("mail_envio_documento"),
     /** The renewed customer portal link. */
-    LINK_RENEWAL(""),
+    LINK_RENEWAL("mail_reenvio_enlace"),
     /** The confirmation of a quotation acceptance requested in the portal. */
-    DECISION_ACCEPT(""),
+    DECISION_ACCEPT("mail_aceptacion"),
     /** The confirmation of a quotation rejection requested in the portal. */
-    DECISION_REJECT("");
+    DECISION_REJECT("mail_rechazo");
 
-    /**
-     * Query string appended to every footer link of this piece, without the leading {@code ?}.
-     * Empty until marketing sends the per-piece UTM (e.g. {@code utm_source=email&utm_campaign=…}).
-     */
-    private final String trackingQuery;
+    private final String utmContent;
 
-    Piece(String trackingQuery) {
-      this.trackingQuery = trackingQuery;
+    Piece(String utmContent) {
+      this.utmContent = utmContent;
     }
   }
 
-  private final String title;
-  private final String ctaLabel;
-  private final String ctaUrl;
-  private final String siteLabel;
-  private final String siteUrl;
-  private final String privacyLabel;
-  private final String privacyUrl;
+  private final String prefix;
+  private final String url;
 
   private EmailFooter(Piece piece, String language) {
-    this.title = EmailMessages.get(KEY_PREFIX + "title", language);
-    this.ctaLabel = EmailMessages.get(KEY_PREFIX + "cta", language);
-    this.ctaUrl = link(PRICING_URL, piece);
-    this.siteLabel = EmailMessages.get(KEY_PREFIX + "site", language);
-    this.siteUrl = link(SITE_URL, piece);
-    this.privacyLabel = EmailMessages.get(KEY_PREFIX + "privacy", language);
-    this.privacyUrl = StringUtils.isBlank(PRIVACY_URL) ? null : link(PRIVACY_URL, piece);
+    this.prefix = EmailMessages.get(KEY_PREFIX + "prefix", language);
+    this.url = link(piece);
   }
 
   /**
-   * The Etendo footer of one email, in the recipient's language.
+   * The footer of one email, in the recipient's language.
    *
    * @param piece the email it goes out in
    * @param language the recipient language
@@ -99,61 +91,28 @@ public final class EmailFooter {
   }
 
   /**
-   * Appends the piece's tracking query to a footer link.
+   * The home page link with the piece's UTM; the bare home page without a piece.
    *
-   * @param base the link without tracking
-   * @param piece the email the link goes out in
+   * @param piece the email the link goes out in, may be {@code null}
    * @return the link to emit
    */
-  static String link(String base, Piece piece) {
-    return link(base, piece == null ? null : piece.trackingQuery);
+  static String link(Piece piece) {
+    return piece == null || StringUtils.isBlank(piece.utmContent) ? HOME_URL
+        : HOME_URL + "?" + TRACKING_PREFIX + piece.utmContent;
   }
 
-  /**
-   * Appends a tracking query to a link: after {@code ?}, or after {@code &} when the link already
-   * has a query. A blank query leaves the link as it is.
-   *
-   * @param base the link without tracking
-   * @param trackingQuery the query, without the leading {@code ?}; may be blank
-   * @return the link to emit
-   */
-  static String link(String base, String trackingQuery) {
-    if (StringUtils.isBlank(trackingQuery)) {
-      return base;
-    }
-    return base + (base.contains("?") ? "&" : "?") + trackingQuery;
+  /** @return the words before the brand: «Creado con» / «Built with» */
+  public String getPrefix() {
+    return prefix;
   }
 
-  public String getTitle() {
-    return title;
+  /** @return the brand, {@value #BRAND} */
+  public String getBrand() {
+    return BRAND;
   }
 
-  public String getCtaLabel() {
-    return ctaLabel;
-  }
-
-  public String getCtaUrl() {
-    return ctaUrl;
-  }
-
-  public String getSiteLabel() {
-    return siteLabel;
-  }
-
-  public String getSiteUrl() {
-    return siteUrl;
-  }
-
-  public String getPrivacyLabel() {
-    return privacyLabel;
-  }
-
-  /**
-   * The cookie and privacy policy link.
-   *
-   * @return the URL, or {@code null} while {@link #PRIVACY_URL} is not set (the row is omitted)
-   */
-  public String getPrivacyUrl() {
-    return privacyUrl;
+  /** @return where the brand links to: the home page with the piece's UTM */
+  public String getUrl() {
+    return url;
   }
 }

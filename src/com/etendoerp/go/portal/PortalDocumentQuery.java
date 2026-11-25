@@ -83,6 +83,11 @@ final class PortalDocumentQuery {
   private static final String HAS_OVERDUE_INSTALMENT = "exists (select 1 from FIN_Payment_Schedule"
       + " ps where ps.invoice.id = e.id and ps.active = true and ps.outstandingAmount > 0"
       + " and ps.dueDate < :today)";
+  /**
+   * A quotation still valid today: no {@code ValidUntil}, or one not before today — the
+   * negation of {@code PortalDecisionService#isExpired} at the server's calendar day.
+   */
+  private static final String NOT_EXPIRED = "(e.validUntil is null or e.validUntil >= :today)";
   /** A line not yet fully delivered or not yet fully invoiced. */
   private static final String HAS_PENDING_LINE = "exists (select 1 from OrderLine l"
       + " where l.salesOrder.id = e.id and l.active = true"
@@ -92,7 +97,9 @@ final class PortalDocumentQuery {
     Map<String, Group> quotation = new LinkedHashMap<>();
     // CO is a quotation completed but not yet answered, the same "awaiting" the app's convert and
     // reject actions accept (QuotationTopbarActions: CO or UE). CL and VO show under "all" only.
-    quotation.put("awaiting", new Group(List.of("UE", "CO"), null));
+    // An expired one (a ValidUntil before today) awaits nothing: the portal offers no decision on
+    // it (PortalDecisionService#isExpired, ETP-6209 QA), so it shows under "all" only.
+    quotation.put("awaiting", new Group(List.of("UE", "CO"), NOT_EXPIRED));
     // ETGO_AC: accepted by the customer from the portal, not yet converted (Part C, PO Q1).
     quotation.put("accepted", new Group(List.of("ETGO_AC", "CA", "ETGO_CI"), null));
     quotation.put("rejected", new Group(List.of("CJ"), null));
@@ -112,8 +119,10 @@ final class PortalDocumentQuery {
 
     Map<String, Group> invoice = new LinkedHashMap<>();
     // "Pendientes" is everything still owed, overdue included ("Ver facturas pendientes" of the
-    // home opens it); "Vencidas" is the overdue part of it.
-    invoice.put("pending", new Group(List.of("CO", "CL"), "e.outstandingAmount <> 0"));
+    // home opens it); "Vencidas" is the overdue part of it. Owed means a positive outstanding
+    // amount, the home's balance rule (outstandingByCurrency): a credit note in the customer's
+    // favour (negative outstanding) is not pending and shows under "all" only (ETP-6209 QA).
+    invoice.put("pending", new Group(List.of("CO", "CL"), "e.outstandingAmount > 0"));
     invoice.put("overdue", new Group(List.of("CO", "CL"), HAS_OVERDUE_INSTALMENT));
     invoice.put("paid", new Group(List.of("CO", "CL"), "e.outstandingAmount = 0"));
     GROUPS.put(PortalDocumentKind.INVOICE, invoice);
@@ -144,6 +153,8 @@ final class PortalDocumentQuery {
   /** {@code M_InOut.MovementType} of a customer shipment (outbound). */
   private static final String CUSTOMER_SHIPMENT = "C-";
 
+  /** Joins the conditions of a list query's {@code where}. */
+  private static final String AND = " and ";
   private static final String P_CLIENT = "clientId";
   private static final String P_BPARTNER = "bpartnerId";
   private static final String P_STATUSES = "statuses";
@@ -164,6 +175,11 @@ final class PortalDocumentQuery {
     final String search;
     final Group group;
     final Date today;
+    /**
+     * Invoices only (ETP-6209 QA CP-16, the app's "tipo" quick filter): {@code TRUE} credit notes
+     * only, {@code FALSE} invoices only, {@code null} both.
+     */
+    final Boolean creditNote;
 
     Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search) {
       this(statuses, dateFrom, dateToExclusive, search, null, null);
@@ -171,6 +187,14 @@ final class PortalDocumentQuery {
 
     Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search, Group group,
         Date today) {
+      this(statuses, dateFrom, dateToExclusive, search, group, today, null);
+    }
+
+    // One value per list filter of the HTTP route.
+    @SuppressWarnings("java:S107")
+    Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search, Group group,
+        Date today, Boolean creditNote) {
+      this.creditNote = creditNote;
       this.statuses = statuses;
       this.dateFrom = dateFrom;
       this.dateToExclusive = dateToExclusive;
@@ -468,7 +492,7 @@ final class PortalDocumentQuery {
         .append(" and e.active = true")
         .append(" and e.salesTransaction = true")
         .append(" and e.documentStatus in (:").append(P_STATUSES).append(')')
-        .append(" and ").append(discriminator(kind));
+        .append(AND).append(discriminator(kind));
     if (filter.dateFrom != null) {
       where.append(" and e.").append(kind.getDateProperty()).append(" >= :").append(P_FROM);
     }
@@ -476,7 +500,11 @@ final class PortalDocumentQuery {
       where.append(" and e.").append(kind.getDateProperty()).append(" < :").append(P_TO);
     }
     if (filter.group != null && filter.group.condition != null) {
-      where.append(" and ").append(filter.group.condition);
+      where.append(AND).append(filter.group.condition);
+    }
+    if (filter.creditNote != null && kind == PortalDocumentKind.INVOICE) {
+      where.append(Boolean.TRUE.equals(filter.creditNote) ? AND : AND + "not ")
+          .append(PortalDocumentKind.creditNoteCondition("e.transactionDocument"));
     }
     if (filter.search != null) {
       where.append(" and (lower(e.documentNo) like :").append(P_SEARCH)
