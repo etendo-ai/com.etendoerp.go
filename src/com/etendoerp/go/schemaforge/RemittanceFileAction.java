@@ -55,7 +55,8 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  *       remittance is written (returned receipts included, counted in
  *       {@value #KEY_RETURNED_COUNT}), and the message identifier is the remittance's document
  *       number, so every download of one remittance carries the same {@code MsgId} (only
- *       {@code CreDtTm} changes).</li>
+ *       {@code CreDtTm} changes). Refused up front inside a caller-owned transaction
+ *       ({@value #MSG_DOWNLOAD_IN_BATCH}, see {@link #download}).</li>
  * </ul>
  * A refusal is a 422 with the message key in {@code error.messageKeys}; the readiness refusal
  * ({@value #MSG_NOT_READY}) also carries {@code error.problems}. A download emits
@@ -73,6 +74,7 @@ final class RemittanceFileAction {
 
   static final String MSG_NOT_READY = "ETGO_RemittanceFileNotReady";
   static final String MSG_NOT_PROCESSED = "ETGO_RemittanceFileNotProcessed";
+  static final String MSG_DOWNLOAD_IN_BATCH = "ETGO_RemittanceFileDownloadInBatch";
 
   static final String KEY_STATUS = "status";
   static final String KEY_FILE_NAME = "fileName";
@@ -153,6 +155,10 @@ final class RemittanceFileAction {
       if (invalid != null) {
         return invalid;
       }
+      if (ACTION_DOWNLOAD.equals(action) && callerOwnsTransaction()) {
+        // Before anything is read, locked or generated: see download().
+        return NeoMessageText.error(SC_UNPROCESSABLE, MSG_DOWNLOAD_IN_BATCH);
+      }
       Remittance remittance = handler.loadRemittance(context.getRecordId());
       if (remittance == null) {
         return NeoResponse.error(HttpServletResponse.SC_NOT_FOUND, "Remittance not found");
@@ -227,9 +233,24 @@ final class RemittanceFileAction {
   /**
    * «Descargar fichero»: generates the file now and answers it. Read only: whatever the
    * generation touches (the type's file parameters backfilled by
-   * {@link RemittanceSepaFileSetup#ensure}, the creditor identifier copy of
-   * {@link RemittanceCreditorId#forFile}, the line messages Classic's generator writes on a
-   * refusal) is rolled back before answering, unless a batch owns the transaction.
+   * {@link RemittanceSepaFileSetup#ensure}, the creditor identifier and IBAN copies of
+   * {@link RemittanceCreditorId#forFile} / {@link RemittanceIban#forFile}, the line messages
+   * Classic's generator writes on a refusal) is rolled back before answering.
+   *
+   * <p><b>Invariant: a download never runs inside a transaction its caller owns.</b> That
+   * rollback goes through {@link RemittanceProcessAction#rollback}, which does nothing while a
+   * batch owns the transaction ({@link BatchService#callerOwnsTransaction}); the batch would then
+   * commit those writes with its own. {@link #handle} therefore refuses {@value #ACTION_DOWNLOAD}
+   * up front in that case — 422 {@value #MSG_DOWNLOAD_IN_BATCH}, before the remittance is loaded,
+   * locked or generated — so the rollback below always runs on a transaction this request owns.
+   * No channel reaches that today (a batch carries CRUD operations only); the guard keeps the
+   * download fail safe if one ever does.
+   *
+   * <p>The remittance row is locked first ({@link RemittanceHeaderHandler#lockRemittance},
+   * {@code SELECT … FOR UPDATE}, taken by {@link #handle}), which serialises a download with
+   * «Confirmar» (same lock) and «Reactivar» (REM updates the row): it never generates from a
+   * remittance another request is processing or reactivating. The lock is held until the
+   * rollback, so two simultaneous downloads of the same remittance wait for each other.
    *
    * <p>Any processed remittance is served, a voided one ({@code AN}) included, as Classic's
    * «Create File» button (display logic {@code @Processed@='Y'}) does; the SPA offers the
@@ -312,6 +333,11 @@ final class RemittanceFileAction {
   // ---------------------------------------------------------------------------
   // Seams
   // ---------------------------------------------------------------------------
+
+  /** Seam over {@link BatchService#callerOwnsTransaction}. */
+  static boolean callerOwnsTransaction() {
+    return BatchService.callerOwnsTransaction();
+  }
 
   /** Seam over {@link RemittanceProcessAction#run}. */
   static OBError runProcess(String remittanceId, String grouping) {

@@ -68,7 +68,9 @@ import com.etendoerp.go.schemaforge.util.NeoMessageTranslator;
  *       one that is not ready; otherwise the XML generated now, answered as
  *       {@code {fileName, contentType, content, returnedCount}} — returned receipts included, as
  *       Classic's «Create File» — with Classic's file name, nothing attached and the transaction
- *       rolled back; one {@code backend_remittance_file_generated} per download.</li>
+ *       rolled back; one {@code backend_remittance_file_generated} per download. Inside a
+ *       caller-owned transaction (a batch, where that rollback is skipped) it is refused up front,
+ *       before anything is loaded, locked or generated.</li>
  * </ul>
  *
  * <p>The REM run, the generator, the readiness, the returned receipts and the telemetry are static
@@ -439,6 +441,44 @@ class RemittanceFileActionTest {
     verify(remittance, never()).setETARAutomaticprocess(any());
     processAction.verify(RemittanceProcessAction::rollback);
     telemetry.verify(() -> RemittanceFileTelemetry.fileDownloaded(remittance, true, 2));
+  }
+
+  /**
+   * The download undoes what the generation writes through a rollback that a caller-owned
+   * transaction skips, so inside one it is refused before anything is loaded, locked or generated:
+   * otherwise the batch would commit the type backfill, the creditor id / IBAN copies and
+   * Classic's line messages along with its own writes.
+   */
+  @Test
+  void aDownloadInsideACallerOwnedTransactionIsRefusedBeforeGeneratingAnything() throws Exception {
+    givenProcessed("R-1", "Cobros");
+    givenGenerated();
+    action.when(RemittanceFileAction::callerOwnsTransaction).thenReturn(true);
+
+    NeoResponse response = download();
+
+    assertEquals(422, response.getHttpStatus());
+    assertEquals(RemittanceFileAction.MSG_DOWNLOAD_IN_BATCH, messageKey(response));
+    verify(handler, never()).loadRemittance(any());
+    verify(handler, never()).lockRemittance(any());
+    readiness.verify(() -> RemittanceFileReadiness.evaluate(any()), never());
+    setup.verifyNoInteractions();
+    action.verify(() -> RemittanceFileAction.generate(any()), never());
+    processAction.verify(RemittanceProcessAction::rollback, never());
+    telemetry.verifyNoInteractions();
+  }
+
+  /** The refusal is the download's only: the readiness, a pure read, still answers in a batch. */
+  @Test
+  void aCallerOwnedTransactionDoesNotRefuseTheReadiness() throws Exception {
+    action.when(RemittanceFileAction::callerOwnsTransaction).thenReturn(true);
+    readiness.when(() -> RemittanceFileReadiness.body(remittance))
+        .thenReturn(new JSONObject().put("ready", true));
+
+    NeoResponse response = handler.handle(context("GET", "fileReadiness", null));
+
+    assertEquals(200, response.getHttpStatus());
+    assertTrue(response.getBody().getBoolean("ready"));
   }
 
   /** As Classic: a remittance with returned receipts is generated whole, and says how many. */

@@ -613,10 +613,11 @@ Example (`backend_bank_bounce_pair_decided` as submitted to Mixpanel):
 `downloadFile`). The file is generated on every download and never stored, so the event counts
 downloads; «Confirmar» (`confirm`) only checks the file and emits nothing. Emitted by
 `RemittanceFileTelemetry`, only with `sepa-remittances` on, through `NeoBatchScope.runAfterCommit`,
-on one bounded background thread. Outside a batch (the SPA and a single MCP call) the event is
-handed off **as soon as the action succeeds, before the request's own commit** — the same as the
-bounce-pair KPIs —, so a commit that failed afterwards would still have emitted it; inside a batch it
-waits for the batch commit and is dropped on rollback. A refused action (any 4xx/5xx) emits nothing.
+on one bounded background thread. The event is handed off **as soon as the action succeeds,
+before the request's own commit** — the same as the bounce-pair KPIs —, so a commit that failed
+afterwards would still have emitted it. A download is refused inside a batch (422
+`ETGO_RemittanceFileDownloadInBatch`), so it always emits right after the action. A refused action
+(any 4xx/5xx) emits nothing.
 
 | Property | Value |
 |---|---|

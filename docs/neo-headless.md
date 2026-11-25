@@ -2991,7 +2991,7 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     `ETGO_RemittanceAccountNotBank` / `ETGO_RemittanceAccountNotAllowed`). **With a saved
     remittance** (`remittanceId` or the record id) it is saved on THAT remittance only; the account's
     default changes only when `saveToAccount` is `true`. The remittance must exist (404), not be
-    processed (422 `ETGO_RemittanceProcessedNotEditable`: its file and regenerations use the copy),
+    processed (422 `ETGO_RemittanceProcessedNotEditable`: every download of its file uses the copy),
     be a collection on that same account (422 `ETGO_RemittanceCreditorIdNotApplicable`). **Without a
     remittance** (record id `new`, the financial-account form) the only write is the account's
     default and `saveToAccount: true` is required (422 `ETGO_RemittanceCreditorIdNeedsAccount`).
@@ -3034,8 +3034,8 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     `RemittanceCreditorIdRewriter` replaces `GrpHdr/InitgPty/.../Othr/Id` and every
     `PmtInf/CdtrSchmeId/.../Othr/Id` with the REMITTANCE's identifier, by structure (debtor
     identifiers are never touched), reading the XML without DOCTYPE or external entities; the result
-    is then validated against the XSD like any file. Editing the account afterwards changes neither
-    a generated file nor a regeneration. A file with no `CdtrSchmeId` to replace is a
+    is then validated against the XSD like any file. Editing the account afterwards does not change
+    the remittance's file: every download uses the remittance's own copy. A file with no `CdtrSchmeId` to replace is a
     `ETGO_RemittanceFileGenerationFailed`, never a silent computed identifier; and a collection with
     no valid identifier is refused (`ETGO_RemittanceFileAccountNoCreditorId`) even if readiness was
     skipped.
@@ -3306,9 +3306,17 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     (the XML document, UTF-8 text), returnedCount}`. `fileName` is Classic's:
     `CreateFile.replaceStrangeCharacters(documentNo + "_" + name)` + `.` + the type's
     `FILE_EXTENSION` parameter in lower case (`xml` without one; every provisioned type sets
-    `xml`). Read only: the transaction is rolled back before answering (unless a batch owns it), so
-    neither the type backfill, the creditor identifier / IBAN copy the generation takes nor a line
-    message Classic's generator writes on a refusal is kept. The MCP gets the XML in the action's
+    `xml`). Read only: the transaction is rolled back before answering, so neither the type
+    backfill, the creditor identifier / IBAN copy the generation takes nor a line message Classic's
+    generator writes on a refusal is kept. **Invariant: a download never runs inside a transaction
+    its caller owns** — that rollback (`rollbackUnlessBatchOwned`) is skipped while a batch owns the
+    transaction (`BatchService.callerOwnsTransaction()`), and the batch would commit those writes,
+    so there `downloadFile` is refused up front with 422 `ETGO_RemittanceFileDownloadInBatch`,
+    before the remittance is loaded, locked or generated. No channel reaches that today (a batch
+    carries CRUD operations only); the guard keeps the download fail safe if one ever does. The remittance row is
+    locked first (`lockRemittance`, `SELECT … FOR UPDATE` + refresh), which serialises a download
+    with `confirm` (same lock) and `reactivate` (REM updates the row), and the lock is held until
+    the rollback, so two simultaneous downloads of the same remittance wait for each other. The MCP gets the XML in the action's
     answer (no download link). **`MsgId` is stable** — the remittance's document number — so every
     download of one remittance carries the same message identifier (a bank that rejects a repeated
     `MsgId` refuses a second upload instead of collecting twice); only `CreDtTm` (now) changes, and
@@ -3342,10 +3350,9 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     on its own and skipped when unknown, and external access is closed by parser-independent means —
     the document is read through an `XMLReader` with `disallow-doctype-decl` and no external
     entities/DTD (a DOCTYPE makes the file invalid), and the schema factory and validator get a
-    resource resolver that refuses every lookup (the two XSDs import nothing). File name: Classic's `<documentNo>_<name>.xml` restricted to
-    `[A-Za-z0-9._-]`, `_2`, `_3`… when the record already has one (the attachment manager
-    overwrites a same-named attachment). The bytes reach the attachment store before the commit: a
-    later rollback leaves an orphan file, never a row.
+    resource resolver that refuses every lookup (the two XSDs import nothing). File name: Classic's (`downloadFile`,
+    `CreateFile.replaceStrangeCharacters`). The file is never attached or stored: `confirm` builds
+    it in memory only to check it, and `downloadFile` generates it again on every call.
   - **CORE collections in `pain.008.001.08`.** Before XSD validation, GO trims the leading and
     trailing whitespace from XML field values. The default profile (`BIC_SWIFT_MANDATORY = N`)
     writes `Othr/Id = NOTPROVIDED` for the creditor and debtor agents, including when their
@@ -3384,7 +3391,8 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     contain `//` (EPC130-08 2025 v1.0, 1.4; `ETGO_RemittanceFileRuleSlash`). Readiness reports the
     same rule early for the mandate reference of each line, as the generator writes it (backslash
     turned into `/`, cut to 35 characters; `ETGO_RemittanceFileLineMandateSlash`). A failure
-    returns HTTP 422 with the XML element path before the attachment is saved.
+    returns HTTP 422 with the XML element path (a `confirm` is rolled back; a download answers no
+    file).
   - **Not automatic on create (ETP-6247, step-by-step flow).** A remittance created through GO keeps
     `EM_Etar_Automaticprocess = 'N'` (the column default): confirming it does NOT settle. It
     becomes `'Y'` only when it is collected (`markCollected`, below), which is what Classic and the
