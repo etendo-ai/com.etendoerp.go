@@ -100,6 +100,7 @@ public final class NeoReferenceSelectorValidation {
   private static final Logger log = LogManager.getLogger(NeoReferenceSelectorValidation.class);
   private static final DateTimeFormatter CLASSIC_DATE = DateTimeFormatter.ofPattern("dd-MM-yyyy");
   private static final String YES = "Y";
+  private static final String FIELD_PREFIX = "Field '";
   private static final String NO = "N";
   private static final String ID = "id";
   private static final Pattern CONTEXT_VARIABLE = Pattern.compile("@(\\w+)@");
@@ -151,18 +152,14 @@ public final class NeoReferenceSelectorValidation {
    * different ids: only one of them can be selector-checked, and persistence may keep the other.
    */
   private static RefusedReference conflictingIdSpelling(Entity written, JSONObject requestFields) {
-    String suffix = "." + ID;
     Iterator<?> keys = requestFields.keys();
     while (keys.hasNext()) {
       String key = String.valueOf(keys.next());
-      String name = key.endsWith(suffix) ? key.substring(0, key.length() - suffix.length()) : "";
-      if (name.isEmpty() || name.indexOf('.') >= 0 || !requestFields.has(name)) {
+      String name = idSpelledReference(written, key);
+      if (name == null || !requestFields.has(name)) {
         continue;
       }
       Property property = written.getProperty(name, false);
-      if (property == null || property.isPrimitive() || property.getTargetEntity() == null) {
-        continue;
-      }
       String plain = idText(requestFields.opt(name));
       String spelled = idText(requestFields.opt(key));
       if (!StringUtils.equalsIgnoreCase(plain, spelled)) {
@@ -173,6 +170,21 @@ public final class NeoReferenceSelectorValidation {
       }
     }
     return null;
+  }
+
+  /**
+   * The reference name a {@code <reference>.id} key spells, or {@code null} when the key is not
+   * that spelling of a plain (non-nested) reference of the entity.
+   */
+  private static String idSpelledReference(Entity written, String key) {
+    String suffix = "." + ID;
+    String name = key.endsWith(suffix) ? key.substring(0, key.length() - suffix.length()) : "";
+    if (name.isEmpty() || name.indexOf('.') >= 0) {
+      return null;
+    }
+    Property property = written.getProperty(name, false);
+    return property == null || property.isPrimitive() || property.getTargetEntity() == null
+        ? null : name;
   }
 
   private static String idText(Object value) {
@@ -187,18 +199,12 @@ public final class NeoReferenceSelectorValidation {
    * in its plain form wins.
    */
   private static JSONObject withIdSpellingFolded(Entity written, JSONObject requestFields) {
-    String suffix = "." + ID;
     JSONObject folded = null;
     Iterator<?> keys = requestFields.keys();
     while (keys.hasNext()) {
       String key = String.valueOf(keys.next());
-      String name = key.endsWith(suffix) ? key.substring(0, key.length() - suffix.length()) : null;
-      if (name == null || name.isEmpty() || name.indexOf('.') >= 0
-          || requestFields.has(name)) {
-        continue;
-      }
-      Property property = written.getProperty(name, false);
-      if (property == null || property.isPrimitive() || property.getTargetEntity() == null) {
+      String name = idSpelledReference(written, key);
+      if (name == null || requestFields.has(name)) {
         continue;
       }
       try {
@@ -472,7 +478,7 @@ public final class NeoReferenceSelectorValidation {
     }
     log.warn("Refused a NEO write: parentId and '{}' name different parents", link.getName());
     return new RefusedReference(link.getName(), link.getTargetEntity().getName(), sent, false,
-        "Field '" + link.getName() + "' names parent '" + sent + "' but parentId is '" + parentId
+        FIELD_PREFIX + link.getName() + "' names parent '" + sent + "' but parentId is '" + parentId
             + "'; send one parent, or the same one in both. The write was rejected.");
   }
 
@@ -646,12 +652,12 @@ public final class NeoReferenceSelectorValidation {
         return ownDetail;
       }
       if (verified) {
-        return "Field '" + fieldName + "' was set to '" + value + "', a record of '"
+        return FIELD_PREFIX + fieldName + "' was set to '" + value + "', a record of '"
             + targetEntityName + "' that the app does not offer for this record; the write was"
             + " rejected exactly as the app would not have allowed the selection.";
       }
       String shown = value == null ? "" : " (value '" + value + "')";
-      return "Field '" + fieldName + "'" + shown
+      return FIELD_PREFIX + fieldName + "'" + shown
           + " could not be verified against the app's selector; the write was rejected.";
     }
   }
