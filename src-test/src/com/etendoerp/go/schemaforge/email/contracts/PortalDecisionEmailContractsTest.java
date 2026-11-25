@@ -187,7 +187,9 @@ public class PortalDecisionEmailContractsTest {
   @Test
   public void theConfirmationKeepsItsOwnSubjectNotTheOriginalSends() throws Exception {
     stubMint();
-    when(linkService.findLink(LINK_ID)).thenReturn(Optional.of(link()));
+    // Built first: link() stubs its own mock, which must not happen inside a thenReturn(...).
+    PortalLink link = link();
+    when(linkService.findLink(LINK_ID)).thenReturn(Optional.of(link));
     when(decisionService.originalSend(LINK_ID, QUOTATION_ID)).thenReturn(Optional.of(
         new PortalQuotationSends.Send("LOG-1", Collections.singletonList("billing@customer.test"),
             Collections.emptyList(), "Presupuesto de Ventas #PR-7")));

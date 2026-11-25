@@ -737,9 +737,13 @@ public class TransactionalEmailService {
         data.put("message", message);
       }
       if (extra != null) {
+        // The service's own fields (status, contract, message) are never overwritten by an extra
+        // key: a contract's deliveredFacts reach the answer only under keys of their own.
         for (java.util.Iterator<?> keys = extra.keys(); keys.hasNext();) {
           String key = String.valueOf(keys.next());
-          data.put(key, extra.opt(key));
+          if (!data.has(key)) {
+            data.put(key, extra.opt(key));
+          }
         }
       }
 
