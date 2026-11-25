@@ -1183,7 +1183,7 @@ A tenant sets its own fiscal identifier at exactly two moments, and both are gua
 The browser runs the same three rules in `tools/app-shell/src/lib/taxIdValidation.js` so the user
 is told before the round trip; the two Java call sites are what make it binding.
 
-The wizard's own step lives in the published `@etendosoftware/etendo-go-core` package, whose
+The wizard's own step lives in the published `@etendo-ai/etendo-go-core` package, whose
 `CompanyStep` takes no validator from `config` — so it is guarded from the consuming repo instead:
 `coreSteps` is a plain `{ id, component }` array and `onNext` is a prop, so
 `pages/onboarding/onboardingSteps.jsx` swaps in a wrapper that validates before delegating.
