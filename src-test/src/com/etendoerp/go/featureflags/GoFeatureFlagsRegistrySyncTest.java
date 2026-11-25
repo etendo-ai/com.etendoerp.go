@@ -19,6 +19,7 @@
 package com.etendoerp.go.featureflags;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -38,6 +39,7 @@ import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import org.codehaus.jettison.json.JSONArray;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
@@ -65,9 +67,13 @@ class GoFeatureFlagsRegistrySyncTest {
 
   private static final String REGISTRY = "flags-registry.json";
   private static final String MODULE_DIR = "modules/com.etendoerp.go";
-  private static final Pattern PROPERTY_NAME =
-      Pattern.compile("etendo\\.go\\.flags\\.([a-z0-9][a-z0-9-]*[a-z0-9])");
-  private static final Pattern ENV_NAME = Pattern.compile("ETGO_FLAG_[A-Z0-9_]*[A-Z0-9]");
+  // Built from the provider's own constants so a changed prefix breaks the match loudly instead of
+  // letting both documented-name tests pass on an empty result.
+  private static final Pattern PROPERTY_NAME = Pattern.compile(
+      Pattern.quote(PropertiesFeatureProvider.PROPERTY_PREFIX) + "([a-z0-9][a-z0-9-]*[a-z0-9])");
+  private static final String ENV_PREFIX = PropertiesFeatureProvider.toEnvName("");
+  private static final Pattern ENV_NAME =
+      Pattern.compile(Pattern.quote(ENV_PREFIX) + "[A-Z0-9_]*[A-Z0-9]");
   private static final Pattern LITERAL_CALL = Pattern.compile("isEnabled\\(\\s*\"([^\"]+)\"");
 
   private static Path moduleRoot;
@@ -76,7 +82,7 @@ class GoFeatureFlagsRegistrySyncTest {
   private static Set<String> registryKeys;
 
   @BeforeAll
-  static void load() throws Exception {
+  static void load() throws IOException, JSONException {
     moduleRoot = Files.exists(Paths.get(REGISTRY)) ? Paths.get(".") : Paths.get(MODULE_DIR);
     Path file = moduleRoot.resolve(REGISTRY);
     registry = new JSONObject(new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
@@ -85,7 +91,7 @@ class GoFeatureFlagsRegistrySyncTest {
   }
 
   @Test
-  void registryIsAV3ContributionRegistry() throws Exception {
+  void registryIsAV3ContributionRegistry() throws JSONException {
     assertEquals(3, registry.getInt("version"));
     assertEquals("etendo-go", registry.getString("sonarProject"));
     JSONArray features = registry.getJSONArray("features");
@@ -97,7 +103,7 @@ class GoFeatureFlagsRegistrySyncTest {
       assertTrue(feature.has("flagKey") || feature.optBoolean("contribution", false),
           id + " is a header: headers live in etendo_schema_forge, this registry holds contributions");
       for (String forbidden : new String[] {"ttl", "ttlNote", "defaultValue", "flag"}) {
-        assertTrue(!feature.has(forbidden),
+        assertFalse(feature.has(forbidden),
             id + " declares \"" + forbidden + "\" — the header owns the flag's lifecycle");
       }
     }
@@ -128,6 +134,7 @@ class GoFeatureFlagsRegistrySyncTest {
         unknown.add(PropertiesFeatureProvider.PROPERTY_PREFIX + key);
       }
     }
+    assertFalse(matches(PROPERTY_NAME, 1).isEmpty(), "no documented property name found");
     assertTrue(unknown.isEmpty(),
         "property names in the sources that no FLAG_* constant backs: " + unknown);
   }
@@ -139,6 +146,7 @@ class GoFeatureFlagsRegistrySyncTest {
         .collect(Collectors.toCollection(TreeSet::new));
     Set<String> unknown = new TreeSet<>(matches(ENV_NAME, 0));
     unknown.removeAll(expected);
+    assertFalse(matches(ENV_NAME, 0).isEmpty(), "no documented environment name found");
     assertTrue(unknown.isEmpty(),
         "environment variable names in the sources that no FLAG_* constant backs: " + unknown);
   }
@@ -167,11 +175,11 @@ class GoFeatureFlagsRegistrySyncTest {
         keys.add((String) field.get(null));
       }
     }
-    assertTrue(!keys.isEmpty(), "found no FLAG_* constants — did GoFeatureFlags change shape?");
+    assertFalse(keys.isEmpty(), "found no FLAG_* constants — did GoFeatureFlags change shape?");
     return keys;
   }
 
-  private static Set<String> contributionKeys(JSONArray features) throws Exception {
+  private static Set<String> contributionKeys(JSONArray features) throws JSONException {
     Set<String> keys = new TreeSet<>();
     for (int i = 0; i < features.length(); i++) {
       JSONObject feature = features.getJSONObject(i);

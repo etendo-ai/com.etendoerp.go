@@ -11,6 +11,12 @@
     {
       "id": "paid-second-tenant",
       "contribution": true,
+      "symbols": [
+        "TenantPaywallService",
+        "TenantPlanService",
+        "HostedCheckoutService",
+        "markProductive"
+      ],
       "paths": [
         "src/com/etendoerp/go/payment/"
       ],
@@ -40,7 +46,7 @@
         "unit": [
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/webhooks/SFAcctProcessMonitorTest.java",
-            "note": "EXISTS on feature/ETP-5269 in the com.etendoerp.go worktree. The scorer resolves roots.backend to etendo_core/modules/com.etendoerp.go, which is the MAIN checkout and currently sits on a different branch, so it reports this file missing. Left scoring as-is on purpose: marking it expected:true would suppress a real 5 pts on every future run to paper over a local path artifact that disappears once the branches are co-located."
+            "note": "Lives in this repo; if a checkout of another branch lacks it, the file is reported missing for that checkout only."
           },
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/NeoPseudoSpecDispatcherTest.java",
@@ -53,6 +59,10 @@
     {
       "id": "bp-self-service-portal",
       "flagKey": "bp-portal-link",
+      "symbols": [
+        "ETGO_FLAG_BP_PORTAL_LINK",
+        "etendo.go.flags.bp-portal-link"
+      ],
       "paths": [
         "src/com/etendoerp/go/portal/"
       ],
@@ -95,6 +105,17 @@
     {
       "id": "demo-data-transfer",
       "contribution": true,
+      "symbols": [
+        "FLAG_DEMO_DATA_TRANSFER",
+        "ETGO_FLAG_DEMO_DATA_TRANSFER",
+        "etendo.go.flags.demo-data-transfer",
+        "DemoDataTransferFlag",
+        "DemoDataTransferService",
+        "demoDataTransferService",
+        "recordDemoDataTransferSelection",
+        "startDemoDataTransferBestEffort",
+        "handleDemoDataTransfer"
+      ],
       "paths": [
         "src/com/etendoerp/go/payment/DemoDataTransferFlag.java",
         "src/com/etendoerp/go/payment/DemoDataTransferService.java",
@@ -120,6 +141,14 @@
     {
       "id": "environment-access-enforcement-kill-switch",
       "flagKey": "environment-access-enforcement-off",
+      "symbols": [
+        "FLAG_ENVIRONMENT_ACCESS_ENFORCEMENT_OFF",
+        "ETGO_FLAG_ENVIRONMENT_ACCESS_ENFORCEMENT_OFF",
+        "etendo.go.flags.environment-access-enforcement-off",
+        "EnvironmentAccessEnforcementFlag",
+        "isEnforcementSwitchedOff",
+        "enforcementSwitchedOff"
+      ],
       "paths": [
         "src/com/etendoerp/go/payment/EnvironmentAccessEnforcementFlag.java"
       ],
@@ -140,6 +169,11 @@
     {
       "id": "mcp-dual-era",
       "flagKey": "mcp-modern-era-disabled",
+      "symbols": [
+        "FLAG_MCP_MODERN_ERA_DISABLED",
+        "ETGO_FLAG_MCP_MODERN_ERA_DISABLED",
+        "etendo.go.flags.mcp-modern-era-disabled"
+      ],
       "testSpecs": {
         "unit": [
           {
@@ -155,6 +189,12 @@
     {
       "id": "batch-redundant-callout-skip",
       "flagKey": "batch-callout-skip-disabled",
+      "symbols": [
+        "FLAG_BATCH_CALLOUT_SKIP_DISABLED",
+        "ETGO_FLAG_BATCH_CALLOUT_SKIP_DISABLED",
+        "etendo.go.flags.batch-callout-skip-disabled",
+        "calloutSkipKillSwitchOn"
+      ],
       "testSpecs": {
         "unit": [
           {
@@ -196,6 +236,12 @@
     {
       "id": "billing-reconciliation-schedule",
       "flagKey": "billing-reconciliation-schedule",
+      "symbols": [
+        "FLAG_BILLING_RECONCILIATION_SCHEDULE",
+        "ETGO_FLAG_BILLING_RECONCILIATION_SCHEDULE",
+        "etendo.go.flags.billing-reconciliation-schedule",
+        "BillingReconciliationScheduleStartup"
+      ],
       "testSpecs": {
         "unit": [
           {
@@ -212,6 +258,12 @@
     {
       "id": "usage-aggregation-schedule",
       "flagKey": "usage-aggregation-schedule",
+      "symbols": [
+        "FLAG_USAGE_AGGREGATION_SCHEDULE",
+        "ETGO_FLAG_USAGE_AGGREGATION_SCHEDULE",
+        "etendo.go.flags.usage-aggregation-schedule",
+        "TITLE_SCHEDULE_OFF"
+      ],
       "testSpecs": {
         "unit": [
           {
@@ -229,6 +281,9 @@
     {
       "id": "contact-category-type",
       "flagKey": "contact-category-type",
+      "symbols": [
+        "FLAG_CONTACT_CATEGORY_TYPE"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/handlers/ContactTypeRules.java",
         "src/com/etendoerp/go/schemaforge/handlers/BusinessPartnerCategoryHandler.java",
@@ -249,6 +304,12 @@
     {
       "id": "structured-address-for-sepa",
       "flagKey": "structured-address-for-sepa",
+      "symbols": [
+        "FLAG_STRUCTURED_ADDRESS_FOR_SEPA",
+        "ETGO_FLAG_STRUCTURED_ADDRESS_FOR_SEPA",
+        "etendo.go.flags.structured-address-for-sepa",
+        "StructuredAddressComposer.isEnabled"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/ContactsLocationAddressHandler.java",
         "src/com/etendoerp/go/schemaforge/WarehouseLocationHandler.java",
@@ -307,6 +368,10 @@
     {
       "id": "fiscal-model-390",
       "flagKey": "fiscal-model-390",
+      "symbols": [
+        "FLAG_FISCAL_MODEL_390",
+        "ETGO_FLAG_FISCAL_MODEL_390"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/FiscalModel390Flag.java"
       ],
@@ -338,6 +403,10 @@
     {
       "id": "invoice-inbox",
       "flagKey": "invoice-inbox",
+      "symbols": [
+        "FLAG_INVOICE_INBOX",
+        "InvoiceInboxFlag"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/InvoiceInboxFlag.java",
         "src/com/etendoerp/go/schemaforge/InvoiceInboxUploadEndpoint.java",
@@ -467,6 +536,11 @@
     {
       "id": "product-movements-tab",
       "flagKey": "product-movements-tab",
+      "symbols": [
+        "FLAG_PRODUCT_MOVEMENTS_TAB",
+        "ETGO_FLAG_PRODUCT_MOVEMENTS_TAB",
+        "etendo.go.flags.product-movements-tab"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/ProductMovementsPolicy.java"
       ],
@@ -490,6 +564,14 @@
     {
       "id": "bank-bounce-suggestions",
       "flagKey": "bank-bounce-suggestions",
+      "symbols": [
+        "FLAG_BANK_BOUNCE_SUGGESTIONS",
+        "ETGO_FLAG_BANK_BOUNCE_SUGGESTIONS",
+        "etendo.go.flags.bank-bounce-suggestions",
+        "BankBounceSuggestionsFlag",
+        "StatementLineFilter",
+        "BankBounceKpiTelemetry"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/BankBounceSuggestionsFlag.java",
         "src/com/etendoerp/go/schemaforge/BankBounceDetector.java",
@@ -550,6 +632,13 @@
     {
       "id": "psd2-statement-import-settings",
       "flagKey": "psd2-statement-import-settings",
+      "symbols": [
+        "FLAG_PSD2_STATEMENT_IMPORT_SETTINGS",
+        "ETGO_FLAG_PSD2_STATEMENT_IMPORT_SETTINGS",
+        "etendo.go.flags.psd2-statement-import-settings",
+        "parseImportSettingsDate",
+        "maxFetchIntervalOfProvider"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/Psd2ImportSettingsFlag.java",
         "src/com/etendoerp/go/schemaforge/BankImportSettingsRules.java",
@@ -594,6 +683,11 @@
     {
       "id": "sepa-remittances",
       "flagKey": "sepa-remittances",
+      "symbols": [
+        "FLAG_SEPA_REMITTANCES",
+        "ETGO_FLAG_SEPA_REMITTANCES",
+        "etendo.go.flags.sepa-remittances"
+      ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/SepaRemittancesFlag.java",
         "src/com/etendoerp/go/schemaforge/SepaCreditorId.java",
@@ -753,6 +847,13 @@
     {
       "id": "mcp-routines",
       "flagKey": "mcp-routines",
+      "symbols": [
+        "FLAG_MCP_ROUTINES",
+        "ETGO_FLAG_MCP_ROUTINES",
+        "etendo.go.flags.mcp-routines",
+        "McpRoutinesFlag",
+        "routinesDisabled"
+      ],
       "paths": [
         "src/com/etendoerp/go/mcp/McpRoutineTool.java",
         "src/com/etendoerp/go/mcp/McpRoutineSteps.java",
@@ -772,7 +873,13 @@
     },
     {
       "id": "sii-import-dua",
-      "flagKey": "sii-import-dua"
+      "flagKey": "sii-import-dua",
+      "symbols": [
+        "FLAG_SII_IMPORT_DUA",
+        "ETGO_FLAG_SII_IMPORT_DUA",
+        "etendo.go.flags.sii-import-dua",
+        "ETGO_SiiImportDuaDisabled"
+      ]
     }
   ]
 }
