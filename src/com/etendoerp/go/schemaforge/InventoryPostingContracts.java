@@ -69,7 +69,7 @@ public final class InventoryPostingContracts {
       "completed");
   /** Physical Inventory and Goods Movement: availability read from {@code processed}. */
   private static final Map<String, NeoActionContract> BY_PROCESSED = contracts(
-      NeoActionAvailability.whenIn(PROP_PROCESSED, PROCESSED_TRUE), "processed");
+      NeoActionAvailability.whenIn(PROP_PROCESSED, PROCESSED_TRUE), PROP_PROCESSED);
 
   private InventoryPostingContracts() {
   }

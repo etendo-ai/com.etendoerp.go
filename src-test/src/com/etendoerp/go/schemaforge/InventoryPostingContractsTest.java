@@ -36,14 +36,14 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  */
 class InventoryPostingContractsTest {
 
-  private static UnaryOperator<String> record(Map<String, String> values) {
+  private static UnaryOperator<String> stateOf(Map<String, String> values) {
     return values::get;
   }
 
   private static Boolean availableOn(Map<String, NeoActionContract> contracts, String action,
       Map<String, String> state) {
     NeoActionAvailability availability = contracts.get(action).getAvailability();
-    return availability.evaluate(record(state)).available();
+    return availability.evaluate(stateOf(state)).available();
   }
 
   @Test
