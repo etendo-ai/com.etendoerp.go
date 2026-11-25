@@ -276,19 +276,19 @@ final class PurchaseInvoiceImportDua {
     boolean missesDua() {
       return importDua && !multiDua && !(hasDua && hasDuaDate);
     }
-  }
 
-  private static boolean flag(JSONObject body, String field, boolean fallback) {
-    return body != null && body.has(field) ? isYes(body.opt(field)) : fallback;
-  }
-
-  private static boolean present(JSONObject body, String field, boolean fallback) {
-    if (body == null || !body.has(field)) {
-      return fallback;
+    private static boolean flag(JSONObject body, String field, boolean fallback) {
+      return body != null && body.has(field) ? isYes(body.opt(field)) : fallback;
     }
-    Object value = body.opt(field);
-    return value != null && !JSONObject.NULL.equals(value)
-        && StringUtils.isNotBlank(String.valueOf(value));
+
+    private static boolean present(JSONObject body, String field, boolean fallback) {
+      if (body == null || !body.has(field)) {
+        return fallback;
+      }
+      Object value = body.opt(field);
+      return value != null && !JSONObject.NULL.equals(value)
+          && StringUtils.isNotBlank(String.valueOf(value));
+    }
   }
 
   static boolean isYes(Object value) {
