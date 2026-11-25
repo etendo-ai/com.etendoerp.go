@@ -74,6 +74,7 @@ final class PaymentAgentSupport {
   private static final String KEY_REMITTED_AMOUNT = "remittedAmount";
   private static final String KEY_DATA = "data";
   private static final String KEY_RESPONSE = "response";
+  private static final String KEY_CREDIT_SOURCES = "creditSources";
 
   private PaymentAgentSupport() {
   }
@@ -172,7 +173,7 @@ final class PaymentAgentSupport {
       return null;
     }
     return InvoiceRemittance.installmentRefusal(schedule,
-        cash.add(PaymentCreditConsumer.requestedFunding(body.optJSONArray("creditSources"))),
+        cash.add(PaymentCreditConsumer.requestedFunding(body.optJSONArray(KEY_CREDIT_SOURCES))),
         body.optString(KEY_PAYMENT_ID, null));
   }
 
@@ -245,7 +246,7 @@ final class PaymentAgentSupport {
     boolean editing = StringUtils.isNotBlank(body.optString(KEY_PAYMENT_ID, null));
     BigDecimal capacity = cents(editing ? schedule.getAmount() : pendingAmount(schedule));
     BigDecimal funds = cents(cash.add(
-        PaymentCreditConsumer.requestedFunding(body.optJSONArray("creditSources"))));
+        PaymentCreditConsumer.requestedFunding(body.optJSONArray(KEY_CREDIT_SOURCES))));
     BigDecimal excess = funds.subtract(capacity);
     if (excess.signum() <= 0) {
       return null;
@@ -377,7 +378,7 @@ final class PaymentAgentSupport {
     }
     BigDecimal creditUsed = BigDecimal.ZERO;
     if ("registerPayment".equals(action)) {
-      creditUsed = PaymentCreditConsumer.requestedFunding(body.optJSONArray("creditSources"));
+      creditUsed = PaymentCreditConsumer.requestedFunding(body.optJSONArray(KEY_CREDIT_SOURCES));
       data.put("creditUsed", creditUsed);
     }
     BigDecimal generated = PaymentRegistrationService.nullToZero(payment.getGeneratedCredit());

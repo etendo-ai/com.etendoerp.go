@@ -466,7 +466,7 @@ public final class InvoiceRemittance {
 
   private static void putCurrency(NeoResponse response, Currency currency) {
     try {
-      response.getBody().getJSONObject("error").put(KEY_CURRENCY,
+      response.getBody().getJSONObject(NeoProcessService.ERROR).put(KEY_CURRENCY,
           currency == null || currency.getISOCode() == null ? JSONObject.NULL
               : currency.getISOCode());
     } catch (Exception e) {
@@ -476,7 +476,7 @@ public final class InvoiceRemittance {
 
   private static void putFullyRemitted(NeoResponse response, boolean fully) {
     try {
-      JSONObject error = response.getBody().getJSONObject("error");
+      JSONObject error = response.getBody().getJSONObject(NeoProcessService.ERROR);
       error.put(KEY_FULLY_REMITTED, fully);
       if (fully) {
         error.put(NeoProcessService.MESSAGE_KEYS, new JSONArray()
@@ -490,7 +490,7 @@ public final class InvoiceRemittance {
   private static void putDetails(NeoResponse response, Remittance remittance, String documentNo,
       BigDecimal payable, BigDecimal remitted) {
     try {
-      JSONObject error = response.getBody().getJSONObject("error");
+      JSONObject error = response.getBody().getJSONObject(NeoProcessService.ERROR);
       error.put(KEY_REMITTANCE_ID, remittance == null ? JSONObject.NULL : remittance.getId());
       error.put(KEY_REMITTANCE_DOCUMENT_NO, documentNo);
       if (payable != null) {

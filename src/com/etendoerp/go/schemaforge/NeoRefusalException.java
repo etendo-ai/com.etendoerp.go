@@ -36,6 +36,8 @@ public class NeoRefusalException extends MessageKeyedException {
   private final transient NeoResponse response;
 
   /**
+   * Creates a refusal that carries the response to answer and the message key it was built from.
+   *
    * @param response   the refusal to answer, built with {@link NeoMessageText#error}
    * @param messageKey its {@code AD_MESSAGE.VALUE}
    */

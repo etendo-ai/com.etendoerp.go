@@ -278,8 +278,8 @@ class PaymentRegistrationServiceAdvancedTest {
     });
     connConstruction = mockConstruction(DalConnectionProvider.class);
 
-    // ETP-6247: invoicePayments names the remittance a payment came from (REM_RemittanceLine);
-    // none unless a test says otherwise.
+    // ETP-6247: invoicePayments names the remittance a payment came from, read from the
+    // remittance line table. By default no payment belongs to a remittance unless a test says so.
     OBCriteria<RemittanceLine> remittanceLineCrit = mock(OBCriteria.class);
     when(dal.createCriteria(RemittanceLine.class)).thenReturn(remittanceLineCrit);
     when(remittanceLineCrit.add(any(Criterion.class))).thenReturn(remittanceLineCrit);

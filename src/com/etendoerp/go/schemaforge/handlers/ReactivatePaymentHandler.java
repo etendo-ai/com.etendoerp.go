@@ -243,6 +243,7 @@ public class ReactivatePaymentHandler implements NeoHandler {
   private static final String KEY_RESPONSE = "response";
   private static final String KEY_DATA = "data";
   private static final String KEY_SUMMARY = "summary";
+  private static final String MSG_PAYMENT_NOT_FOUND = "Payment not found: ";
 
   /**
    * Pre-hook: intercepts {@code etprReactivatePayment} (injects {@code action = "RE"}),
@@ -323,7 +324,7 @@ public class ReactivatePaymentHandler implements NeoHandler {
       FIN_Payment payment = NeoActionRecordGuard.loadOwned(FIN_Payment.class,
           context.getRecordId());
       if (payment == null) {
-        return NeoResponse.error(404, "Payment not found: " + context.getRecordId());
+        return NeoResponse.error(404, MSG_PAYMENT_NOT_FOUND + context.getRecordId());
       }
       if (StringUtils.equals(PAYMENT_STATUS_VOID, payment.getStatus())) {
         return NeoMessageText.error(422, MSG_PAYMENT_VOID_NOT_REACTIVABLE);
@@ -345,7 +346,7 @@ public class ReactivatePaymentHandler implements NeoHandler {
     try {
       return NeoActionRecordGuard.loadOwned(FIN_Payment.class, context.getRecordId()) != null
           ? null
-          : NeoResponse.error(404, "Payment not found: " + context.getRecordId());
+          : NeoResponse.error(404, MSG_PAYMENT_NOT_FOUND + context.getRecordId());
     } finally {
       OBContext.restorePreviousMode();
     }
@@ -530,7 +531,7 @@ public class ReactivatePaymentHandler implements NeoHandler {
       FIN_Payment payment = NeoActionRecordGuard.loadOwned(FIN_Payment.class,
           context.getRecordId());
       if (payment == null) {
-        return NeoResponse.error(404, "Payment not found: " + context.getRecordId());
+        return NeoResponse.error(404, MSG_PAYMENT_NOT_FOUND + context.getRecordId());
       }
       NeoResponse inRemittance = InvoiceRemittance.paymentRefusal(payment);
       if (inRemittance != null) {
