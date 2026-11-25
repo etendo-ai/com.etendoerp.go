@@ -465,6 +465,39 @@ class NeoActionContractTest {
       }
     }
 
+    @Test
+    @DisplayName("asObject hands back the very object it is given")
+    void asObjectPassesAnObjectThrough() throws Exception {
+      JSONObject value = new JSONObject().put("k", "R2");
+      assertSame(value, NeoActionContract.asObject(value));
+    }
+
+    @Test
+    @DisplayName("asObject parses a string holding a JSON object, surrounding blanks included")
+    void asObjectParsesAPaddedObjectString() throws Exception {
+      JSONObject parsed = NeoActionContract.asObject("  {\"k\":\"R2\"}  ");
+      assertNotNull(parsed);
+      assertEquals("R2", parsed.getString("k"));
+    }
+
+    @Test
+    @DisplayName("asObject reads null, blank, malformed and array strings as no object, never throwing")
+    void asObjectReadsNonObjectsAsNull() {
+      for (Object value : new Object[] {null, JSONObject.NULL, "", "   ", "{not json", "{\"k\":",
+          "[{\"k\":\"R2\"}]", "R2", 7, Boolean.TRUE, new JSONArray()}) {
+        assertNull(NeoActionContract.asObject(value), String.valueOf(value));
+      }
+    }
+
+    @Test
+    @DisplayName("an object param rejects a malformed JSON object string with a 422, not a 500")
+    void objectParamRejectsAMalformedObjectString() throws Exception {
+      JSONObject error = errorOf(NeoActionContract.validate(objectCatalog(), "create",
+          new JSONObject().put("fields", "{\"k\":")));
+      assertEquals("fields", error.getString("field"));
+      assertEquals("object", error.getString("expectedType"));
+    }
+
     private Map<String, NeoActionContract> objectCatalog() {
       Map<String, NeoActionContract> map = new LinkedHashMap<>();
       map.put("create", NeoActionContract.write("create", "Creates.",

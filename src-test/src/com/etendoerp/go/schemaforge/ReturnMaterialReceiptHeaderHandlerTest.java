@@ -599,6 +599,136 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
     }
   }
 
+  /**
+   * ETP-6179 CP-12: only the JSON boolean {@code true} is a dry run; anything else reads as no.
+   */
+  @Test
+  public void testIsValidateOnlyAcceptsOnlyTheJsonBooleanTrue() throws Exception {
+    assertTrue(ReturnInvoiceSupport.isValidateOnly(new JSONObject().put("validateOnly", true)));
+    assertFalse(ReturnInvoiceSupport.isValidateOnly(null));
+    assertFalse(ReturnInvoiceSupport.isValidateOnly(new JSONObject()));
+    for (Object value : new Object[] {false, "true", 1, "1", JSONObject.NULL}) {
+      assertFalse(String.valueOf(value),
+          ReturnInvoiceSupport.isValidateOnly(new JSONObject().put("validateOnly", value)));
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: a draft return without a real dry run (no flag, false, or a non-boolean such
+   * as the string "true" or 1) is still refused 400 before anything is read or saved; so is a
+   * dry run on a status other than draft or completed.
+   */
+  @Test
+  public void testCreateReturnInvoiceOnANonCompletedReturnWithoutARealDryRunIsStill400()
+      throws Exception {
+    Object[][] cases = {
+        {"DR", new JSONObject()},
+        {"DR", new JSONObject().put("validateOnly", false)},
+        {"DR", new JSONObject().put("validateOnly", "true")},
+        {"DR", new JSONObject().put("validateOnly", 1)},
+        {"VO", new JSONObject().put("validateOnly", true)},
+    };
+    for (Object[] c : cases) {
+      try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+           MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class)) {
+        OBDal dal = mock(OBDal.class);
+        dalMock.when(OBDal::getInstance).thenReturn(dal);
+        ShipmentInOut receipt = mock(ShipmentInOut.class);
+        when(dal.get(ShipmentInOut.class, "rec-1")).thenReturn(receipt);
+        when(receipt.getDocumentStatus()).thenReturn((String) c[0]);
+
+        NeoResponse result = handler.handle(NeoContext.builder()
+            .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+            .fieldName("createReturnInvoice").recordId("rec-1")
+            .requestBody((JSONObject) c[1]).build());
+
+        String label = c[0] + " " + c[1];
+        assertEquals(label, HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
+        assertEquals(label, "Receipt must be completed before creating a return invoice",
+            errorMessage(result));
+        Mockito.verify(receipt, Mockito.never()).getMaterialMgmtShipmentInOutLineList();
+        Mockito.verify(dal, Mockito.never()).save(any());
+      }
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: a dry run is not limited to drafts. On a completed return it answers 200
+   * {validateOnly:true, rectifiedInvoices} and creates nothing: no save, no flush, no link, no
+   * completion.
+   */
+  @Test
+  public void testValidateOnlyOnACompletedReturnAnswersOkAndCreatesNothing() throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      mockCreateReturnInvoiceFlow(dal, provider, "ret-inv-dry");
+
+      try (CompletionMocks completion = new CompletionMocks(dal, completionSuccess())) {
+        NeoResponse result = handler.handle(NeoContext.builder()
+            .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+            .fieldName("createReturnInvoice").recordId("rec-1")
+            .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+        assertEquals(200, result.getHttpStatus());
+        JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+        assertTrue(data.getBoolean("validateOnly"));
+        assertEquals(1, data.getJSONArray("rectifiedInvoices").length());
+        assertEquals("inv-src-1", data.getJSONArray("rectifiedInvoices").getString(0));
+        assertFalse("a dry run reports no created invoice", data.has("id"));
+        Mockito.verify(dal, Mockito.never()).save(any());
+        Mockito.verify(dal, Mockito.never()).flush();
+        Mockito.verify(provider, Mockito.never()).get(ReversedInvoice.class);
+        Mockito.verify(completion.processInvoiceUtil, Mockito.never())
+            .process(anyString(), anyString(), anyString(), anyString(), anyString(), any(), any());
+      }
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: validateOnly given as a non-boolean (the string "true", the number 1) is not
+   * a dry run: on a completed return it runs the real creation and completes the invoice.
+   */
+  @Test
+  public void testNonBooleanValidateOnlyRunsTheRealCreation() throws Exception {
+    for (Object flag : new Object[] {"true", 1}) {
+      try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+           MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+           MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+        OBDal dal = mock(OBDal.class);
+        dalMock.when(OBDal::getInstance).thenReturn(dal);
+        OBProvider provider = mock(OBProvider.class);
+        providerMock.when(OBProvider::getInstance).thenReturn(provider);
+        stubReturnInvoiceQueries(dal, "inv-src-1");
+        Invoice invoice = mockCreateReturnInvoiceFlow(dal, provider, "ret-inv-real");
+
+        try (CompletionMocks completion = new CompletionMocks(dal, completionSuccess())) {
+          mockCompletedInvoice(dal, "ret-inv-real", "REC-REAL", "CO");
+
+          NeoResponse result = handler.handle(NeoContext.builder()
+              .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+              .fieldName("createReturnInvoice").recordId("rec-1")
+              .requestBody(new JSONObject().put("validateOnly", flag)).build());
+
+          String label = String.valueOf(flag);
+          assertEquals(label, 200, result.getHttpStatus());
+          JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+          assertEquals(label, "ret-inv-real", data.getString("id"));
+          assertFalse(label, data.has("validateOnly"));
+          Mockito.verify(dal).save(invoice);
+          Mockito.verify(completion.processInvoiceUtil)
+              .process(eq("ret-inv-real"), eq("CO"), anyString(), anyString(), anyString(), any(),
+                  any());
+        }
+      }
+    }
+  }
+
   private static ShipmentInOut draftReceiptWithOneLine(OBDal dal) {
     ShipmentInOut receipt = mock(ShipmentInOut.class);
     when(dal.get(ShipmentInOut.class, "rec-1")).thenReturn(receipt);
@@ -1250,7 +1380,9 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
       throws Exception {
     for (JSONObject body : new JSONObject[] {null, new JSONObject().put("allowDuplicate", false),
         new JSONObject().put("allowDuplicate", true),
-        new JSONObject().put("allowDuplicate", "true"), new JSONObject().put("allowDuplicate", 1)}) {
+        new JSONObject().put("allowDuplicate", "true"), new JSONObject().put("allowDuplicate", 1),
+        // ETP-6179 CP-12: a dry run judges the one-per-return rule exactly as the real call.
+        new JSONObject().put("validateOnly", true)}) {
       try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
            MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
            MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
