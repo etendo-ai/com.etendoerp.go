@@ -82,7 +82,7 @@ class GoFeatureFlagsRegistrySyncTest {
   private static Set<String> registryKeys;
 
   @BeforeAll
-  static void load() throws IOException, JSONException {
+  static void load() throws IOException, JSONException, IllegalAccessException {
     moduleRoot = Files.exists(Paths.get(REGISTRY)) ? Paths.get(".") : Paths.get(MODULE_DIR);
     Path file = moduleRoot.resolve(REGISTRY);
     registry = new JSONObject(new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
