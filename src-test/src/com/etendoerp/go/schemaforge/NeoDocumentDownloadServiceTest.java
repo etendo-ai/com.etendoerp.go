@@ -40,12 +40,14 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 import java.util.Properties;
 
 import javax.servlet.ServletOutputStream;
 import javax.servlet.http.HttpServletResponse;
 
+import org.apache.logging.log4j.Level;
 import org.hibernate.Session;
 import org.hibernate.query.NativeQuery;
 import org.junit.After;
@@ -67,6 +69,8 @@ import org.openbravo.model.ad.utility.Attachment;
 import org.openbravo.model.ad.utility.AttachmentConfig;
 import org.openbravo.model.ad.utility.AttachmentMethod;
 
+import com.etendoerp.go.payment.TestLogCapture;
+import com.etendoerp.go.schemaforge.email.DocShareLinkService;
 import com.etendoerp.go.schemaforge.email.DocumentDownloadTokenService;
 import com.etendoerp.go.schemaforge.email.DocumentDownloadTokenService.Claims;
 
@@ -91,6 +95,11 @@ import com.etendoerp.go.schemaforge.email.DocumentDownloadTokenService.Claims;
 public class NeoDocumentDownloadServiceTest {
 
   private static final String TOKEN = "tok";
+  private static final String SHARE_CODE = "aB3dE5gH7j";
+  private static final String BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+      + " AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+  private static final String GMAIL_PROXY_UA =
+      "Mozilla/5.0 (Windows NT 5.1; rv:11.0) Gecko Firefox/11.0 (via ggpht.com GoogleImageProxy)";
   private static final String ERR_INVALID_FILE = "Stored document file is invalid";
   private static final int MAX_DOWNLOAD_BYTES = 12 * 1024 * 1024;
   private static final byte[] FILE_BYTES = "PDF-BYTES".getBytes(StandardCharsets.UTF_8);
@@ -227,7 +236,7 @@ public class NeoDocumentDownloadServiceTest {
             .thenReturn(aim);
       }
 
-      NeoDocumentDownloadService.handle(TOKEN, response);
+      NeoDocumentDownloadService.handle(TOKEN, BROWSER_UA, response);
     }
   }
 
@@ -269,7 +278,7 @@ public class NeoDocumentDownloadServiceTest {
       tokenMock.when(() -> DocumentDownloadTokenService.validate(TOKEN)).thenReturn(Optional.empty());
 
       try (MockedStatic<OBDal> obDalMock = Mockito.mockStatic(OBDal.class)) {
-        NeoDocumentDownloadService.handle(TOKEN, response);
+        NeoDocumentDownloadService.handle(TOKEN, BROWSER_UA, response);
 
         // The token is checked first: nothing is looked up for a link that does not verify.
         obDalMock.verifyNoInteractions();
@@ -306,7 +315,7 @@ public class NeoDocumentDownloadServiceTest {
       tokenMock.when(() -> DocumentDownloadTokenService.validate(TOKEN)).thenReturn(Optional.of(claims));
       obDalMock.when(OBDal::getInstance).thenReturn(dal);
 
-      NeoDocumentDownloadService.handle(TOKEN, response);
+      NeoDocumentDownloadService.handle(TOKEN, BROWSER_UA, response);
     }
 
     verify(headerQuery).setParameter("spec", "unknown-window");
@@ -334,7 +343,7 @@ public class NeoDocumentDownloadServiceTest {
       tokenMock.when(() -> DocumentDownloadTokenService.validate(TOKEN)).thenReturn(Optional.of(claims));
       obDalMock.when(OBDal::getInstance).thenReturn(dal);
 
-      NeoDocumentDownloadService.handle(TOKEN, response);
+      NeoDocumentDownloadService.handle(TOKEN, BROWSER_UA, response);
     }
 
     verify(response).setStatus(HttpServletResponse.SC_NOT_FOUND);
@@ -362,7 +371,7 @@ public class NeoDocumentDownloadServiceTest {
       tokenMock.when(() -> DocumentDownloadTokenService.validate(TOKEN)).thenReturn(Optional.of(claims));
       obDalMock.when(OBDal::getInstance).thenReturn(dal);
 
-      NeoDocumentDownloadService.handle(TOKEN, response);
+      NeoDocumentDownloadService.handle(TOKEN, BROWSER_UA, response);
     }
 
     verify(response).setStatus(HttpServletResponse.SC_NOT_FOUND);
@@ -391,7 +400,7 @@ public class NeoDocumentDownloadServiceTest {
       tokenMock.when(() -> DocumentDownloadTokenService.validate(TOKEN)).thenReturn(Optional.of(claims));
       obDalMock.when(OBDal::getInstance).thenReturn(dal);
 
-      NeoDocumentDownloadService.handle(TOKEN, response);
+      NeoDocumentDownloadService.handle(TOKEN, BROWSER_UA, response);
     }
 
     verify(response).setStatus(HttpServletResponse.SC_NOT_FOUND);
@@ -423,7 +432,8 @@ public class NeoDocumentDownloadServiceTest {
     runHandle(response, claims, dal, stubAttachRoot(attachRoot.getAbsolutePath()), aim);
 
     verify(response).setStatus(HttpServletResponse.SC_OK);
-    verify(response).setContentType("application/xml");
+    // ETP-4571: the type comes from the file name (.pdf), never from the stored type.
+    verify(response).setContentType("application/pdf");
     verify(response).setContentLength(FILE_BYTES.length);
     ArgumentCaptor<String> headerCaptor = ArgumentCaptor.forClass(String.class);
     verify(response).setHeader(eq("Content-Disposition"), headerCaptor.capture());
@@ -804,5 +814,152 @@ public class NeoDocumentDownloadServiceTest {
     } finally {
       System.clearProperty(property);
     }
+  }
+
+  /**
+   * A share code that does not resolve answers 404 without saying whether the record exists. The
+   * database query filters out expired and revoked rows, so those reach this same empty answer.
+   */
+  @Test
+  public void unknownShareCodeAnswers404WithoutLeaking() throws Exception {
+    HttpServletResponse response = mock(HttpServletResponse.class);
+    StringWriter sink = stubWriter(response);
+    try (MockedStatic<DocShareLinkService> links = Mockito.mockStatic(DocShareLinkService.class)) {
+      links.when(() -> DocShareLinkService.isShareCode(SHARE_CODE)).thenReturn(true);
+      links.when(() -> DocShareLinkService.resolve(SHARE_CODE)).thenReturn(Optional.empty());
+
+      NeoDocumentDownloadService.handle(SHARE_CODE, BROWSER_UA, response);
+
+      links.verify(() -> DocShareLinkService.recordOpen(anyString()), never());
+    }
+    verify(response).setStatus(HttpServletResponse.SC_NOT_FOUND);
+    assertEquals("Document not found", sink.toString());
+  }
+
+  /** A live share code opened in a browser streams the document and counts exactly one open. */
+  @Test
+  public void validShareCodeStreamsTheFileAndRecordsOneOpen() throws Exception {
+    serveLiveShareCode(BROWSER_UA, true, null);
+  }
+
+  /**
+   * An email security scanner that fetches the link (here Gmail's image proxy) still gets the
+   * document, but the fetch is not counted as an open: the recipient did not open anything.
+   */
+  @Test
+  public void emailScannerGetsTheFileButRecordsNoOpen() throws Exception {
+    serveLiveShareCode(GMAIL_PROXY_UA, false, null);
+  }
+
+  /**
+   * An open that cannot be counted never blocks the download, and its WARN names the document,
+   * never the share code: the code is a credential that is still live.
+   */
+  @Test
+  public void openThatCannotBeRecordedStillServesTheFileAndKeepsTheCodeOutOfTheLog()
+      throws Exception {
+    TestLogCapture logs = TestLogCapture.attachTo(NeoDocumentDownloadService.class, Level.WARN);
+    try {
+      serveLiveShareCode(BROWSER_UA, true, new IllegalStateException("database down"));
+
+      List<String> warnings = logs.messagesAt(Level.WARN);
+      assertEquals(warnings.toString(), 1, warnings.size());
+      assertTrue(warnings.get(0), warnings.get(0).contains("spec=sales-invoice record=REC1"));
+      assertFalse(warnings.get(0), warnings.get(0).contains(SHARE_CODE));
+    } finally {
+      logs.detach();
+    }
+  }
+
+  @Test
+  public void onlyUserAgentsNamingAKnownScannerAreEmailScanners() {
+    assertTrue(NeoDocumentDownloadService.isEmailScanner(GMAIL_PROXY_UA));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner("Google-Safety"));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
+            + " BingPreview/1.0b"));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner("Microsoft-Defender-SafeLinks"));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner("Mimecast-URL-Protect/1.0"));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner("Proofpoint URL Defense"));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner("Barracuda Sentinel"));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner("Cisco IronPort"));
+    assertTrue(NeoDocumentDownloadService.isEmailScanner("TrendMicro InterScan"));
+    assertFalse(NeoDocumentDownloadService.isEmailScanner(BROWSER_UA));
+    assertFalse(NeoDocumentDownloadService.isEmailScanner(
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_6) AppleWebKit/605.1.15 (KHTML, like Gecko)"
+            + " Version/17.6 Safari/605.1.15"));
+    assertFalse(NeoDocumentDownloadService.isEmailScanner(
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
+            + " Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"));
+    assertFalse(NeoDocumentDownloadService.isEmailScanner(null));
+    assertFalse(NeoDocumentDownloadService.isEmailScanner(""));
+  }
+
+  private void serveLiveShareCode(String userAgent, boolean expectOpen,
+      RuntimeException openFailure) throws Exception {
+    HttpServletResponse response = mock(HttpServletResponse.class);
+    ServletOutputStream sos = mock(ServletOutputStream.class);
+    when(response.getOutputStream()).thenReturn(sos);
+    Claims claims = stubClaims("sales-invoice", "REC1", "CLIENT1");
+    OBDal dal = mock(OBDal.class);
+    stubTableAndMainLookup(dal, "TABLE1", "ATT1");
+    Attachment attachment = stubAttachment("ATT1", "invoice final.pdf", "application/pdf", "CLIENT1");
+    stubStorageLayout(attachment, NESTED_PATH, "TABLE1", "REC1");
+    when(dal.get(Attachment.class, "ATT1")).thenReturn(attachment);
+    File attachRoot = tempFolder.newFolder("attachments");
+    writeStoredFile(attachRoot, NESTED_PATH, "invoice final.pdf", FILE_BYTES);
+    AttachImplementationManager aim = NeoAttachmentTestFixtures.mockStorageManager();
+    OBPropertiesProvider attachProvider = stubAttachRoot(attachRoot.getAbsolutePath());
+
+    try (MockedStatic<DocShareLinkService> links = Mockito.mockStatic(DocShareLinkService.class);
+        MockedStatic<OBDal> obDalMock = Mockito.mockStatic(OBDal.class);
+        MockedStatic<OBPropertiesProvider> propsMock =
+            Mockito.mockStatic(OBPropertiesProvider.class);
+        MockedStatic<WeldUtils> weldMock = Mockito.mockStatic(WeldUtils.class)) {
+      links.when(() -> DocShareLinkService.isShareCode(SHARE_CODE)).thenReturn(true);
+      links.when(() -> DocShareLinkService.resolve(SHARE_CODE))
+          .thenReturn(Optional.of(claims));
+      obDalMock.when(OBDal::getInstance).thenReturn(dal);
+      if (openFailure != null) {
+        links.when(() -> DocShareLinkService.recordOpen(SHARE_CODE)).thenThrow(openFailure);
+      }
+      propsMock.when(OBPropertiesProvider::getInstance)
+          .thenReturn(attachProvider);
+      weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(AttachImplementationManager.class))
+          .thenReturn(aim);
+
+      NeoDocumentDownloadService.handle(SHARE_CODE, userAgent, response);
+
+      links.verify(() -> DocShareLinkService.recordOpen(SHARE_CODE),
+          Mockito.times(expectOpen ? 1 : 0));
+    }
+    verify(response).setStatus(HttpServletResponse.SC_OK);
+    ArgumentCaptor<byte[]> bodyCaptor = ArgumentCaptor.forClass(byte[].class);
+    verify(sos).write(bodyCaptor.capture());
+    assertArrayEquals(FILE_BYTES, bodyCaptor.getValue());
+  }
+
+  /** A live code whose file is gone answers the same 404 as an unknown code and counts no open. */
+  @Test
+  public void validShareCodeWithoutAFileAnswersTheSame404AndRecordsNoOpen() throws Exception {
+    HttpServletResponse response = mock(HttpServletResponse.class);
+    StringWriter sink = stubWriter(response);
+    Claims claims = stubClaims("sales-invoice", "REC1", "CLIENT1");
+    OBDal dal = mock(OBDal.class);
+    stubTableAndMainLookup(dal, "TABLE1");
+
+    try (MockedStatic<DocShareLinkService> links = Mockito.mockStatic(DocShareLinkService.class);
+        MockedStatic<OBDal> obDalMock = Mockito.mockStatic(OBDal.class)) {
+      links.when(() -> DocShareLinkService.isShareCode(SHARE_CODE)).thenReturn(true);
+      links.when(() -> DocShareLinkService.resolve(SHARE_CODE))
+          .thenReturn(Optional.of(claims));
+      obDalMock.when(OBDal::getInstance).thenReturn(dal);
+
+      NeoDocumentDownloadService.handle(SHARE_CODE, BROWSER_UA, response);
+
+      links.verify(() -> DocShareLinkService.recordOpen(anyString()), never());
+    }
+    verify(response).setStatus(HttpServletResponse.SC_NOT_FOUND);
+    assertEquals("Document not found", sink.toString());
   }
 }

@@ -33,6 +33,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONArray;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.base.exception.OBException;
 import org.openbravo.dal.core.OBContext;
@@ -41,29 +42,32 @@ import org.openbravo.erpCommon.utility.OBCurrencyUtils;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
 
 import com.etendoerp.go.common.SpanishTaxIdValidator;
+import com.etendoerp.go.portal.PortalContactShare;
 import com.etendoerp.go.schemaforge.handlers.ContactSepaMandateDefaults;
 import com.etendoerp.go.schemaforge.handlers.ContactTypeRules;
 import com.etendoerp.go.schemaforge.handlers.ContactTypeTelemetry;
 import com.etendoerp.go.schemaforge.handlers.PaymentMethodSelectorSupport;
+import com.etendoerp.go.schemaforge.util.NeoActionContract;
 
 /**
  * Pre/post-save hook for the businessPartner entity in the contacts spec.
  *
+ * <p>On POST/PATCH/PUT, {@code handle()} enforces the person/company identity shape (ETP-6175,
+ * see {@link ContactIdentityRules}): a person ({@code etgoIsperson = Y}) needs both
+ * {@code etgoFirstname} and {@code etgoLastname}, may not be sent a name of its own, and gets
+ * {@code name} derived from them; a company needs {@code name} and may not be sent a first or last
+ * name. An update is only judged when it touches one of those keys, against the persisted values
+ * for the keys it does not carry. (Before ETP-6175 the name was derived through
+ * {@link AbstractPersonNameHandler#deriveName}, on update only when the stored name was blank; that
+ * call is gone from this class, and {@link ContactNameSyncHandler} still re-derives on a DAL
+ * update of a person's name parts.)
+ *
  * <p>On POST (new record):
  * <ul>
- *   <li>{@code handle()} derives {@code name} from {@code etgoFirstname} + {@code etgoLastname}
- *       when {@code name} is blank and at least one of the name parts is present (person mode).</li>
- *   <li>{@code handle()} then injects {@code searchKey = name} as a temporary placeholder so the
+ *   <li>{@code handle()} injects {@code searchKey = name} as a temporary placeholder so the
  *       mandatory field passes validation before the record is saved.</li>
  *   <li>{@code afterHandle()} overwrites {@code searchKey} with the auto-generated
  *       {@code em_etgo_identifier} value once Etendo has assigned it during save.</li>
- * </ul>
- *
- * <p>On PATCH/PUT (update):
- * <ul>
- *   <li>{@code handle()} derives {@code name} from the incoming firstname/lastname values
- *       (merging with the persisted values for whichever part is absent from the body)
- *       only when the record's current {@code name} is blank in the database.</li>
  * </ul>
  *
  * <p>On POST/PATCH/PUT, {@code handle()} also rejects a malformed {@code TaxID} (ETP-5031)
@@ -75,8 +79,11 @@ import com.etendoerp.go.schemaforge.handlers.PaymentMethodSelectorSupport;
  * unvalidated. Unlike the Organization window, this is deliberately NOT gated on country: a
  * Business Partner carries no country of its own (only its addresses do), and
  * {@code oBTIKTaxIDKey} is already the semantic discriminator for the foreign case (value
- * {@code "4"}). To keep dirty legacy data editable, the check only runs on create or when the
- * incoming {@code TaxID} differs from what is already persisted — see
+ * {@code "4"}). A create that omits the key is validated as NIF, the column's AD default it will
+ * be saved with (ETP-6175: the defaults pass runs after this hook, so the check used to be
+ * skipped and an invalid NIF got in through the API). To keep dirty legacy data editable, the
+ * check only runs on create or when the incoming {@code TaxID} differs from what is already
+ * persisted — see
  * {@link #validateTaxId(NeoContext, JSONObject, String)}.
  *
  * <p>On POST/PATCH/PUT, {@code handle()} also applies the contact-type rules (ETP-5791, see
@@ -162,6 +169,11 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
   private static final String FIELD_TAX_ID_KEY = "oBTIKTaxIDKey";
   /** {@code EM_OBTIK_Tax_ID_Key} enum value for "NIF" (see the window's decisions.json). */
   private static final String TAX_ID_KEY_NIF = "1";
+  /**
+   * ETP-6175 — the AD default of {@code C_BPartner.EM_OBTIK_Tax_ID_Key} ({@code '1'}, NIF): what
+   * a create that omits the key is saved with. Keep in sync with the column's {@code DefaultValue}.
+   */
+  private static final String TAX_ID_KEY_DEFAULT = TAX_ID_KEY_NIF;
   /** {@code EM_OBTIK_Tax_ID_Key} enum value for "Pasaporte". */
   private static final String TAX_ID_KEY_PASSPORT = "3";
   /** ICAO Doc 9303 passport number shape: up to 9 letters/digits, no check digit. */
@@ -296,8 +308,10 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
   /**
    * ETP-5852 (M-107): puts the same temporary searchKey {@code handle()} puts, before MCP's
    * mandatory pre-check, which runs ahead of {@code handle()} and refused a create without one.
-   * The name is derived first (person mode), as {@code handle()} does. Never overwrites a value
-   * the caller sent; abstains without a name, so the pre-check still reports it.
+   * The name is derived first for a person body only
+   * ({@link ContactIdentityRules#deriveNameForCreate}, ETP-6175), as {@code handle()} does; a
+   * company body keeps its own name or none, so the pre-check reports a missing one. Never overwrites a value the caller sent; abstains without a
+   * name.
    */
   @Override
   public void resolveServerCreateFields(NeoContext context) {
@@ -306,7 +320,7 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
       return;
     }
     try {
-      deriveName(context, body);
+      ContactIdentityRules.deriveNameForCreate(body);
       ContactSearchKey.putPlaceholder(body);
     } catch (Exception e) {
       log.warn("BusinessPartnerHandler: could not resolve the create searchKey", e);
@@ -362,8 +376,22 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
     return null;
   }
 
+  /**
+   * ETP-5850: the {@code portalLink} action ({@link ContactPortalLinkAction}). Declaring it lists
+   * {@code contacts} in {@code etendo_action}.
+   */
+  @Override
+  public Map<String, NeoActionContract> actionContracts() {
+    return ContactPortalLinkAction.CONTRACTS;
+  }
+
   @Override
   public NeoResponse handle(NeoContext ctx) {
+    NeoResponse portalLink = ContactPortalLinkAction.handle(ctx,
+        contactId -> new PortalContactShare().share(contactId));
+    if (portalLink != null) {
+      return portalLink;
+    }
     if (ctx != null && ctx.getEndpointType() == NeoEndpointType.SELECTOR) {
       // A SELECTOR request is never a write, so falling through to the isWrite check below
       // (when this isn't a Payment Method field) already returns null for it — no separate
@@ -388,19 +416,27 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
       if (taxIdError != null) {
         return taxIdError;
       }
-      NeoResponse formatError = validateContactFormats(ctx, body, method);
+      // The contact format and type rules read the persisted columns, so they see the inner
+      // section of a {"data": {...}} envelope, not the envelope itself.
+      JSONObject section = ContactIdentityRules.persistedSection(body);
+      NeoResponse formatError = validateContactFormats(ctx, section, method);
       if (formatError != null) {
         return formatError;
       }
-      NeoResponse contactTypeError = applyContactTypeRules(ctx, body, method);
+      // ETP-6175: person/company identity. Before the contact-type rules, whose telemetry
+      // snapshot must only see writes that are going to be attempted; it also owns the name
+      // derivation of this entity (the base class's deriveName is no longer called here).
+      NeoResponse identityError = ContactIdentityRules.apply(ctx, body, method);
+      if (identityError != null) {
+        return identityError;
+      }
+      NeoResponse contactTypeError = applyContactTypeRules(ctx, section, method);
       if (contactTypeError != null) {
         return contactTypeError;
       }
       // After the contact-type rules: a type re-inherited from the category decides whether the
       // contact is a customer, and so whether its SEPA mandate is defaulted (ETP-6148).
       ContactSepaMandateDefaults.apply(ctx, body);
-
-      deriveName(ctx, body);
 
       if ("POST".equals(method)) {
         stripPreCreateBillingDefaults(ctx, body);
@@ -457,7 +493,11 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
    * @return an error {@link NeoResponse} when the value is rejected, {@code null} to continue
    *     with the default CRUD
    */
-  private NeoResponse validateTaxId(NeoContext ctx, JSONObject body, String method) throws Exception {
+  private NeoResponse validateTaxId(NeoContext ctx, JSONObject requestBody, String method)
+      throws Exception {
+    // ETP-6175: judged on the {"data": {...}} envelope when there is one — the object generic
+    // CRUD persists — so an envelope create cannot store a TaxID no rule has looked at.
+    JSONObject body = ContactIdentityRules.persistedSection(requestBody);
     if (!body.has(FIELD_TAX_ID)) {
       // A write that does not touch TaxID must not be re-validated against an already-stored
       // value it is not sending — otherwise a dirty legacy value would block every later edit,
@@ -485,20 +525,26 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
     }
 
     String taxIdKey = resolveTaxIdKey(body, persisted);
+    if (taxIdKey == null && "POST".equals(method)) {
+      // ETP-6175: a create that omits the key gets the column's AD default (NIF) from the
+      // mandatory-defaults pass, which runs AFTER this pre-hook. Validate against the value the
+      // record will actually be saved with, or an invalid NIF is stored unchecked on any channel.
+      taxIdKey = TAX_ID_KEY_DEFAULT;
+    }
 
     if (TAX_ID_KEY_NIF.equals(taxIdKey)) {
       switch (SpanishTaxIdValidator.validate(taxId)) {
         case BAD_FORMAT:
-          return NeoResponse.error(400, SpanishTaxIdValidator.ERR_FORMAT);
+          return fieldError(FIELD_TAX_ID, SpanishTaxIdValidator.ERR_FORMAT);
         case BAD_CHECK_DIGIT:
-          return NeoResponse.error(400, SpanishTaxIdValidator.ERR_CHECK_DIGIT);
+          return fieldError(FIELD_TAX_ID, SpanishTaxIdValidator.ERR_CHECK_DIGIT);
         default:
           return null;
       }
     }
     if (TAX_ID_KEY_PASSPORT.equals(taxIdKey)) {
       String normalized = taxId.toUpperCase();
-      return PASSPORT_PATTERN.matcher(normalized).matches() ? null : NeoResponse.error(400, ERR_PASSPORT_FORMAT);
+      return PASSPORT_PATTERN.matcher(normalized).matches() ? null : fieldError(FIELD_TAX_ID, ERR_PASSPORT_FORMAT);
     }
     return null;
   }
@@ -521,9 +567,8 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
    */
   private static String[] queryPersistedTaxIdParts(String recordId) throws Exception {
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(
-        "SELECT taxid, em_obtik_tax_id_key FROM c_bpartner WHERE c_bpartner_id = ?")) {
-      ps.setString(1, recordId);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        "SELECT taxid, em_obtik_tax_id_key FROM c_bpartner WHERE c_bpartner_id = ?", recordId)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (rs.next()) {
           return new String[]{ rs.getString(1), rs.getString(2) };
@@ -585,7 +630,25 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
     if (value.equals(StringUtils.trimToNull(persistedValue))) {
       return null;
     }
-    return isValid.test(value) ? null : NeoResponse.error(400, errorMessage);
+    return isValid.test(value) ? null : fieldError(field, errorMessage);
+  }
+
+  /**
+   * A 400 keyed by field (ETP-6225): the standard {@code response.errors} map the client maps onto
+   * the field's column, next to the usual {@code error.message} so anything reading the plain
+   * message still works.
+   */
+  static NeoResponse fieldError(String field, String message) {
+    try {
+      JSONObject body = new JSONObject()
+          .put("error", new JSONObject().put("message", message).put("status", 400))
+          .put(RESPONSE_KEY, new JSONObject()
+              .put("status", -4)
+              .put("errors", new JSONObject().put(field, message)));
+      return NeoResponse.error(400, body);
+    } catch (JSONException e) {
+      return NeoResponse.error(400, message);
+    }
   }
 
   /**
@@ -629,9 +692,9 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
    */
   private static String[] queryPersistedContactFormatParts(String recordId) throws Exception {
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(
-        "SELECT em_etgo_email, em_etgo_web, em_etgo_phone FROM c_bpartner WHERE c_bpartner_id = ?")) {
-      ps.setString(1, recordId);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        "SELECT em_etgo_email, em_etgo_web, em_etgo_phone FROM c_bpartner WHERE c_bpartner_id = ?",
+        recordId)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (rs.next()) {
           return new String[]{ rs.getString(1), rs.getString(2), rs.getString(3) };

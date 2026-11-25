@@ -37,6 +37,7 @@ import org.openbravo.dal.service.OBDal;
 
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.SepaRemittancesFlag;
+import com.etendoerp.go.schemaforge.TenantOwnership;
 
 /**
  * ETP-6148 — the customer's SEPA direct-debit mandate on a contact write
@@ -245,9 +246,16 @@ public final class ContactSepaMandateDefaults {
 
   /**
    * The body itself and, when present, its {@code data} envelope, outermost first. The innermost
-   * section is the one generic CRUD persists.
+   * section is the one generic CRUD persists. Also used by {@code ContactIdentityRules}, which
+   * judges that innermost section.
+   *
+   * @param body the write request body, either a flat record or a {@code {"data": {...}}}
+   *     envelope (a {@code data} key holding anything but a JSON object is not an envelope); must
+   *     not be {@code null}, callers check that first
+   * @return {@code [body]} for a flat body, or {@code [body, body.data]} for an envelope: the
+   *     same live objects, not copies, so a write into an element mutates the request body
    */
-  static List<JSONObject> writeSections(JSONObject body) {
+  public static List<JSONObject> writeSections(JSONObject body) {
     JSONObject wrapped = body.optJSONObject(KEY_DATA);
     return wrapped != null ? List.of(body, wrapped) : List.of(body);
   }
@@ -349,8 +357,8 @@ public final class ContactSepaMandateDefaults {
       return null;
     }
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(PERSISTED_SQL)) {
-      ps.setString(1, recordId);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        PERSISTED_SQL, recordId)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (!rs.next()) {
           return null;

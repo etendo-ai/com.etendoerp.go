@@ -3,15 +3,16 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=financiero [-Pkind=mock|integration|all]
 
-# --- con mocks (112)
+# --- con mocks (128)
+com.etendoerp.go.schemaforge.AccountTargetedFlagTest
 com.etendoerp.go.schemaforge.AddPaymentServiceTest
 com.etendoerp.go.schemaforge.AutoMatchSupportRuleDimensionsTest
 com.etendoerp.go.schemaforge.AutoMatchSupportTest
 com.etendoerp.go.schemaforge.BankBounceDetectorTest
+com.etendoerp.go.schemaforge.BankBounceKpiTelemetryIdentityTest
 com.etendoerp.go.schemaforge.BankBounceLineTextTest
 com.etendoerp.go.schemaforge.BankBouncePairServiceTest
 com.etendoerp.go.schemaforge.BankBouncePaymentGuardTest
-com.etendoerp.go.schemaforge.BankBounceSuggestionsFlagTest
 com.etendoerp.go.schemaforge.BankStatementAgentActionsContractTest
 com.etendoerp.go.schemaforge.BankStatementAgentActionsTest
 com.etendoerp.go.schemaforge.BankStatementAgentValidationTest
@@ -80,7 +81,6 @@ com.etendoerp.go.schemaforge.PisPaymentBridgeReturnUrlTest
 com.etendoerp.go.schemaforge.PisPaymentServiceTest
 com.etendoerp.go.schemaforge.PisPaymentStatusGatesTest
 com.etendoerp.go.schemaforge.PisRejectedPaymentHandlerTest
-com.etendoerp.go.schemaforge.Psd2ImportSettingsFlagTest
 com.etendoerp.go.schemaforge.ReconciledPaymentReactivationTest
 com.etendoerp.go.schemaforge.ReconciliationAgentActionsTest
 com.etendoerp.go.schemaforge.ReconciliationConversionSupportTest
@@ -96,19 +96,35 @@ com.etendoerp.go.schemaforge.ReconciliationLineTargetSupportTest
 com.etendoerp.go.schemaforge.ReconciliationRefusedWriteTest
 com.etendoerp.go.schemaforge.ReconciliationSupportTest
 com.etendoerp.go.schemaforge.ReconciliationWriteoffSupportTest
+com.etendoerp.go.schemaforge.RemittanceCreditorIdRewriterTest
+com.etendoerp.go.schemaforge.RemittanceCreditorIdTest
 com.etendoerp.go.schemaforge.RemittanceDueItemsTest
+com.etendoerp.go.schemaforge.RemittanceFileActionTest
+com.etendoerp.go.schemaforge.RemittanceFileGeneratorTest
+com.etendoerp.go.schemaforge.RemittanceFileLineCheckTest
+com.etendoerp.go.schemaforge.RemittanceFileProblemsTest
+com.etendoerp.go.schemaforge.RemittanceFileReadinessTest
+com.etendoerp.go.schemaforge.RemittanceFileTelemetryTest
 com.etendoerp.go.schemaforge.RemittanceHeaderHandlerTest
+com.etendoerp.go.schemaforge.RemittanceIbanTest
 com.etendoerp.go.schemaforge.RemittanceLineAmountTest
 com.etendoerp.go.schemaforge.RemittanceLinesHandlerTest
 com.etendoerp.go.schemaforge.RemittanceMethodLinkObserverTest
 com.etendoerp.go.schemaforge.RemittanceNameSuggestionTest
 com.etendoerp.go.schemaforge.RemittanceProcessActionTest
+com.etendoerp.go.schemaforge.RemittanceReturnActionTest
+com.etendoerp.go.schemaforge.RemittanceReturnStateTest
 com.etendoerp.go.schemaforge.RemittanceSepaFileDataTest
+com.etendoerp.go.schemaforge.RemittanceSepaOptionsTest
 com.etendoerp.go.schemaforge.RemittanceSepaProvisioningTest
+com.etendoerp.go.schemaforge.RemittanceSepaSchemaTest
+com.etendoerp.go.schemaforge.RemittanceStatusActionTest
 com.etendoerp.go.schemaforge.SepaCreditorIdTest
 com.etendoerp.go.schemaforge.SepaRemittancesFlagTest
 com.etendoerp.go.schemaforge.StatementLineFilterTest
 com.etendoerp.go.schemaforge.TransactionTypeHandlerTest
+com.etendoerp.go.schemaforge.handlers.ConversionRateHandlerTest
+com.etendoerp.go.schemaforge.handlers.ConversionRateWritesTest
 com.etendoerp.go.schemaforge.handlers.DocumentActionHandlerTest
 com.etendoerp.go.schemaforge.handlers.FinancialAccountAccountingDefaultsSupportTest
 com.etendoerp.go.schemaforge.handlers.PaymentListSummaryTest
@@ -117,13 +133,18 @@ com.etendoerp.go.schemaforge.handlers.ReactivatePaymentHandlerTest
 com.etendoerp.go.schemaforge.selector.policy.CurrencyIsoAllowlistSelectorPolicyTest
 com.etendoerp.go.schemaforge.selector.policy.FinancialAccountPaymentMethodSelectorPolicyTest
 
-# --- integración (BD) (9)
+# --- integración (BD) (14)
 com.etendoerp.go.schemaforge.ConversionRateDocumentSavepointIntegrationTest
+com.etendoerp.go.schemaforge.ConversionRateLookupIntegrationTest
 com.etendoerp.go.schemaforge.FinancialAccountIbanCountryIntegrationTest
 com.etendoerp.go.schemaforge.FinancialAccountRemittanceProvisioningIntegrationTest
 com.etendoerp.go.schemaforge.RemittanceDueItemsQueryIntegrationTest
 com.etendoerp.go.schemaforge.RemittanceHeaderHandlerAccountsIntegrationTest
 com.etendoerp.go.schemaforge.RemittanceProcessActionPartialAmountIntegrationTest
+com.etendoerp.go.schemaforge.RemittanceReturnIntegrationTest
+com.etendoerp.go.schemaforge.RemittanceFileGeneratorIntegrationTest
 com.etendoerp.go.schemaforge.RemittanceSepaProvisioningIdempotencyIntegrationTest
+com.etendoerp.go.schemaforge.RemittanceTriggerIntegrationTest
+com.etendoerp.go.schemaforge.handlers.ConversionRateStoreIntegrationTest
 com.etendoerp.go.schemaforge.handlers.ReactivatePaymentHandlerDraftRemoveIntegrationTest
 com.etendoerp.go.schemaforge.handlers.ReactivatePaymentHandlerRemoveIntegrationTest

@@ -25,12 +25,12 @@ import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -46,6 +46,7 @@ import org.junit.jupiter.api.extension.ExtendWith;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -86,22 +87,97 @@ import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class McpSchemaFieldBuilderTest {
 
-  @Test
-  @DisplayName("Utility classes hide their constructor")
-  void utilityClassHidesConstructor() throws ReflectiveOperationException {
-    for (Class<?> utility : List.of(McpSchemaFieldBuilder.class, McpUserRequiredOverride.class)) {
-      Constructor<?> constructor = utility.getDeclaredConstructor();
-      assertEquals(Modifier.PRIVATE, constructor.getModifiers() & Modifier.PRIVATE);
-      constructor.setAccessible(true);
-      constructor.newInstance();
-    }
-  }
-
   private static Object invokeStatic(String methodName, Class<?>[] paramTypes, Object... args)
       throws Exception {
     Method method = McpSchemaFieldBuilder.class.getDeclaredMethod(methodName, paramTypes);
     method.setAccessible(true);
     return method.invoke(null, args);
+  }
+
+  // ─── addMaxLength ───────────────────────────────────────────────────
+
+  /**
+   * ETP-5806 CP-6b (QA finding) — {@code etendo_schema} must publish the ENFORCED cap, not the AD
+   * column's own {@code FIELDLENGTH}, for a column whose write path validates against a narrower
+   * limit. {@code EM_OBSEPA_StrtNm} is {@code VARCHAR(70)} while
+   * {@code StructuredAddressComposer} rejects a street over 60, so the schema used to advertise a
+   * width {@code etendo_create} then refused with {@code 400 validation_error}.
+   */
+  @Nested
+  @DisplayName("addMaxLength")
+  class AddMaxLength {
+
+    private Column column(String dbColumnName, Long length) {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn(dbColumnName);
+      when(col.getLength()).thenReturn(length);
+      return col;
+    }
+
+    @Test
+    @DisplayName("a plain text column still publishes the AD column length")
+    void plainTextColumnUsesAdLength() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("Name", 40L), "string");
+      assertEquals(40L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("streetName publishes the composer's 60, not the column's 70")
+    void streetNamePublishesEnforcedCap() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", 70L), "string");
+      assertEquals(60L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("the override is matched case-insensitively, as AD column resolution is")
+    void overrideIsCaseInsensitive() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("em_obsepa_strtnm", 70L), "string");
+      assertEquals(60L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("buildingNumber and buildingName publish the composer's caps too")
+    void buildingColumnsPublishEnforcedCaps() throws Exception {
+      JSONObject number = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(number, column("EM_OBSEPA_BldgNb", 60L), "string");
+      assertEquals(16L, number.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+
+      JSONObject name = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(name, column("EM_OBSEPA_BldgNm", 60L), "string");
+      assertEquals(35L, name.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("a column narrower than its override publishes the column, not the override")
+    void columnNarrowerThanOverrideWins() throws Exception {
+      // The override says what the write path enforces; the column says what the row can hold.
+      // Publishing the override here would promise 60 on a VARCHAR(40) — the CP-6b bug reversed.
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", 40L), "string");
+      assertEquals(40L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("an overridden column with no AD length still publishes the enforced cap")
+    void overrideSurvivesMissingAdLength() throws Exception {
+      for (Long length : new Long[] { null, 0L }) {
+        JSONObject field = new JSONObject();
+        McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", length), "string");
+        assertEquals(60L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH),
+            String.valueOf(length));
+      }
+    }
+
+    @Test
+    @DisplayName("a non-text field carries no maxLength, override or not")
+    void nonTextTypeCarriesNoMaxLength() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", 70L), "number");
+      assertFalse(field.has(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
   }
 
   // ─── mapColumnType ──────────────────────────────────────────────────
@@ -377,6 +453,280 @@ class McpSchemaFieldBuilderTest {
           null, "EM_OBSEPA_BldgNb");
 
       assertEquals("buildingNumber", result);
+    }
+  }
+
+  // ─── McpFieldLabels.elementTranslation ───────────────────────────────
+
+  /**
+   * ETP-5806 / CP-10b — {@link McpFieldLabels#elementTranslation(String, String)} is the direct
+   * {@code AD_ELEMENT_TRL} lookup {@link McpSchemaFieldBuilder#resolveSchemaFieldLabel} relies on
+   * to bypass {@code Element.getName()}'s ambient-session-language resolution. New coverage: this
+   * method had none before ETP-5806.
+   */
+  @Nested
+  @DisplayName("McpFieldLabels.elementTranslation")
+  class ElementTranslation {
+
+    @SuppressWarnings("unchecked")
+    private OBCriteria<org.openbravo.model.ad.ui.ElementTrl> stubCriteria(OBDal dal) {
+      OBCriteria<org.openbravo.model.ad.ui.ElementTrl> criteria = mock(OBCriteria.class);
+      when(dal.createCriteria(org.openbravo.model.ad.ui.ElementTrl.class)).thenReturn(criteria);
+      when(criteria.setMaxResults(org.mockito.ArgumentMatchers.anyInt())).thenReturn(criteria);
+      return criteria;
+    }
+
+    @Test
+    @DisplayName("returns the translated name when a matching AD_ELEMENT_TRL row exists")
+    void returnsTranslatedNameWhenRowExists() {
+      OBDal dal = mock(OBDal.class);
+      OBCriteria<org.openbravo.model.ad.ui.ElementTrl> criteria = stubCriteria(dal);
+      org.openbravo.model.ad.ui.ElementTrl trl = mock(org.openbravo.model.ad.ui.ElementTrl.class);
+      when(trl.getName()).thenReturn("Nombre de calle");
+      when(criteria.uniqueResult()).thenReturn(trl);
+
+      try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class);
+          MockedStatic<OBContext> ctxStatic = mockStatic(OBContext.class)) {
+        dalStatic.when(OBDal::getInstance).thenReturn(dal);
+
+        String result = McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "es_ES");
+
+        assertEquals("Nombre de calle", result);
+      }
+    }
+
+    /**
+     * ETP-5806 follow-up — every other case in this class exercises {@code langCode = "es_ES"}
+     * only. This proves the resolved label actually follows the passed-in {@code langCode}
+     * parameter (a second active, non-Spanish language, {@code en_US}) rather than being
+     * hardcoded to Spanish anywhere in the lookup: the restriction built from {@code langCode} is
+     * captured and must carry {@code "en_US"}, never {@code "es_ES"}.
+     */
+    @Test
+    @DisplayName("follows the passed-in langCode, not a hardcoded es_ES, for a second active language")
+    void queriesTheGivenLangCodeNotAHardcodedSpanish() {
+      OBDal dal = mock(OBDal.class);
+      OBCriteria<org.openbravo.model.ad.ui.ElementTrl> criteria = stubCriteria(dal);
+      org.openbravo.model.ad.ui.ElementTrl trl = mock(org.openbravo.model.ad.ui.ElementTrl.class);
+      when(trl.getName()).thenReturn("Street Name");
+      when(criteria.uniqueResult()).thenReturn(trl);
+
+      try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class);
+          MockedStatic<OBContext> ctxStatic = mockStatic(OBContext.class)) {
+        dalStatic.when(OBDal::getInstance).thenReturn(dal);
+
+        String result = McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "en_US");
+
+        assertEquals("Street Name", result);
+        ArgumentCaptor<org.hibernate.criterion.Criterion> captor =
+            ArgumentCaptor.forClass(org.hibernate.criterion.Criterion.class);
+        verify(criteria, times(2)).add(captor.capture());
+        String restrictions = captor.getAllValues().toString();
+        assertTrue(restrictions.contains("en_US"),
+            "expected the language restriction to carry the passed langCode: " + restrictions);
+        assertFalse(restrictions.contains("es_ES"),
+            "the language restriction must not be hardcoded to es_ES: " + restrictions);
+      }
+    }
+
+    @Test
+    @DisplayName("returns null when no AD_ELEMENT_TRL row matches")
+    void returnsNullWhenNoRowMatches() {
+      OBDal dal = mock(OBDal.class);
+      OBCriteria<org.openbravo.model.ad.ui.ElementTrl> criteria = stubCriteria(dal);
+      when(criteria.uniqueResult()).thenReturn(null);
+
+      try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class);
+          MockedStatic<OBContext> ctxStatic = mockStatic(OBContext.class)) {
+        dalStatic.when(OBDal::getInstance).thenReturn(dal);
+
+        assertNull(McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "es_ES"));
+      }
+    }
+
+    @Test
+    @DisplayName("blank elementId answers null without querying")
+    void blankElementIdReturnsNull() {
+      try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class)) {
+        assertNull(McpFieldLabels.elementTranslation("", "es_ES"));
+        assertNull(McpFieldLabels.elementTranslation(null, "es_ES"));
+        dalStatic.verifyNoInteractions();
+      }
+    }
+
+    @Test
+    @DisplayName("blank langCode answers null without querying")
+    void blankLangCodeReturnsNull() {
+      try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class)) {
+        assertNull(McpFieldLabels.elementTranslation("ELEM-STREET-NAME", ""));
+        assertNull(McpFieldLabels.elementTranslation("ELEM-STREET-NAME", null));
+        dalStatic.verifyNoInteractions();
+      }
+    }
+
+    @Test
+    @DisplayName("a query failure is swallowed — total function, never throws")
+    void queryExceptionIsSwallowed() {
+      OBDal dal = mock(OBDal.class);
+      when(dal.createCriteria(org.openbravo.model.ad.ui.ElementTrl.class))
+          .thenThrow(new IllegalStateException("AD_ELEMENT_TRL not readable"));
+
+      try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class);
+          MockedStatic<OBContext> ctxStatic = mockStatic(OBContext.class)) {
+        dalStatic.when(OBDal::getInstance).thenReturn(dal);
+
+        assertNull(McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "es_ES"));
+      }
+    }
+  }
+
+  // ─── McpSchemaFieldBuilder.resolveSchemaFieldLabel ───────────────────
+
+  /**
+   * ETP-5806 / CP-10b — the label precedence {@link McpSchemaFieldBuilder#buildSchemaField} applies
+   * for the 3 structured SEPA address columns, scoped to never leak into any other column. New
+   * coverage: {@code resolveSchemaFieldLabel} had none before ETP-5806.
+   */
+  @Nested
+  @DisplayName("resolveSchemaFieldLabel")
+  class ResolveSchemaFieldLabel {
+
+    private String resolveSchemaFieldLabel(Column col, String langCode) throws Exception {
+      return (String) invokeStatic("resolveSchemaFieldLabel",
+          new Class<?>[]{ Column.class, String.class }, col, langCode);
+    }
+
+    @Test
+    @DisplayName("a structured address column with a matching translation uses it, not the base name")
+    void structuredAddressColumnUsesTranslationWhenPresent() throws Exception {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn("EM_OBSEPA_StrtNm");
+      org.openbravo.model.ad.ui.Element element = mock(org.openbravo.model.ad.ui.Element.class);
+      when(element.getId()).thenReturn("ELEM-STREET-NAME");
+      when(element.getName()).thenReturn("Street Name");
+      when(col.getApplicationElement()).thenReturn(element);
+
+      try (MockedStatic<McpFieldLabels> labels = mockStatic(McpFieldLabels.class)) {
+        labels.when(() -> McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "es_ES"))
+            .thenReturn("Nombre de calle");
+
+        assertEquals("Nombre de calle", resolveSchemaFieldLabel(col, "es_ES"));
+      }
+    }
+
+    /**
+     * ETP-5806 follow-up — every other case in this class exercises {@code langCode = "es_ES"}
+     * only. This proves {@code resolveSchemaFieldLabel} passes through the actual langCode it was
+     * given (a second active, non-Spanish language, {@code en_US}) and does not resolve against a
+     * hardcoded Spanish lookup anywhere in the mocked {@code McpFieldLabels} chain.
+     */
+    @Test
+    @DisplayName("resolves through the passed-in langCode for a second active, non-Spanish language")
+    void resolvesWithANonSpanishLangCode() throws Exception {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn("EM_OBSEPA_StrtNm");
+      org.openbravo.model.ad.ui.Element element = mock(org.openbravo.model.ad.ui.Element.class);
+      when(element.getId()).thenReturn("ELEM-STREET-NAME");
+      when(element.getName()).thenReturn("Street Name");
+      when(col.getApplicationElement()).thenReturn(element);
+
+      try (MockedStatic<McpFieldLabels> labels = mockStatic(McpFieldLabels.class)) {
+        labels.when(() -> McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "en_US"))
+            .thenReturn("Street Name (EN)");
+        labels.when(() -> McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "es_ES"))
+            .thenReturn("Nombre de calle");
+
+        assertEquals("Street Name (EN)", resolveSchemaFieldLabel(col, "en_US"));
+
+        labels.verify(() -> McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "en_US"));
+        labels.verify(() -> McpFieldLabels.elementTranslation("ELEM-STREET-NAME", "es_ES"), never());
+      }
+    }
+
+    /**
+     * ETP-5806 follow-up — a {@code null} langCode (the legacy test-only
+     * {@code buildSchemaFieldsArray} overload, or any direct caller with no resolved language)
+     * must still resolve cleanly, without throwing. Deliberately does NOT mock
+     * {@link McpFieldLabels}: the real {@code elementTranslation(id, null)} is exercised, whose own
+     * blank-check ({@code StringUtils.isAnyBlank}) short-circuits before touching OBDal — proving
+     * the full call chain, not just the isolated blank-check unit, tolerates a null langCode.
+     */
+    @Test
+    @DisplayName("a null langCode falls back cleanly to the base AD_Element name, through the real chain")
+    void nullLangCodeFallsBackToElementNameThroughTheRealChain() throws Exception {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn("EM_OBSEPA_StrtNm");
+      org.openbravo.model.ad.ui.Element element = mock(org.openbravo.model.ad.ui.Element.class);
+      when(element.getId()).thenReturn("ELEM-STREET-NAME");
+      when(element.getName()).thenReturn("Street Name");
+      when(col.getApplicationElement()).thenReturn(element);
+
+      assertEquals("Street Name", resolveSchemaFieldLabel(col, null));
+    }
+
+    /** Same null-langCode safety, on the no-AD_Element branch that skips elementTranslation entirely. */
+    @Test
+    @DisplayName("a null langCode with no AD_Element falls back to the raw column name")
+    void nullLangCodeWithNoElementFallsBackToColumnName() throws Exception {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn("EM_OBSEPA_BldgNm");
+      when(col.getApplicationElement()).thenReturn(null);
+      when(col.getName()).thenReturn("Building Name");
+
+      assertEquals("Building Name", resolveSchemaFieldLabel(col, null));
+    }
+
+    @Test
+    @DisplayName("a structured address column with no translation falls back to the base AD_Element name")
+    void structuredAddressColumnFallsBackToElementNameWhenNoTranslation() throws Exception {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn("EM_OBSEPA_BldgNb");
+      org.openbravo.model.ad.ui.Element element = mock(org.openbravo.model.ad.ui.Element.class);
+      when(element.getId()).thenReturn("ELEM-BUILDING-NUMBER");
+      when(element.getName()).thenReturn("Building Number");
+      when(col.getApplicationElement()).thenReturn(element);
+
+      try (MockedStatic<McpFieldLabels> labels = mockStatic(McpFieldLabels.class)) {
+        labels.when(() -> McpFieldLabels.elementTranslation("ELEM-BUILDING-NUMBER", "es_ES"))
+            .thenReturn(null);
+
+        assertEquals("Building Number", resolveSchemaFieldLabel(col, "es_ES"));
+      }
+    }
+
+    @Test
+    @DisplayName("a structured address column with no AD_Element falls back to the raw column name")
+    void structuredAddressColumnWithNoElementFallsBackToColumnName() throws Exception {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn("EM_OBSEPA_BldgNm");
+      when(col.getApplicationElement()).thenReturn(null);
+      when(col.getName()).thenReturn("Building Name");
+
+      try (MockedStatic<McpFieldLabels> labels = mockStatic(McpFieldLabels.class)) {
+        assertEquals("Building Name", resolveSchemaFieldLabel(col, "es_ES"));
+        labels.verifyNoInteractions();
+      }
+    }
+
+    /**
+     * Scoping guarantee: an ordinary column always answers {@code col.getName()}, regardless of
+     * language or whether it carries an {@code AD_Element} — the CP-10b fix must not leak into any
+     * column outside the 3 structured SEPA ones.
+     */
+    @Test
+    @DisplayName("a column outside STRUCTURED_ADDRESS_COLUMNS always uses the raw column name")
+    void ordinaryColumnAlwaysUsesColumnName() throws Exception {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn("Description");
+      org.openbravo.model.ad.ui.Element element = mock(org.openbravo.model.ad.ui.Element.class);
+      when(element.getId()).thenReturn("ELEM-DESCRIPTION");
+      when(col.getApplicationElement()).thenReturn(element);
+      when(col.getName()).thenReturn("Description");
+
+      try (MockedStatic<McpFieldLabels> labels = mockStatic(McpFieldLabels.class)) {
+        assertEquals("Description", resolveSchemaFieldLabel(col, "es_ES"));
+        labels.verifyNoInteractions();
+      }
     }
   }
 
@@ -1400,13 +1750,13 @@ class McpSchemaFieldBuilderTest {
               java.util.Map.class,
               java.util.Map.class,
               java.util.Map.class,
-              java.util.Set.class },
+              java.util.Set.class, String.class },
           col, tab, null,
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
-          new java.util.HashSet<>());
+          new java.util.HashSet<>(), null);
 
       assertEquals("button", result.getString("type"));
       assertEquals("Y", result.getString("triggerValue"));
@@ -1611,13 +1961,13 @@ class McpSchemaFieldBuilderTest {
               java.util.Map.class,
               java.util.Map.class,
               java.util.Map.class,
-              java.util.Set.class },
+              java.util.Set.class, String.class },
           col, tab, null,
           new java.util.HashMap<>(),
           businessCriticalMap,
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
-          new java.util.HashSet<>());
+          new java.util.HashSet<>(), null);
 
       assertTrue(result.getBoolean("businessCritical"));
     }
@@ -1636,13 +1986,13 @@ class McpSchemaFieldBuilderTest {
               java.util.Map.class,
               java.util.Map.class,
               java.util.Map.class,
-              java.util.Set.class },
+              java.util.Set.class, String.class },
           col, tab, null,
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
-          new java.util.HashSet<>());
+          new java.util.HashSet<>(), null);
 
       assertFalse(result.getBoolean("businessCritical"));
     }
@@ -1664,13 +2014,13 @@ class McpSchemaFieldBuilderTest {
               java.util.Map.class,
               java.util.Map.class,
               java.util.Map.class,
-              java.util.Set.class },
+              java.util.Set.class, String.class },
           col, tab, null,
           new java.util.HashMap<>(),
           businessCriticalMap,
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
-          new java.util.HashSet<>());
+          new java.util.HashSet<>(), null);
 
       assertFalse(result.getBoolean("businessCritical"));
     }
@@ -1707,13 +2057,13 @@ class McpSchemaFieldBuilderTest {
               java.util.Map.class,
               java.util.Map.class,
               java.util.Map.class,
-              java.util.Set.class },
+              java.util.Set.class, String.class },
           col, buildTab(), null,
           new java.util.HashMap<>(),
           businessCriticalMap,
           new java.util.HashMap<>(),
           new java.util.HashMap<>(),
-          new java.util.HashSet<>());
+          new java.util.HashSet<>(), null);
     }
 
     /**
@@ -2109,9 +2459,9 @@ class McpSchemaFieldBuilderTest {
               java.util.Map.class,
               java.util.Map.class,
               java.util.Map.class,
-              java.util.Set.class },
+              java.util.Set.class, String.class },
           col, tab, null, visibilityMap, new java.util.HashMap<>(), readOnlyMap,
-          new java.util.HashMap<>(), new java.util.HashSet<>());
+          new java.util.HashMap<>(), new java.util.HashSet<>(), null);
     }
 
     /**
@@ -2780,7 +3130,7 @@ class McpSchemaFieldBuilderTest {
             .thenReturn(List.of());
 
         JSONArray fields = McpSchemaFieldBuilder.buildVirtualFieldsArray(sfEntity, null,
-            java.util.Set.of());
+            java.util.Set.of(), null);
 
         assertEquals(0, fields.length());
       }
@@ -2828,7 +3178,7 @@ class McpSchemaFieldBuilderTest {
         models.when(ModelProvider::getInstance).thenReturn(modelProvider);
 
         JSONArray fields = McpSchemaFieldBuilder.buildVirtualFieldsArray(sfEntity, wrapperTab,
-            java.util.Set.of());
+            java.util.Set.of(), null);
 
         assertEquals(2, fields.length());
         for (int i = 0; i < fields.length(); i++) {
@@ -2871,7 +3221,7 @@ class McpSchemaFieldBuilderTest {
         models.when(ModelProvider::getInstance).thenReturn(modelProvider);
 
         JSONArray fields = McpSchemaFieldBuilder.buildVirtualFieldsArray(sfEntity, wrapperTab,
-            java.util.Set.of());
+            java.util.Set.of(), null);
 
         String prompt = fields.getJSONObject(0).getString("agentPrompt");
         assertTrue(prompt.contains("regionName"), "prompt must state the exclusion with regionName");

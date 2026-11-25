@@ -29,13 +29,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.lang.reflect.Constructor;
-import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.util.concurrent.Callable;
 
 import org.hibernate.Session;
 import org.junit.jupiter.api.AfterEach;
@@ -53,6 +47,7 @@ import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.system.Language;
 
+import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryIdentity;
 import com.etendoerp.go.schemaforge.util.NeoLanguage;
 import com.smf.securewebservices.utils.SecureWebServicesUtils;
 
@@ -108,22 +103,6 @@ class McpSessionManagerTest {
     }
     if (obDalMock != null) {
       obDalMock.close();
-    }
-  }
-
-  @Nested
-  @DisplayName("Private constructor")
-  class PrivateConstructor {
-
-    @Test
-    @DisplayName("constructor is private and throws when invoked via reflection")
-    void constructorIsPrivate() throws Exception {
-      Constructor<McpSessionManager> ctor = McpSessionManager.class.getDeclaredConstructor();
-      ctor.setAccessible(true);
-      // Should not throw — it's a utility class private ctor
-      McpSessionManager instance = ctor.newInstance();
-      // Just verify it is instantiable (no exception); the private modifier is the guard
-      assertEquals(McpSessionManager.class, instance.getClass());
     }
   }
 
@@ -288,6 +267,32 @@ class McpSessionManagerTest {
           }));
 
       assertEquals("resolvedClient", McpUsageTelemetry.currentTenant().getClientId());
+    }
+
+    /**
+     * ETP-6228: the Mixpanel identity is captured here, while the call's context and DAL session
+     * are live, for the call's own client and user, on success and on failure.
+     */
+    @Test
+    @DisplayName("captures the Mixpanel identity of the call's client and user, also when it fails")
+    void capturesTheIdentityOfTheCall() throws Exception {
+      NeoTelemetryIdentity identity = new NeoTelemetryIdentity(USER_ID, CLIENT_ID, "OWNER", "demo");
+      try (MockedStatic<McpUsageLogger> logger = mockStatic(McpUsageLogger.class)) {
+        logger.when(() -> McpUsageLogger.captureIdentity(CLIENT_ID, USER_ID)).thenReturn(identity);
+
+        McpSessionManager.executeInContext(USER_ID, ROLE_ID, CLIENT_ID, ORG_ID, WAREHOUSE_ID,
+            () -> "ok");
+        assertSame(identity, McpUsageTelemetry.currentIdentity());
+
+        McpUsageTelemetry.clearCurrentTenant();
+        assertSame(NeoTelemetryIdentity.NONE, McpUsageTelemetry.currentIdentity());
+
+        assertThrows(IllegalStateException.class, () -> McpSessionManager.executeInContext(
+            USER_ID, ROLE_ID, CLIENT_ID, ORG_ID, WAREHOUSE_ID, () -> {
+              throw new IllegalStateException("boom");
+            }));
+        assertSame(identity, McpUsageTelemetry.currentIdentity());
+      }
     }
   }
 

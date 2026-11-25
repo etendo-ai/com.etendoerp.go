@@ -35,6 +35,7 @@ import com.etendoerp.go.portal.PortalLinkService;
 import com.etendoerp.go.schemaforge.email.render.EmailContent;
 import com.etendoerp.go.schemaforge.email.render.EmailDates;
 import com.etendoerp.go.schemaforge.email.render.EmailEscape;
+import com.etendoerp.go.schemaforge.email.render.EmailFooter;
 import com.etendoerp.go.schemaforge.email.render.EmailLayout;
 import com.etendoerp.go.schemaforge.email.render.EmailMessages;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
@@ -677,6 +678,12 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
     } else {
       content.signature(EmailMessages.get("signature", language));
     }
+    // ETP-6209 — the "Creado con Etendo" footer goes only on an email that reaches the customer
+    // through the portal. No portal link (flag off, or a contract with no portal kind): no footer,
+    // so those emails are byte-identical to before.
+    if (cta.isPortal()) {
+      content.footer(EmailFooter.etendo(EmailFooter.Piece.DOCUMENT_SEND, language));
+    }
     return content.build();
   }
 
@@ -754,8 +761,10 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
         EmailContractCommandSupport.FIELD_RECORD_ID);
     String documentRecordId = EmailContractCommandSupport.firstNonBlank(
         document == null ? null : document.getRecordId(), recordId);
-    // The download-link token key stays stable per record so re-sends with edited recipients do
-    // not mint new tokens; it must not depend on the recipient-set hash.
+    // The download-link key is per record, not per send: it never depends on the recipient-set
+    // hash, so every link minted for one document carries the same key. Each send attempt still
+    // mints a new share link (ETP-5035), also one that ends up not sent (duplicate, throttled,
+    // suppressed); the link a recipient got is the download_link of its send log row.
     String downloadTokenKey = EmailContractCommandSupport.idempotencyKey(name,
         document.getClientId(), documentRecordId);
     if (StringUtils.isAnyBlank(documentRecordId, document.getClientId(), downloadTokenKey)) {

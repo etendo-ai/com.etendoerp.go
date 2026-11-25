@@ -46,6 +46,9 @@ import com.etendoerp.go.schemaforge.NeoResponse;
  */
 final class McpSelectorContextHelper {
 
+  /** The selector search parameter of the REST endpoint ({@code NeoSelectorEndpoint}). */
+  private static final String SELECTOR_SEARCH_PARAM = "q";
+
   private static final DateTimeFormatter CLASSIC_DATE_FORMATTER =
       DateTimeFormatter.ofPattern("dd-MM-yyyy");
   private static final String KEY_MESSAGE = "message";
@@ -73,9 +76,29 @@ final class McpSelectorContextHelper {
   private static final String PARAM_COUNTRY = "C_Country_ID";
   private static final String FIELD_COUNTRY = "country";
   private static final String FIELD_REGION = "region";
+  private static final String PARAM_FINANCIAL_ACCOUNT = "FIN_Financial_Account_ID";
+  private static final String FIELD_FINANCIAL_ACCOUNT = "financialAccount";
   private static final String COLUMN_REGION = "C_Region_ID";
 
   private McpSelectorContextHelper() {
+  }
+
+  /**
+   * The selector context a customization receives, with the search as {@code q} — the parameter
+   * the REST selector endpoint reads ({@code NeoSelectorEndpoint}) — so a field served by the
+   * entity's own SELECTOR customization is searched on MCP as on REST (ETP-6365). Before, the
+   * {@code query} argument reached the generic selector only, and a customization listed every
+   * candidate whatever was searched. The generic query keeps its own copy without it.
+   */
+  static Map<String, String> withSearch(Map<String, String> contextParams, String query) {
+    Map<String, String> params = new HashMap<>();
+    if (contextParams != null) {
+      params.putAll(contextParams);
+    }
+    if (StringUtils.isNotBlank(query)) {
+      params.put(SELECTOR_SEARCH_PARAM, query);
+    }
+    return params;
   }
 
   /**
@@ -248,6 +271,23 @@ final class McpSelectorContextHelper {
     copySalesContext(context, contextParams);
     copyDateContext(context, contextParams);
     copyCountryContext(context, contextParams);
+    copyFinancialAccountContext(context, contextParams);
+  }
+
+  /**
+   * Carries the financial account into the selectors that depend on it (ETP-5850): the remittance
+   * header's {@code remittanceType} offers only the types linked to the account the form holds,
+   * read from {@code FIN_Financial_Account_ID} (the field's {@code dependsOn.filterKey}, which the
+   * SPA sends). Without this mapping {@code recordContext.financialAccount} was dropped and the
+   * selector answered no types, while {@code etendo_defaults} did resolve one. Accepted under the
+   * property name and the classic column name, like the country.
+   */
+  private static void copyFinancialAccountContext(JSONObject context,
+      Map<String, String> contextParams) {
+    String account = firstNonBlank(context, FIELD_FINANCIAL_ACCOUNT, PARAM_FINANCIAL_ACCOUNT);
+    if (StringUtils.isNotBlank(account)) {
+      contextParams.put(PARAM_FINANCIAL_ACCOUNT, account);
+    }
   }
 
   /**

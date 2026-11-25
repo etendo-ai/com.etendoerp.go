@@ -26,6 +26,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
@@ -448,6 +449,7 @@ public class GoodsShipmentHeaderHandlerTest {
       ctx.setPreviousResult(NeoResponse.ok(body));
 
       assertNull(new GoodsShipmentHeaderHandler().afterHandle(ctx));
+      assertFalse("nothing is annotated when the status cannot be read", item.has("invoiceStatus"));
     }
   }
 
@@ -533,6 +535,9 @@ public class GoodsShipmentHeaderHandlerTest {
       // All individual exceptions are swallowed; afterHandle completes and returns 200 OK.
       NeoResponse result = new GoodsShipmentHeaderHandler().afterHandle(ctx);
       assertNotNull(result);
+      assertEquals(200, result.getHttpStatus());
+      assertSame(body, result.getBody());
+      assertEquals(0, item.getInt("invoiceStatus"));
     }
   }
 
@@ -562,6 +567,7 @@ public class GoodsShipmentHeaderHandlerTest {
       ctx.setPreviousResult(NeoResponse.ok(body));
 
       assertNull(new GoodsShipmentHeaderHandler().afterHandle(ctx));
+      assertFalse("nothing is annotated when the status cannot be read", item.has("invoiceStatus"));
     }
   }
 
@@ -672,6 +678,8 @@ public class GoodsShipmentHeaderHandlerTest {
       // and afterHandle returns NeoResponse.ok(body) — not null.
       NeoResponse result = new GoodsShipmentHeaderHandler().afterHandle(ctx);
       assertNotNull(result);
+      assertSame(body, result.getBody());
+      assertEquals(0, item.getInt("invoiceStatus"));
     }
   }
 
@@ -717,6 +725,9 @@ public class GoodsShipmentHeaderHandlerTest {
 
       NeoResponse result = new GoodsShipmentHeaderHandler().afterHandle(ctx);
       assertNotNull(result);
+      assertSame(body, result.getBody());
+      assertEquals(0, item.getInt("invoiceStatus"));
+      verify(mockPs).setString(1, "shipment-5");
     }
   }
 
@@ -1313,6 +1324,26 @@ public class GoodsShipmentHeaderHandlerTest {
         sql.contains("WHERE iol.m_inoutline_id " + cte));
     assertEquals("the shipment filter must be bound exactly once (in the CTE)",
         sql.indexOf("iol.m_inout_id = ?"), sql.lastIndexOf("iol.m_inout_id = ?"));
+  }
+
+  /**
+   * ETP-6002: two shipment lines of 1 linked to one invoice line of 2 (the column on the first,
+   * M_MatchSI on the second) plus a loose line of 5 read 43% instead of 29%: the direct arm gave
+   * the first line the whole invoice line. Each line's invoiced quantity is now capped at what it
+   * moved before it is summed.
+   */
+  @Test
+  public void buildInvoiceStatusSql_capsEachLineAtWhatItMoved() throws Exception {
+    Method m = GoodsShipmentHeaderHandler.class.getDeclaredMethod(
+        "buildInvoiceStatusSql", String.class);
+    m.setAccessible(true);
+    String sql = ((String) m.invoke(null, "iol.m_inout_id = ?")).replaceAll("\\s+", " ");
+
+    assertTrue("each line's GREATEST of the arms must be capped at its own moved quantity",
+        sql.contains("SUM(LEAST(GREATEST( COALESCE(msi_qty.qtymatched, 0), "
+            + "COALESCE(direct_qty.qtyinvoiced, 0), COALESCE(ol_qty.qtyinvoiced, 0) ), "
+            + "ABS(iol.movementqty)))"));
+    assertTrue("the percentage keeps its ceiling", sql.contains("LEAST(100, ROUND("));
   }
 
   // ── declared action contracts (ETP-5709) ──────────────────────────────────

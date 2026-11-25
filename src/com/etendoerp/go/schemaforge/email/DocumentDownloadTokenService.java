@@ -64,14 +64,16 @@ public final class DocumentDownloadTokenService {
   }
 
   /**
-   * Builds a public download link for one document send event.
+   * Builds a public download link for one document send event: {@code <baseUrl>/<shareCode>}
+   * (ETP-5035). Links already sent as signed tokens keep validating through {@link #validate}.
    *
    * @param contractName email contract name
    * @param specName NEO document spec name
    * @param recordId document record id
    * @param clientId client that owns the document
    * @param idempotencyKey send event idempotency key
-   * @return signed download link when configuration is complete
+   * @return short share link (signed token link when the row cannot be stored) when configuration
+   *         is complete
    */
   public static Optional<String> createDownloadLink(String contractName, String specName,
       String recordId, String clientId, String idempotencyKey) {
@@ -81,9 +83,20 @@ public final class DocumentDownloadTokenService {
         idempotencyKey)) {
       return Optional.empty();
     }
-    String token = createToken(contractName, specName, recordId, clientId, idempotencyKey,
-        currentTimeSeconds() + tokenTtlSeconds(), secret);
-    return Optional.of(StringUtils.removeEnd(baseUrl, "/") + "/" + token);
+    long expiresAtSeconds = currentTimeSeconds() + tokenTtlSeconds();
+    String suffix;
+    try {
+      suffix = DocShareLinkService.create(contractName, specName, recordId, clientId,
+          idempotencyKey, expiresAtSeconds * 1000L);
+    } catch (RuntimeException e) {
+      // The email must still go out: fall back to the signed token, which needs no row. The key
+      // names the send, so the fallback can be traced back to it.
+      log.warn("Could not store the document share link for send {}, using a signed token: {}",
+          idempotencyKey, e.getMessage(), e);
+      suffix = createToken(contractName, specName, recordId, clientId, idempotencyKey,
+          expiresAtSeconds, secret);
+    }
+    return Optional.of(StringUtils.removeEnd(baseUrl, "/") + "/" + suffix);
   }
 
   /**
@@ -149,6 +162,45 @@ public final class DocumentDownloadTokenService {
       log.debug("Invalid document download token: {}", e.getMessage(), e);
       return Optional.empty();
     }
+  }
+
+  /**
+   * Signs a value for a purpose other than a document download, from the same email signing secret
+   * (ETP-6209: the public logo reference of the portal emails, the KPI third-party pseudonym), so no
+   * second secret has to be configured.
+   *
+   * <p><b>Separated at the key, not at the message.</b> Each purpose signs with its own key,
+   * {@code HMAC(secret, "detached:" + purpose)}, never with the secret itself, which only download
+   * tokens use. A detached signature therefore cannot validate as a download token (nor one purpose
+   * as another) whatever the two messages look like — it does not rely on how either is encoded.
+   * Download tokens are signed exactly as before, so links already sent keep working.</p>
+   *
+   * @param purpose a fixed label naming what the signature is for, such as {@code portal-logo:v1}
+   * @param value the value to sign
+   * @return the base64url signature, or empty when the secret is not configured or an argument is
+   *     blank
+   */
+  public static Optional<String> signDetached(String purpose, String value) {
+    String secret = readConfig(PROP_TOKEN_SECRET, ENV_TOKEN_SECRET);
+    if (StringUtils.isAnyBlank(secret, purpose, value)) {
+      return Optional.empty();
+    }
+    byte[] purposeKey = mac(secret.getBytes(StandardCharsets.UTF_8), "detached:" + purpose);
+    return Optional.of(base64Url(mac(purposeKey, value)));
+  }
+
+  /**
+   * Checks a signature made by {@link #signDetached}, in constant time.
+   *
+   * @param purpose the label the value was signed for
+   * @param value the signed value
+   * @param signature the signature to check
+   * @return {@code true} only when the signature is that value's, for that purpose
+   */
+  public static boolean verifyDetached(String purpose, String value, String signature) {
+    Optional<String> expected = signDetached(purpose, value);
+    return expected.isPresent() && StringUtils.isNotBlank(signature)
+        && constantTimeEquals(expected.get(), signature);
   }
 
   static String createToken(String contractName, String specName, String recordId,
@@ -226,10 +278,14 @@ public final class DocumentDownloadTokenService {
   }
 
   private static String sign(String payloadPart, String secret) {
+    return base64Url(mac(secret.getBytes(StandardCharsets.UTF_8), payloadPart));
+  }
+
+  private static byte[] mac(byte[] key, String data) {
     try {
       Mac mac = Mac.getInstance(HMAC_ALGORITHM);
-      mac.init(new SecretKeySpec(secret.getBytes(StandardCharsets.UTF_8), HMAC_ALGORITHM));
-      return base64Url(mac.doFinal(payloadPart.getBytes(StandardCharsets.UTF_8)));
+      mac.init(new SecretKeySpec(key, HMAC_ALGORITHM));
+      return mac.doFinal(data.getBytes(StandardCharsets.UTF_8));
     } catch (Exception e) {
       throw new OBException("Could not sign document download token", e);
     }
@@ -275,6 +331,13 @@ public final class DocumentDownloadTokenService {
       this.idempotencyKey = idempotencyKey;
       this.expiresAtSeconds = expiresAtSeconds;
       this.attachmentId = attachmentId;
+    }
+
+    /** Claims of a stored share link (ETP-5035); it never carries an attachment id. */
+    static Claims ofShareLink(String contractName, String specName, String recordId,
+        String clientId, String idempotencyKey, long expiresAtSeconds) {
+      return new Claims(TOKEN_VERSION, contractName, specName, recordId, clientId, idempotencyKey,
+          expiresAtSeconds, null);
     }
 
     private static Claims from(JSONObject payload) {

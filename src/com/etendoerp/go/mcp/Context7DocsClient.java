@@ -32,7 +32,8 @@ import org.apache.logging.log4j.Logger;
 
 /**
  * Isolated outbound HTTP helper that fetches documentation from Context7 for the
- * {@code etendosoftware/etendo-docs} library.
+ * {@code etendo-ai/etendo-docs} library (renamed from {@code etendosoftware/etendo-docs}, whose
+ * Context7 id now answers 404 with a redirect note: ETP-5850).
  * <p>
  * This is the only place in the MCP module that performs an external network call,
  * so all egress concerns (timeouts, URL building, encoding, status handling) are kept
@@ -40,7 +41,7 @@ import org.apache.logging.log4j.Logger;
  * <p>
  * Functionally equivalent to:
  * <pre>
- * curl -s "https://context7.com/api/v1/etendosoftware/etendo-docs?topic=&lt;term&gt;&amp;type=txt&amp;tokens=&lt;n&gt;"
+ * curl -s "https://context7.com/api/v1/etendo-ai/etendo-docs?topic=&lt;term&gt;&amp;type=txt&amp;tokens=&lt;n&gt;"
  * </pre>
  * <p>
  * The {@link HttpClient} is injected via a package-private constructor so unit tests
@@ -52,7 +53,7 @@ class Context7DocsClient {
 
   /** Default Context7 endpoint for the Etendo Go docs library. */
   static final String DEFAULT_BASE_URL =
-      "https://context7.com/api/v1/etendosoftware/etendo-docs";
+      "https://context7.com/api/v1/etendo-ai/etendo-docs";
   /** Default approximate size (in tokens) of the returned documentation. */
   static final int DEFAULT_TOKENS = 5000;
   /** Default response format. */
@@ -158,14 +159,16 @@ class Context7DocsClient {
       if (status >= 200 && status < 300) {
         return response.body();
       }
-      throw new McpToolException(
+      throw new Context7DocsException(
           "Context7 request failed with status " + status + ": " + truncate(response.body()),
-          null);
+          status, null);
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-      throw new McpToolException("Context7 request was interrupted", e);
+      throw new Context7DocsException("Context7 request was interrupted",
+          Context7DocsException.NO_STATUS, e);
     } catch (IOException e) {
-      throw new McpToolException("Context7 request failed: " + e.getMessage(), e);
+      throw new Context7DocsException("Context7 request failed: " + Context7DocsException.describeCauseChain(e),
+          Context7DocsException.NO_STATUS, e);
     }
   }
 

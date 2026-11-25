@@ -30,8 +30,6 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
-import java.lang.reflect.Modifier;
-import java.lang.reflect.Constructor;
 import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
@@ -81,15 +79,6 @@ import com.etendoerp.go.usage.quota.QuotaVerdict;
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
 class McpToolRouterSupportTest {
-
-  @Test
-  @DisplayName("Utility class hides its constructor")
-  void utilityClassHidesConstructor() throws ReflectiveOperationException {
-    Constructor<McpToolRouterSupport> constructor = McpToolRouterSupport.class.getDeclaredConstructor();
-    assertEquals(Modifier.PRIVATE, constructor.getModifiers() & Modifier.PRIVATE);
-    constructor.setAccessible(true);
-    constructor.newInstance();
-  }
 
   // ─── buildMethodsArray ──────────────────────────────────────────────
 
@@ -2283,6 +2272,35 @@ class McpToolRouterSupportTest {
       assertEquals(McpMessageKeyHints.PERIOD_NOT_AVAILABLE_HINT, out.getString("hint"));
     }
 
+    /**
+     * ETP-6002 CP-30: a coded refusal keeps its code and details through {@code etendo_batch}, as
+     * {@code etendo_create} answers them, and the envelope's own keys keep their values.
+     */
+    @Test
+    @DisplayName("keeps the code and details of a coded refusal, additively")
+    void keepsTheCodeAndDetailsOfARefusal() throws Exception {
+      JSONObject refusal = new JSONObject().put("status", 422)
+          .put("code", "importQuantityExceedsPending").put("message", "Cannot import 3 of P")
+          .put("product", "P").put("requested", 3).put("pending", 2).put("sourceLineId", "il-1");
+      JSONObject error = new JSONObject().put("status", 422)
+          .put("message", "Operation 'l1' rejected by server")
+          .put("detail", new JSONObject().put("error", refusal));
+      JSONObject body = new JSONObject().put("committed", false)
+          .put("failedAt", new JSONObject().put("index", 0).put("id", "l1")).put("error", error);
+
+      JSONObject out = McpBatchEnvelope.toMcpBatchFailure(body).getJSONObject("error");
+
+      assertEquals(422, out.getInt("status"));
+      assertEquals("validation_error", out.getString("error"));
+      assertEquals("Operation 'l1' rejected by server: Cannot import 3 of P",
+          out.getString("detail"));
+      assertEquals("importQuantityExceedsPending", out.getString("code"));
+      assertEquals("P", out.getString("product"));
+      assertEquals(3, out.getInt("requested"));
+      assertEquals(2, out.getInt("pending"));
+      assertEquals("il-1", out.getString("sourceLineId"));
+    }
+
     @Test
     @DisplayName("replaces the raw DAL detail with the IMP-5 envelope, keeping the failedAt pointer")
     void rewritesTheFailure() throws Exception {
@@ -2578,6 +2596,36 @@ class McpToolRouterSupportTest {
       assertEquals("partnerAddress", twice.getJSONArray("missingFields").getString(0));
       assertEquals("docs(topic:\"creating records\")", twice.getString("seeAlso"));
       assertEquals("Missing required fields", twice.getString("detail"));
+    }
+
+    @Test
+    @DisplayName("a contact identity refusal keeps its field, fields and messageKeys at the top level (ETP-6175)")
+    void contactIdentityRefusalKeepsItsFieldsForTheAgent() throws Exception {
+      com.etendoerp.go.schemaforge.NeoContext ctx =
+          mock(com.etendoerp.go.schemaforge.NeoContext.class);
+      when(ctx.getHttpMethod()).thenReturn("POST");
+      when(ctx.getRequestBody()).thenReturn(new JSONObject().put("name", "Acme")
+          .put("etgoFirstname", "Ana"));
+      com.etendoerp.go.schemaforge.NeoResponse refusal;
+      try (MockedStatic<org.openbravo.dal.core.OBContext> context =
+               mockStatic(org.openbravo.dal.core.OBContext.class);
+           MockedStatic<org.openbravo.dal.service.OBDal> dal =
+               mockStatic(org.openbravo.dal.service.OBDal.class)) {
+        refusal = new com.etendoerp.go.schemaforge.BusinessPartnerHandler().handle(ctx);
+      }
+      assertNotNull(refusal);
+      String message = refusal.getBody().getJSONObject("error").getString("message");
+
+      JSONObject envelope = McpToolRouterSupport.toMcpHandlerError(refusal.getBody(), 400);
+
+      assertEquals("validation_error", envelope.getString("error"));
+      assertEquals(400, envelope.getInt("status"));
+      assertEquals(message, envelope.getString("detail"));
+      assertEquals("FIELD_NOT_ALLOWED", envelope.getString("code"));
+      assertEquals("etgoFirstname", envelope.getString("field"));
+      assertEquals("etgoFirstname", envelope.getJSONArray("fields").getString(0));
+      assertEquals("ETGO_BPartnerCompanyPersonNamesNotAllowed",
+          envelope.getJSONArray("messageKeys").getString(0));
     }
 
     @Test

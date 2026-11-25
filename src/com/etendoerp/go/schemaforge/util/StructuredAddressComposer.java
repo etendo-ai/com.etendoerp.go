@@ -18,6 +18,7 @@ package com.etendoerp.go.schemaforge.util;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 
@@ -51,20 +52,68 @@ public final class StructuredAddressComposer {
   private static final int ADDRESS_LINE_MAX_LENGTH = 60;
 
   /**
-   * Field lengths of the 3 structured SEPA columns themselves ({@code org.openbravo.sepa.iso20022}'s
-   * {@code AD_COLUMN.FIELDLENGTH} for {@code EM_OBSEPA_StrtNm}/{@code BldgNb}/{@code BldgNm}:
-   * VARCHAR(70)/(16)/(35) respectively). ETP-5806 follow-up: neither the UI nor this handler
-   * enforced them before a value was written, so a value longer than the DB column reached
-   * {@code OBDal.flush()} as a raw data-truncation SQL exception — surfaced to the caller as an
-   * opaque 500 with no indication of which field or why. {@link #fieldsExceedingMaxLength} turns
-   * that into a clean 400 before the write is attempted, on both create and update, for both
-   * handlers that call into this composer.
+   * Field lengths of the 3 structured SEPA columns themselves. Building Number and Building Name
+   * mirror {@code org.openbravo.sepa.iso20022}'s own {@code AD_COLUMN.FIELDLENGTH} for
+   * {@code EM_OBSEPA_BldgNb}/{@code BldgNm}: VARCHAR(16)/(35). ETP-5806 follow-up: neither the UI
+   * nor this handler enforced them before a value was written, so a value longer than the DB
+   * column reached {@code OBDal.flush()} as a raw data-truncation SQL exception — surfaced to the
+   * caller as an opaque 500 with no indication of which field or why. {@link
+   * #fieldsExceedingMaxLength} turns that into a clean 400 before the write is attempted, on both
+   * create and update, for every handler that calls into this composer.
+   *
+   * <p><b>Street Name is 60, NOT the SEPA column's 70 (CP-6, agreed with product + QA).</b> The
+   * underlying column, {@code EM_OBSEPA_StrtNm}, legitimately stays {@code VARCHAR(70)} — it is a
+   * real SEPA/ISO20022 field other consumers may fill up to that width, and shrinking the column
+   * itself would both break existing 61-70 char data on {@code update.database} and wrongly
+   * restrict SEPA export for callers unrelated to this composer. The composer's OWN cap is 60,
+   * stricter than the column, specifically so {@link #composeAddressLines}'s street-truncating
+   * branches become structurally unreachable for valid input: a street that cannot fit on the
+   * 60-char {@link #ADDRESS_LINE_MAX_LENGTH} line is now rejected here with a clean 400 before
+   * {@code composeAddressLines} ever sees it, instead of being silently cut mid-word when composed
+   * into {@code Address1}/{@code Address2}.
    */
-  private static final int STREET_NAME_MAX_LENGTH = 70;
+  private static final int STREET_NAME_MAX_LENGTH = 60;
   private static final int BUILDING_NUMBER_MAX_LENGTH = 16;
   private static final int BUILDING_NAME_MAX_LENGTH = 35;
 
   private StructuredAddressComposer() {
+  }
+
+  /**
+   * The Street Name cap this composer enforces — <b>60, not the 70 of {@code EM_OBSEPA_StrtNm}</b>.
+   *
+   * <p>ETP-5806 CP-6b (QA finding): {@code etendo_schema} derived every {@code maxLength} from the
+   * AD column's own {@code FIELDLENGTH}, so it advertised 70 for a field {@link
+   * #fieldsExceedingMaxLength} rejects at 61 — an agent that trusted the schema got a {@code 400
+   * validation_error} for a value the schema had just told it was legal. The composer's caps are
+   * the only enforced ones, so they are the only honest ones to publish; the schema now reads
+   * them from here instead of from the column. See {@link #STREET_NAME_MAX_LENGTH} for why the
+   * column itself legitimately stays wider.
+   *
+   * @return the maximum number of characters a Street Name may carry
+   */
+  public static int streetNameMaxLength() {
+    return STREET_NAME_MAX_LENGTH;
+  }
+
+  /**
+   * The Building Number cap this composer enforces (ETP-5806 CP-6b) — see {@link
+   * #streetNameMaxLength()} for why the published schema reads the cap from here.
+   *
+   * @return the maximum number of characters a Building Number may carry
+   */
+  public static int buildingNumberMaxLength() {
+    return BUILDING_NUMBER_MAX_LENGTH;
+  }
+
+  /**
+   * The Building Name cap this composer enforces (ETP-5806 CP-6b) — see {@link
+   * #streetNameMaxLength()} for why the published schema reads the cap from here.
+   *
+   * @return the maximum number of characters a Building Name may carry
+   */
+  public static int buildingNameMaxLength() {
+    return BUILDING_NAME_MAX_LENGTH;
   }
 
   /**
@@ -101,6 +150,54 @@ public final class StructuredAddressComposer {
         FeatureFlagContext.forAccount(accountEmail));
   }
 
+  /**
+   * ETP-5806 CP-13 (QA finding) — the published field names a caller MUST supply on a
+   * structured-address create, for {@code NeoHandler#callerRequiredCreateFields()}.
+   *
+   * <p><b>Why the schema cannot work this out by itself.</b> {@code etendo_schema} derives
+   * mandatoriness from {@code AD_Column.isMandatory()}, and none of {@code EM_OBSEPA_StrtNm},
+   * {@code EM_OBSEPA_BldgNb} or {@code C_Location.City} is NOT NULL — the mandatoriness is this
+   * composer's own product rule, stricter than Classic's. So {@code view:"create"} answered
+   * {@code requiredCount: 0} with {@code streetName}/{@code cityName} sitting under
+   * {@code optional} and a hint reading "accepted but not needed", while the write path refused the
+   * very create the schema had just described: {@code etendo_create bp-location
+   * {cityName, country}} came back {@code 400 Missing required field(s): streetName}. The schema was
+   * publishing the flag-OFF truth for an account the flag was ON for.
+   *
+   * <p>{@code country} is absent on purpose: its column IS mandatory in AD, so the generic rule
+   * already reports it. {@code buildingName} is absent because it is genuinely optional, and
+   * {@code buildingNumber} because the server resolves it — see {@link #serverDefaultedFields}.
+   *
+   * @param accountEmail the {@code ETGO_ACCOUNT} email to evaluate the flag for — see
+   *     {@link #isEnabled(String)}
+   * @return the caller-required field names while the flag is on for that account; empty when it is
+   *     off, so the pre-ETP-5806 (country-only) mandatoriness is published unchanged
+   */
+  public static Set<String> callerRequiredFields(String accountEmail) {
+    return isEnabled(accountEmail) ? Set.of(FIELD_STREET_NAME, "cityName") : Set.of();
+  }
+
+  /**
+   * ETP-5806 CP-13 (QA finding) — the published field names the server resolves on a
+   * structured-address create, for {@code NeoHandler#serverResolvedCreateFields()}.
+   *
+   * <p>{@code buildingNumber} and nothing else. It is mandatory in Etendo at the level of the
+   * stored row and never at the level of what the caller supplies: a blank or omitted value becomes
+   * {@code "s/n"} ({@link #effectiveBuildingNumber}). {@code view:"create"} has exact vocabulary for
+   * that state — {@code optional} carrying {@code serverDefaulted: true}, which its own hint reads
+   * as "mandatory in Etendo but the server already has a value for them, so do not ask the user" —
+   * and this is what puts it there. Listing it under {@code required} instead would tell an agent to
+   * interrogate a user for a door number the server fills in regardless; leaving it a bare
+   * {@code optional} would hide that the column never ends up empty.
+   *
+   * @param accountEmail the {@code ETGO_ACCOUNT} email to evaluate the flag for — see
+   *     {@link #isEnabled(String)}
+   * @return {@code buildingNumber} while the flag is on for that account; empty when it is off
+   */
+  public static Set<String> serverDefaultedFields(String accountEmail) {
+    return isEnabled(accountEmail) ? Set.of("buildingNumber") : Set.of();
+  }
+
   /** The two computed address lines. Either may be {@code null} when empty. */
   public static final class ComposedAddress {
     private final String address1;
@@ -128,6 +225,32 @@ public final class StructuredAddressComposer {
    * between street+number and building name in Line 1. {@code append} only inserts a separator
    * when both sides are non-blank.
    *
+   * <p><b>Every branch below is reachable with valid input — including the last one (ETP-5806 CP-13,
+   * QA finding).</b> Two earlier revisions of this javadoc claimed the street-truncating branch was
+   * unreachable once {@link #STREET_NAME_MAX_LENGTH} dropped to 60. That is wrong, and QA verified
+   * it live: the third branch is taken whenever {@code streetAndNumber} exceeds
+   * {@link #ADDRESS_LINE_MAX_LENGTH}, and {@code streetAndNumber} is {@code street + ", " + number}
+   * — so a street of exactly 60 characters (the maximum this composer itself publishes and accepts)
+   * plus any non-blank number already measures 63. {@code Address1} then holds the street alone (it
+   * is 60 long, so {@code StringUtils.left} does not actually cut it) and {@code Address2} holds
+   * {@code number - name}. Nothing is lost; the number simply moves to the second line.
+   *
+   * <p><b>Consequence worth knowing before changing any of this (ETP-5806 CP-13, product decision —
+   * NOT a bug).</b> Because a blank Building Number resolves to the literal {@code "s/n"} (see
+   * {@link #effectiveBuildingNumber}), a street of 58 characters or more with no Building Number and
+   * no Building Name composes to {@code Address2 == "s/n"} on its own — a second address line that
+   * reads as nothing but "no number". This is faithful parity with Classic's
+   * {@code LocationSEPA::fillAddressLines}, which this method ports line for line, and it diverges
+   * from Classic for the same input only because {@code "s/n"} is Etendo Go's own convention and
+   * Classic would have left the number blank there. Left as is on purpose: changing it would either
+   * break the Classic parity this port exists for, or make the {@code "s/n"} convention conditional
+   * on the street's length.
+   *
+   * <p>The third branch still matches Classic's {@code LocationSEPA.java::fillAddressLines}
+   * ({@code org.openbravo.sepa.iso20022}) exactly. The building-name-only truncation path
+   * (street+number fits, the composed whole does not) is likewise reachable — Building Name has no
+   * line-width cap of its own.
+   *
    * @param streetName     Street Name ({@code EM_OBSEPA_StrtNm}), may be {@code null}/blank
    * @param buildingNumber Building Number ({@code EM_OBSEPA_BldgNb}), may be {@code null}/blank
    * @param buildingName   Building Name ({@code EM_OBSEPA_BldgNm}), may be {@code null}/blank
@@ -150,7 +273,10 @@ public final class StructuredAddressComposer {
       return new ComposedAddress(emptyToNull(streetAndNumber),
           emptyToNull(StringUtils.left(name, ADDRESS_LINE_MAX_LENGTH)));
     }
-    // Only a street longer than the line itself gets truncated here.
+    // street+number does not fit one line: the street keeps line 1 and the number moves to
+    // line 2. StringUtils.left only cuts a street that is itself longer than the line, which
+    // fieldsExceedingMaxLength already refuses — but street+number together overflowing is
+    // ordinary valid input (a 60-char street plus any number is 63). See the javadoc above.
     return new ComposedAddress(
         emptyToNull(StringUtils.left(street, ADDRESS_LINE_MAX_LENGTH)),
         emptyToNull(StringUtils.left(append(number, " - ", name), ADDRESS_LINE_MAX_LENGTH)));
@@ -158,6 +284,9 @@ public final class StructuredAddressComposer {
 
   /** The fallback value used for Building Number when it is blank and Street Name is present. */
   private static final String EMPTY_BUILDING_NUMBER_FALLBACK = "s/n";
+
+  /** Published payload key of the Street Name field — see {@link #callerRequiredFields}. */
+  private static final String FIELD_STREET_NAME = "streetName";
 
   /**
    * The effective Building Number to validate and persist (ETP-5806 follow-up, QA finding): when
@@ -199,29 +328,36 @@ public final class StructuredAddressComposer {
    * Country are mandatory in Etendo Go, stricter than Classic's optional SEPA fields) that are
    * missing from the given values.
    *
-   * <p>Building Number is <b>not</b> independently mandatory: callers MUST pass the result of
-   * {@link #effectiveBuildingNumber} as {@code buildingNumber}, not the raw payload value, so a
-   * blank Building Number with a present Street Name is never reported as missing — it resolves to
-   * the {@code "s/n"} fallback instead (ETP-5806 follow-up). A caller that passes the raw value
-   * would see this method still require an explicit Building Number, which is no longer the rule
-   * on any channel (REST, MCP or UI).
+   * <p><b>Building Number is never reported here (ETP-5806 CP-13, QA finding).</b> It is mandatory
+   * at the level of the stored row — the column always ends up with a value — but never at the level
+   * of what a caller has to supply: a blank or omitted Building Number resolves to the literal
+   * {@code "s/n"} (see {@link #effectiveBuildingNumber}), so there is nothing the caller could have
+   * done about it and nothing to ask a user for. This method answers "what must the caller still
+   * send", so naming {@code buildingNumber} in it is a contract lie whatever the other fields hold.
+   *
+   * <p>It used to be reported in exactly one case — a blank Street Name, which suppresses the
+   * {@code "s/n"} fallback — so a create missing only {@code streetName} came back
+   * {@code 400 Missing required field(s): streetName, buildingNumber} and sent the caller looking
+   * for a value it was never responsible for, while the very same create WITH a street and without
+   * a number succeeded at {@code 201} and persisted {@code "s/n"}. The two answers contradicted
+   * each other; this one is the one that was wrong. {@code etendo_schema} publishes the matching
+   * truth through {@link #serverDefaultedFields} ({@code optional} + {@code serverDefaulted:true}).
+   *
+   * <p>The Building Number parameter this method used to take is gone with the check: it was the
+   * only reason callers had to resolve {@link #effectiveBuildingNumber} before validating, and
+   * keeping an argument nothing reads is how the rule gets reintroduced by someone restoring a
+   * "missing" check for it.
    *
    * @param streetName     Street Name ({@code EM_OBSEPA_StrtNm}), may be {@code null}/blank
-   * @param buildingNumber the <b>effective</b> Building Number — see {@link
-   *     #effectiveBuildingNumber} — may be {@code null}/blank only when {@code streetName} is
-   *     itself blank
    * @param cityName       City Name, may be {@code null}/blank
    * @param countryId      Country id, may be {@code null}/blank
    * @return the missing field names (payload keys), in a stable order; empty when none are missing
    */
-  public static List<String> missingMandatoryFields(String streetName, String buildingNumber,
-      String cityName, String countryId) {
+  public static List<String> missingMandatoryFields(String streetName, String cityName,
+      String countryId) {
     List<String> missing = new ArrayList<>();
     if (StringUtils.isBlank(streetName)) {
-      missing.add("streetName");
-    }
-    if (StringUtils.isBlank(buildingNumber)) {
-      missing.add("buildingNumber");
+      missing.add(FIELD_STREET_NAME);
     }
     if (StringUtils.isBlank(cityName)) {
       missing.add("cityName");
@@ -246,7 +382,7 @@ public final class StructuredAddressComposer {
       String buildingName) {
     List<String> tooLong = new ArrayList<>();
     if (streetName != null && streetName.length() > STREET_NAME_MAX_LENGTH) {
-      tooLong.add("streetName");
+      tooLong.add(FIELD_STREET_NAME);
     }
     if (buildingNumber != null && buildingNumber.length() > BUILDING_NUMBER_MAX_LENGTH) {
       tooLong.add("buildingNumber");
@@ -255,6 +391,56 @@ public final class StructuredAddressComposer {
       tooLong.add("buildingName");
     }
     return tooLong;
+  }
+
+  /**
+   * ETP-5806 CP-12b (QA finding) — whether an update's write path should merge the stored record
+   * into the body before validating mandatory fields: always for a PATCH, and for a PUT whenever
+   * the body alone (with the flag on) cannot satisfy them on its own.
+   *
+   * <p>Kept here, not in the calling handler, specifically so the handler's own update method
+   * stays a straight sequence of calls with no extra branching of its own — {@code
+   * ContactsLocationAddressHandler#handleUpdate} already carries plenty of control flow, and
+   * every {@code &&}/{@code ||} added to it directly raises its own Cognitive Complexity. The
+   * branching that decides this one boolean belongs in a single-purpose method instead, the same
+   * way {@link #missingMandatoryFields} and {@link #fieldsExceedingMaxLength} already centralize
+   * the other mandatory-field decisions this composer owns.
+   *
+   * <p>MCP's {@code etendo_update} always maps to HTTP PUT ({@code McpToolRouter#handleUpdate}),
+   * so gating the merge purely on PATCH vs PUT meant a single-field MCP edit (e.g. only {@code
+   * buildingName}) reached validation with the rest of the structured fields genuinely absent
+   * from the body and a clean 400, even though they already existed on the stored record. A true
+   * full-replace PUT (the UI form, a REST client resending the complete address) is unaffected:
+   * it already satisfies every mandatory field, so this returns {@code false} and the merge is
+   * skipped exactly as before.
+   *
+   * <p>Building Number is not a parameter: it stopped being one the moment
+   * {@link #missingMandatoryFields} stopped asking for it (ETP-5806 CP-13), and a body carrying
+   * only a Building Number has never been self-sufficient anyway — its missing street already
+   * forces the merge.
+   *
+   * @param httpMethod               the request's HTTP method
+   * @param structuredAddressEnabled whether {@code structured-address-for-sepa} is on for the
+   *                                 caller's account; with it off, only a PATCH merges
+   * @param streetName               the raw body value, before any merge — see
+   *                                 {@code ContactsLocationAddressHandler#readAlias}
+   * @param cityName                 the raw body value, before any merge
+   * @param countryId                the raw body value, before any merge — NOT falling back to
+   *                                 the stored record's own country, unlike
+   *                                 {@code effectiveCountryForValidation}: this method asks
+   *                                 whether the body is self-sufficient, so a country the body
+   *                                 never mentions must count as missing here
+   * @return {@code true} when the stored record should be merged into the body first
+   */
+  public static boolean requiresMergeOnUpdate(String httpMethod, boolean structuredAddressEnabled,
+      String streetName, String cityName, String countryId) {
+    if ("PATCH".equals(httpMethod)) {
+      return true;
+    }
+    if (!structuredAddressEnabled) {
+      return false;
+    }
+    return !missingMandatoryFields(streetName, cityName, countryId).isEmpty();
   }
 
   private static String append(String base, String separator, String part) {

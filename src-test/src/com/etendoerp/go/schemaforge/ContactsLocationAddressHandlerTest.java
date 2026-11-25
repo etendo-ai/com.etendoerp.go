@@ -554,6 +554,42 @@ class ContactsLocationAddressHandlerTest {
     }
   }
 
+  // ── ETP-5806 CP-12h: the enriched read keys are declared ───────────────
+
+  /**
+   * ETP-5806 CP-12h (QA finding, repro): {@code etendo_list contacts/locationAddress} with
+   * {@code fields:[streetName, buildingNumber, buildingName, cityName]} returned every value AND
+   * reported all four in {@code unknownFields}. The spec's {@code ETGO_SF_FIELD} rows describe
+   * {@code C_BPartner_Location}; every address field lives in {@code C_Location} and reaches the
+   * response only through {@code afterHandle}, so the MCP projection validator had no way to know
+   * they were emittable. {@code responseEnrichedFields()} is what tells it.
+   */
+  @Test
+  void responseEnrichedFieldsDeclaresEveryInjectedLocationKey() {
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(true)) {
+      java.util.Set<String> declared = handler.responseEnrichedFields();
+      assertTrue(declared.containsAll(java.util.List.of("addressLine1", "addressLine2", "cityName",
+          "postalCode", "country", "countryCode", "region", "regionName")), declared.toString());
+      assertTrue(declared.containsAll(
+          java.util.List.of("streetName", "buildingNumber", "buildingName")), declared.toString());
+    }
+  }
+
+  /**
+   * ETP-5806 CP-12h — with the flag off the 3 structured keys are genuinely absent from the
+   * response ({@code putGeoLocFields} omits them), so they must stay reportable as unknown.
+   */
+  @Test
+  void responseEnrichedFieldsOmitsStructuredKeysWhileFlagIsOff() {
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(false)) {
+      java.util.Set<String> declared = handler.responseEnrichedFields();
+      assertTrue(declared.contains("cityName"), declared.toString());
+      assertFalse(declared.contains("streetName"), declared.toString());
+      assertFalse(declared.contains("buildingNumber"), declared.toString());
+      assertFalse(declared.contains("buildingName"), declared.toString());
+    }
+  }
+
   // ── ETP-5806: structured-address-for-sepa flag OFF ─────────────────────
 
   /** Stubs {@link GoFeatureFlags#isEnabled} for the {@code structured-address-for-sepa} flag only. */
@@ -834,6 +870,100 @@ class ContactsLocationAddressHandlerTest {
       handler.handle(buildContext("PUT", "bpl-id", body, null));
 
       verify(geoLoc).setCityName(null);
+    }
+  }
+
+  /**
+   * ETP-5806 CP-12b (QA finding) — MCP's {@code etendo_update} always maps to HTTP PUT
+   * ({@code McpToolRouter#handleUpdate}), so a single-field edit (e.g. only {@code buildingName})
+   * used to reach {@code validateUpdateMandatoryFields} with streetName/buildingNumber/cityName/
+   * country genuinely absent from the body — a clean 400 — even though the stored record already
+   * had them. A PUT whose body alone cannot satisfy the mandatory fields is now merged into just
+   * like a PATCH, so the edit succeeds and the fields it did not mention are preserved.
+   */
+  @Test
+  void putMissingMandatoryStructuredFieldsMergesStoredAddressBeforeValidating() throws Exception {
+    Location geoLoc = mock(Location.class);
+    stubStoredAddress(geoLoc);
+    when(geoLoc.getOBSEPAStreetName()).thenReturn("Gran Via");
+    when(geoLoc.getOBSEPABuildingNumber()).thenReturn("45");
+    JSONObject body = new JSONObject();
+    body.put("buildingName", "Edificio Central");
+
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(true)) {
+      NeoResponse response = handler.handle(buildContext("PUT", "bpl-id", body, null));
+
+      assertEquals(200, response.getHttpStatus());
+      verify(geoLoc).setOBSEPAStreetName("Gran Via");
+      verify(geoLoc).setOBSEPABuildingNumber("45");
+      verify(geoLoc).setOBSEPABuildingName("Edificio Central");
+    }
+  }
+
+  /**
+   * A genuine full-replace PUT that already carries every mandatory structured field is
+   * untouched by the CP-12b fix: the merge check is false, so nothing not mentioned is merged in
+   * (a non-mandatory field like postalCode is still cleared when omitted).
+   */
+  @Test
+  void putCarryingEveryMandatoryFieldStillReplacesNonMandatoryOnesItOmits() throws Exception {
+    Location geoLoc = mock(Location.class);
+    stubStoredAddress(geoLoc);
+    when(geoLoc.getOBSEPAStreetName()).thenReturn("Gran Via");
+    when(geoLoc.getOBSEPABuildingNumber()).thenReturn("45");
+    JSONObject body = new JSONObject();
+    body.put("streetName", "Gran Via");
+    body.put("buildingNumber", "45");
+    body.put("cityName", "Madrid");
+    body.put("country", "106");
+    // postalCode intentionally omitted
+
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(true)) {
+      NeoResponse response = handler.handle(buildContext("PUT", "bpl-id", body, null));
+
+      assertEquals(200, response.getHttpStatus());
+      verify(geoLoc).setPostalCode(null);
+    }
+  }
+
+  /**
+   * ETP-5806 CP-12c (QA finding) — the UI pop-up always computes and sends a fresh {@code name}
+   * on save; an MCP caller that edits only the structured address fields never sends {@code name}
+   * at all, so it went stale relative to the address it just changed while addressLine1/
+   * addressLine2 updated correctly. {@code name} is now recomputed unconditionally from the
+   * post-write record when the caller does not send one.
+   */
+  @Test
+  void putWithoutNameRecomputesTheDisplayNameFromTheNewAddress() throws Exception {
+    Location geoLoc = mock(Location.class);
+    org.openbravo.model.common.businesspartner.Location bpLoc = stubStoredAddress(geoLoc);
+    when(geoLoc.getCityName()).thenReturn("Valencia");
+    when(geoLoc.getAddressLine1()).thenReturn("Gran Via, 45");
+    JSONObject body = new JSONObject();
+    body.put("streetName", "Gran Via");
+    body.put("buildingNumber", "45");
+    body.put("cityName", "Valencia");
+    body.put("country", "106");
+
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(true)) {
+      handler.handle(buildContext("PUT", "bpl-id", body, null));
+
+      verify(bpLoc).setName("Valencia, Gran Via, 45");
+    }
+  }
+
+  /** With the flag off, the legacy behaviour is unchanged: an omitted name is never recomputed. */
+  @Test
+  void putWithoutNameFlagOffNeverRecomputesTheDisplayName() throws Exception {
+    Location geoLoc = mock(Location.class);
+    org.openbravo.model.common.businesspartner.Location bpLoc = stubStoredAddress(geoLoc);
+    JSONObject body = new JSONObject();
+    body.put("postalCode", "28002");
+
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(false)) {
+      handler.handle(buildContext("PUT", "bpl-id", body, null));
+
+      verify(bpLoc, never()).setName(any());
     }
   }
 
@@ -1810,47 +1940,6 @@ class ContactsLocationAddressHandlerTest {
     JSONObject body = new JSONObject();
     body.put("flag", "N");
     assertEquals(false, method.invoke(null, body, "flag", true));
-  }
-
-  /**
-   * Verifies that str returns fallback when key is absent.
-   */
-  @Test
-  void testStrReturnsFallbackWhenKeyAbsent() throws Exception {
-    Method method = ContactsLocationAddressHandler.class.getDeclaredMethod(
-        "str", JSONObject.class, String.class, String.class);
-    method.setAccessible(true);
-
-    JSONObject body = new JSONObject();
-    assertEquals("fallback", method.invoke(null, body, "missing", "fallback"));
-  }
-
-  /**
-   * Verifies that str returns the value when key is present.
-   */
-  @Test
-  void testStrReturnsValueWhenKeyPresent() throws Exception {
-    Method method = ContactsLocationAddressHandler.class.getDeclaredMethod(
-        "str", JSONObject.class, String.class, String.class);
-    method.setAccessible(true);
-
-    JSONObject body = new JSONObject();
-    body.put("name", "Hello");
-    assertEquals("Hello", method.invoke(null, body, "name", "fallback"));
-  }
-
-  /**
-   * Verifies that str returns fallback when key has empty value.
-   */
-  @Test
-  void testStrReturnsFallbackWhenValueEmpty() throws Exception {
-    Method method = ContactsLocationAddressHandler.class.getDeclaredMethod(
-        "str", JSONObject.class, String.class, String.class);
-    method.setAccessible(true);
-
-    JSONObject body = new JSONObject();
-    body.put("name", "");
-    assertEquals("fallback", method.invoke(null, body, "name", "fallback"));
   }
 
   /**

@@ -3,7 +3,7 @@
 This table is the cross-runtime contract referenced by ADR-0004. Expected values describe the cell
 value after neutralization and before CSV quoting.
 
-**Executable twin:** `@etendosoftware/app-shell-core/lib/csv/csvNeutralizationFixtures.js` exports
+**Executable twin:** `@etendo-ai/app-shell-core/lib/csv/csvNeutralizationFixtures.js` exports
 this same table as data (`CSV_NEUTRALIZATION_FIXTURES`) plus the trigger set
 (`SPREADSHEET_FORMULA_TRIGGERS`). The JavaScript suites are driven by it, and
 `NeoCsvExportServiceTest.spreadsheetNeutralizationFixtures()` mirrors it row for row. Add a trigger
@@ -54,6 +54,26 @@ An apostrophe is not a trigger, so an already-neutralized value can never be dou
 | Trigger not in first position | `Total = 1+1` | `Total = 1+1` |
 | Empty | empty string | empty string |
 | Null / undefined | null | empty string |
+
+### Contact phone column exception (ETP-6225)
+
+The generic table above is unchanged. One per-column exception exists, in the Java export only: in
+the contact phone column (`etgoPhone`), whitespace is stripped and a value made ONLY of digits and
+`+ ( ) - .` (at least one digit) is written without the apostrophe, so an exported file imports
+back unchanged. Such a value has no letters, so it cannot carry a function or DDE payload. Any other
+value in that column, and every other column, follows the table.
+
+| Column | Input | Expected cell value |
+|---|---|---|
+| `etgoPhone` | `+34 910 565 400` | `+34910565400` |
+| `etgoPhone` | `912 345 678` | `912345678` |
+| `etgoPhone` | `+34 (910) 565-400` | `+34(910)565-400` |
+| `etgoPhone` | `+SUM(A1:A2)` | `'+SUM(A1:A2)` |
+| `etgoPhone` | `=cmd\|' /C calc'!A0` | `'=cmd\|' /C calc'!A0` |
+| any other | `+34 910 565 400` | `'+34 910 565 400` |
+
+A CSV cannot carry a cell type: the value is quoted and left untouched. An xlsx export already
+writes string cells (also with spaces stripped here).
 
 The serialized fixtures additionally assert:
 

@@ -245,6 +245,9 @@ public class NeoWritePreflightTest {
   public void deleteMustRejectAnUnknownTargetBeforeDispatch() {
     NeoContext request = NeoContext.builder().httpMethod("DELETE").recordId("missing")
         .adTab(adTab).sfEntity(sfEntity).build();
+    // ETP-6365: the delete guard (deleteRefusalFor) runs for real over the strict guard.
+    targets.when(() -> NeoActionRecordGuard.deleteRefusalFor(sfEntity, request))
+        .thenCallRealMethod();
     targets.when(() -> NeoActionRecordGuard.writeRefusalFor(sfEntity, "missing"))
         .thenCallRealMethod();
     NeoResponse refusal = NeoWritePreflight.refusalFor(request);
@@ -290,16 +293,51 @@ public class NeoWritePreflightTest {
         isNull()));
   }
 
-  /** ETP-6062: a delete is never waivable — it keeps the strict guard. */
+  /**
+   * ETP-5880: another tenant's id is refused with the guard's 404 on PUT and PATCH (waiver-aware
+   * guard) and on DELETE (delete guard, ETP-6365); each verb asks only its own guard.
+   */
   @Test
-  public void deleteKeepsTheStrictTargetGuard() {
+  public void aForeignRecordIsRefusedByTheGuardOfItsVerb() throws Exception {
+    NeoResponse notFound = NeoResponse.error(404, "Record not found");
+    for (String method : new String[] {"PUT", "PATCH"}) {
+      NeoContext update = NeoContext.builder().httpMethod(method).recordId("foreign-1")
+          .requestBody(new JSONObject().put("name", "x")).adTab(adTab).sfEntity(sfEntity).build();
+      targets.when(() -> NeoActionRecordGuard.updateRefusalFor(sfEntity, update))
+          .thenReturn(notFound);
+
+      assertEquals(404, NeoWritePreflight.refusalFor(update).getHttpStatus());
+    }
+    targets.verify(() -> NeoActionRecordGuard.writeRefusalFor(any(), any()), Mockito.never());
+
+    NeoContext delete = NeoContext.builder().httpMethod("DELETE").recordId("foreign-1")
+        .adTab(adTab).sfEntity(sfEntity).build();
+    targets.when(() -> NeoActionRecordGuard.deleteRefusalFor(sfEntity, delete))
+        .thenReturn(notFound);
+
+    assertEquals(404, NeoWritePreflight.refusalFor(delete).getHttpStatus());
+    targets.verify(() -> NeoActionRecordGuard.updateRefusalFor(any(), any()), Mockito.times(2));
+    targets.verify(() -> NeoActionRecordGuard.deleteRefusalFor(any(), any()), Mockito.times(1));
+    ownership.verifyNoInteractions();
+  }
+
+  /**
+   * ETP-6062: a delete is never waivable. ETP-6365: it asks the delete guard with the request, so
+   * the entity's customization can word the refusal of a readable row (a 409 replaces the 404),
+   * and that answer is what the preflight returns.
+   */
+  @Test
+  public void deleteAsksTheDeleteTargetGuardWithTheRequest() {
     NeoContext request = NeoContext.builder().httpMethod("DELETE").recordId("tax-1")
         .adTab(adTab).sfEntity(sfEntity).build();
+    NeoResponse locked = NeoResponse.error(409, "locked");
+    targets.when(() -> NeoActionRecordGuard.deleteRefusalFor(sfEntity, request))
+        .thenReturn(locked);
 
-    NeoWritePreflight.refusalFor(request);
+    assertEquals(locked, NeoWritePreflight.refusalFor(request));
 
-    targets.verify(() -> NeoActionRecordGuard.writeRefusalFor(sfEntity, "tax-1"));
     targets.verify(() -> NeoActionRecordGuard.updateRefusalFor(any(), any()), Mockito.never());
+    ownership.verifyNoInteractions();
   }
 
   /**

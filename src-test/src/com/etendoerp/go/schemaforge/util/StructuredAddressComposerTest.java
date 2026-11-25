@@ -147,6 +147,35 @@ class StructuredAddressComposerTest {
       assertEquals(60, composed.getAddress2().length());
     }
 
+    /**
+     * ETP-5806 CP-13 (QA finding) — the third branch IS reachable with input this composer itself
+     * accepts: a street of exactly {@code STREET_NAME_MAX_LENGTH} (60) plus any non-blank number
+     * already measures 63 as {@code street + ", " + number}. The javadoc claimed otherwise twice.
+     * Nothing is truncated here — the street is exactly the line width — the number simply moves
+     * to line 2.
+     */
+    @Test
+    void sixtyCharStreetPlusANumberMovesTheNumberToLineTwoWithoutTruncatingTheStreet() {
+      String street = StringUtils.repeat('A', 60);
+      ComposedAddress composed = StructuredAddressComposer.composeAddressLines(street, "7", "Edificio A");
+      assertEquals(street, composed.getAddress1());
+      assertEquals("7 - Edificio A", composed.getAddress2());
+    }
+
+    /**
+     * ETP-5806 CP-13 — the documented, deliberate consequence: a long street with no number and no
+     * building name composes a second line that reads only {@code "s/n"}, because the blank number
+     * resolved to that literal upstream. Product decision, faithful to Classic's line algorithm.
+     */
+    @Test
+    void longStreetWithTheSlashNFallbackLeavesSlashNAloneOnLineTwo() {
+      String street = StringUtils.repeat('B', 58);
+      ComposedAddress composed = StructuredAddressComposer.composeAddressLines(
+          street, StructuredAddressComposer.effectiveBuildingNumber(street, null), null);
+      assertEquals(street, composed.getAddress1());
+      assertEquals("s/n", composed.getAddress2());
+    }
+
     @Test
     void separatorsAreCommaSpaceBetweenStreetAndNumberAndSpaceDashSpaceBeforeBuildingName() {
       ComposedAddress composed = StructuredAddressComposer.composeAddressLines(
@@ -171,28 +200,100 @@ class StructuredAddressComposerTest {
     @Test
     void nothingMissingWhenAllFourArePresent() {
       List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-          "Gran Via", "45", "Madrid", "ES");
+          "Gran Via", "Madrid", "ES");
       assertTrue(missing.isEmpty());
     }
 
     @Test
     void reportsEachFieldMissingInStableOrder() {
-      List<String> missing = StructuredAddressComposer.missingMandatoryFields(null, "", " ", null);
-      assertEquals(List.of("streetName", "buildingNumber", "cityName", "country"), missing);
+      List<String> missing = StructuredAddressComposer.missingMandatoryFields(null, " ", null);
+      assertEquals(List.of("streetName", "cityName", "country"), missing);
+    }
+
+    /**
+     * ETP-5806 CP-13 (QA finding) — {@code buildingNumber} is never named, not even when a blank
+     * Street Name suppresses the {@code "s/n"} fallback. It used to be, so a create missing only
+     * the street answered {@code 400 Missing required field(s): streetName, buildingNumber} and
+     * sent the caller after a value it is never responsible for — while the same create WITH a
+     * street and without a number succeeded and persisted {@code "s/n"}.
+     */
+    @Test
+    void buildingNumberIsNeverReportedMissingEvenWithoutAStreetName() {
+      List<String> missing = StructuredAddressComposer.missingMandatoryFields(
+          null, "Madrid", "ES");
+      assertEquals(List.of("streetName"), missing);
     }
 
     @Test
     void onlyCountryMissing() {
       List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-          "Gran Via", "45", "Madrid", null);
+          "Gran Via", "Madrid", null);
       assertEquals(List.of("country"), missing);
     }
 
     @Test
     void whitespaceOnlyValueCountsAsMissing() {
       List<String> missing = StructuredAddressComposer.missingMandatoryFields(
-          "   ", "45", "Madrid", "ES");
+          "   ", "Madrid", "ES");
       assertEquals(List.of("streetName"), missing);
+    }
+  }
+
+  /**
+   * ETP-5806 CP-13 (QA finding) — what {@code etendo_schema} publishes must match what the write
+   * path enforces. With the flag on, the schema answered {@code requiredCount: 0} with
+   * {@code streetName} under {@code optional} ("accepted but not needed") while
+   * {@code etendo_create} refused the very same payload with a 400.
+   */
+  @Nested
+  class PublishedCreateContract {
+
+    @Test
+    void callerRequiredIsStreetAndCityWhileTheFlagIsOn() {
+      try (MockedStatic<GoFeatureFlags> flags = mockStatic(GoFeatureFlags.class)) {
+        flags.when(() -> GoFeatureFlags.isEnabled(
+            eq(GoFeatureFlags.FLAG_STRUCTURED_ADDRESS_FOR_SEPA), any())).thenReturn(true);
+
+        assertEquals(java.util.Set.of("streetName", "cityName"),
+            StructuredAddressComposer.callerRequiredFields("lola@example.com"));
+      }
+    }
+
+    /** Building Number is NOT caller-required: the server resolves it to {@code "s/n"}. */
+    @Test
+    void callerRequiredNeverIncludesBuildingNumberOrBuildingName() {
+      try (MockedStatic<GoFeatureFlags> flags = mockStatic(GoFeatureFlags.class)) {
+        flags.when(() -> GoFeatureFlags.isEnabled(
+            eq(GoFeatureFlags.FLAG_STRUCTURED_ADDRESS_FOR_SEPA), any())).thenReturn(true);
+
+        assertFalse(StructuredAddressComposer.callerRequiredFields("lola@example.com")
+            .contains("buildingNumber"));
+        assertFalse(StructuredAddressComposer.callerRequiredFields("lola@example.com")
+            .contains("buildingName"));
+      }
+    }
+
+    @Test
+    void serverDefaultedIsExactlyBuildingNumberWhileTheFlagIsOn() {
+      try (MockedStatic<GoFeatureFlags> flags = mockStatic(GoFeatureFlags.class)) {
+        flags.when(() -> GoFeatureFlags.isEnabled(
+            eq(GoFeatureFlags.FLAG_STRUCTURED_ADDRESS_FOR_SEPA), any())).thenReturn(true);
+
+        assertEquals(java.util.Set.of("buildingNumber"),
+            StructuredAddressComposer.serverDefaultedFields("lola@example.com"));
+      }
+    }
+
+    /** Flag off: the pre-ETP-5806 (country-only) mandatoriness is republished unchanged. */
+    @Test
+    void bothSetsAreEmptyWhileTheFlagIsOff() {
+      try (MockedStatic<GoFeatureFlags> flags = mockStatic(GoFeatureFlags.class)) {
+        flags.when(() -> GoFeatureFlags.isEnabled(
+            eq(GoFeatureFlags.FLAG_STRUCTURED_ADDRESS_FOR_SEPA), any())).thenReturn(false);
+
+        assertTrue(StructuredAddressComposer.callerRequiredFields("lola@example.com").isEmpty());
+        assertTrue(StructuredAddressComposer.serverDefaultedFields("lola@example.com").isEmpty());
+      }
     }
   }
 
@@ -340,8 +441,10 @@ class StructuredAddressComposerTest {
 
     @Test
     void nothingTooLongWhenAllAtOrBelowTheirLimit() {
+      // CP-6 (QA Pasada 2): Street Name's own limit is 60, tighter than the EM_OBSEPA_StrtNm
+      // column's 70 — see StructuredAddressComposer#STREET_NAME_MAX_LENGTH.
       List<String> tooLong = StructuredAddressComposer.fieldsExceedingMaxLength(
-          StringUtils.repeat('A', 70), StringUtils.repeat('B', 16), StringUtils.repeat('C', 35));
+          StringUtils.repeat('A', 60), StringUtils.repeat('B', 16), StringUtils.repeat('C', 35));
       assertTrue(tooLong.isEmpty());
     }
 
@@ -352,9 +455,22 @@ class StructuredAddressComposerTest {
     }
 
     @Test
-    void streetNameOneCharOverTheSeventyLimitIsFlagged() {
+    void streetNameOneCharOverTheSixtyLimitIsFlagged() {
+      // CP-6 (QA Pasada 2, persiste): a street between 61 and 70 chars used to pass this check
+      // (the old 70-char cap matched the SEPA column) and then get silently truncated mid-word by
+      // composeAddressLines, since it could not fit the 60-char Address1/Address2 line. It must
+      // now be reported as exceeding, not accepted.
       List<String> tooLong = StructuredAddressComposer.fieldsExceedingMaxLength(
-          StringUtils.repeat('A', 71), null, null);
+          StringUtils.repeat('A', 61), null, null);
+      assertEquals(List.of("streetName"), tooLong);
+    }
+
+    @Test
+    void streetNameInTheOldSeventyCharWindowIsNowFlaggedNotAccepted() {
+      // CP-6 — the specific regression QA found: a 70-char street (the old, now-removed ceiling)
+      // must be rejected cleanly instead of silently truncated when composed.
+      List<String> tooLong = StructuredAddressComposer.fieldsExceedingMaxLength(
+          StringUtils.repeat('A', 70), null, null);
       assertEquals(List.of("streetName"), tooLong);
     }
 
@@ -375,7 +491,7 @@ class StructuredAddressComposerTest {
     @Test
     void allThreeOverTheirLimitAreReportedInStableOrder() {
       List<String> tooLong = StructuredAddressComposer.fieldsExceedingMaxLength(
-          StringUtils.repeat('A', 71), StringUtils.repeat('B', 17), StringUtils.repeat('C', 36));
+          StringUtils.repeat('A', 61), StringUtils.repeat('B', 17), StringUtils.repeat('C', 36));
       assertEquals(List.of("streetName", "buildingNumber", "buildingName"), tooLong);
     }
   }

@@ -83,6 +83,18 @@ public final class AddressVirtualSelectorPolicy {
   private static final String COLUMN_COUNTRY = "C_Country_ID";
   private static final String COLUMN_REGION = "C_Region_ID";
 
+  /*
+   * ETP-5806 — the 3 structured SEPA address columns as LOOKUP KEYS: the upper-cased form of
+   * EM_OBSEPA_StrtNm / BldgNb / BldgNm. Every map and set keyed by column below uses these,
+   * because a caller hands the column name in whatever case it happens to have.
+   *
+   * VIRTUAL_COLUMNS deliberately keeps the mixed-case spelling instead: it is matched against
+   * AD_Column.DBColumnName in a case-sensitive query (see locationColumns).
+   */
+  private static final String KEY_STREET_NAME = "EM_OBSEPA_STRTNM";
+  private static final String KEY_BUILDING_NUMBER = "EM_OBSEPA_BLDGNB";
+  private static final String KEY_BUILDING_NAME = "EM_OBSEPA_BLDGNM";
+
   /** The virtual columns that back an FK selector. A subset of {@link #VIRTUAL_COLUMNS}. */
   private static final Set<String> SELECTOR_COLUMNS = new LinkedHashSet<>(
       List.of(COLUMN_COUNTRY, COLUMN_REGION));
@@ -114,7 +126,7 @@ public final class AddressVirtualSelectorPolicy {
    * (backend-only flag, TTL 2026-11-15) — see {@link #resolveVirtualColumns}.
    */
   private static final Set<String> STRUCTURED_ADDRESS_COLUMNS = Set.of(
-      "EM_OBSEPA_STRTNM", "EM_OBSEPA_BLDGNB", "EM_OBSEPA_BLDGNM");
+      KEY_STREET_NAME, KEY_BUILDING_NUMBER, KEY_BUILDING_NAME);
 
   /**
    * The wrapper's OWN column that the handler resolves instead of the caller (ETP-5368).
@@ -158,11 +170,108 @@ public final class AddressVirtualSelectorPolicy {
    * EM_-prefixed column ever needs the same treatment.
    */
   private static final Map<String, String> PUBLISHED_NAME_OVERRIDES = Map.of(
-      "EM_OBSEPA_STRTNM", "streetName",
-      "EM_OBSEPA_BLDGNB", "buildingNumber",
-      "EM_OBSEPA_BLDGNM", "buildingName");
+      KEY_STREET_NAME, "streetName",
+      KEY_BUILDING_NUMBER, "buildingNumber",
+      KEY_BUILDING_NAME, "buildingName");
+
+  /**
+   * The inverse of {@link #PUBLISHED_NAME_OVERRIDES} — published name to DB column name. Built
+   * once, not per lookup: the forward map is small (3 entries) and never changes at runtime.
+   *
+   * <p>ETP-5806 CP-10b (QA finding) — {@code McpQuerySupport#resolveFilterProperty} only ever
+   * resolved a filter key against the raw DAL property name
+   * ({@code oBSEPAStreetName}/etc, {@code Entity#getPropertyByColumnName}/{@code getProperty}), and
+   * never consulted this policy — so filtering {@code bp-location} (or any other address wrapper)
+   * by the very name {@code etendo_schema} publishes for these 3 columns ({@code streetName}/
+   * {@code buildingNumber}/{@code buildingName}) 422'd with {@code unknown_filter_field}, and only
+   * the undocumented raw DAL property name actually worked. See
+   * {@code McpQuerySupport#resolveFilterProperty}'s added fallback.
+   */
+  private static final Map<String, String> PUBLISHED_NAME_TO_COLUMN =
+      PUBLISHED_NAME_OVERRIDES.entrySet().stream()
+          .collect(java.util.stream.Collectors.toUnmodifiableMap(
+              Map.Entry::getValue, Map.Entry::getKey));
+
+  /**
+   * ETP-5806 CP-6b (QA finding) — the {@code maxLength} {@code etendo_schema} must publish for a
+   * structured SEPA address column, keyed by DB column name (upper-cased).
+   *
+   * <p><b>The column's own {@code FIELDLENGTH} is the wrong answer for these three.</b>
+   * {@code McpSchemaFieldBuilder#addMaxLength} derives {@code maxLength} from
+   * {@code AD_Column.getLength()}, which for {@code EM_OBSEPA_StrtNm} is 70 — while
+   * {@link StructuredAddressComposer#fieldsExceedingMaxLength} rejects anything over 60, because
+   * the street has to fit the 60-character {@code C_Location.Address1} line the composer writes
+   * it into. The schema therefore advertised a width the write path refuses: a 61-character
+   * street passed {@code etendo_schema}'s contract and came back
+   * {@code 400 validation_error "Field(s) exceed maximum length: streetName"}. The composer is
+   * the only enforcer, so it is the only honest source; the values are read from it rather than
+   * duplicated here, so the two can never drift. The column stays {@code VARCHAR(70)} on purpose
+   * — see {@code StructuredAddressComposer#STREET_NAME_MAX_LENGTH}.
+   *
+   * <p>Structural, like {@link #PUBLISHED_NAME_OVERRIDES} next to it: keyed by column and
+   * consulted identically for any entity carrying one of these columns — the wrapper entities
+   * through {@link #resolveVirtualColumns} and {@code bp-location} through
+   * {@code McpSchemaFieldBuilder}'s direct table walk — naming no spec and no table. Extend this
+   * map, never add a per-entity {@code if}.
+   */
+  private static final Map<String, Integer> MAX_LENGTH_OVERRIDES = Map.of(
+      KEY_STREET_NAME, StructuredAddressComposer.streetNameMaxLength(),
+      KEY_BUILDING_NUMBER, StructuredAddressComposer.buildingNumberMaxLength(),
+      KEY_BUILDING_NAME, StructuredAddressComposer.buildingNameMaxLength());
+
+  /**
+   * ETP-5806 CP-13 (QA finding) — the {@code C_Location} columns the structured-address composer
+   * OWNS on write, keyed in upper case: whatever a caller sends for them is overwritten by
+   * {@link StructuredAddressComposer#composeAddressLines} while the flag is on.
+   *
+   * <p><b>The schema advertised them as writable and the write silently discarded them.</b>
+   * {@code etendo_schema contacts/locationAddress view:"create"} listed {@code addressLine1} and
+   * {@code addressLine2} under {@code optional} — "accepted but not needed" — so an agent that sent
+   * a hand-written second line got {@code 201}, saw no {@code adjustedFields} and no warning, and
+   * had to re-read the record to discover that {@code addressLine1} held the composed value and
+   * {@code addressLine2} had become {@code null}. The handler short-circuits the generic CRUD path,
+   * so the {@code adjustedFields} reconciliation never runs there and reporting the rewrite was not
+   * reachable; the honest fix is for the contract to stop offering them. They stay published as
+   * read-only fields, so they remain discoverable and readable — only the claim that a caller may
+   * set them goes away.
+   *
+   * <p>Structural and keyed by column, like {@link #MAX_LENGTH_OVERRIDES} and
+   * {@link #PUBLISHED_NAME_OVERRIDES} beside it: it applies to every entity that carries these
+   * columns, directly ({@code bp-location}) or through the wrapper path, and names no spec and no
+   * table. With the flag OFF nothing changes — the two lines are the legacy free-text address and
+   * remain editable.
+   */
+  private static final Set<String> COMPOSER_OWNED_COLUMNS = Set.of("ADDRESS1", "ADDRESS2");
 
   private AddressVirtualSelectorPolicy() {
+  }
+
+  /**
+   * Whether the structured-address composer owns this column's value on write — see
+   * {@link #COMPOSER_OWNED_COLUMNS} (ETP-5806 CP-13).
+   *
+   * <p>Says nothing about the flag: the caller decides whether the structured path is active, the
+   * same way {@code McpSchemaFieldBuilder}'s gate already does for the 3 structured columns.
+   *
+   * @param dbColumnName AD column DB name (any case); {@code null} answers {@code false}
+   * @return {@code true} when a caller's value for this column is replaced by the composer
+   */
+  public static boolean isComposerOwnedColumn(String dbColumnName) {
+    return dbColumnName != null
+        && COMPOSER_OWNED_COLUMNS.contains(dbColumnName.toUpperCase(java.util.Locale.ROOT));
+  }
+
+  /**
+   * The {@code maxLength} a caller should see for the given DB column when the enforced cap is
+   * narrower than the column itself — see {@link #MAX_LENGTH_OVERRIDES} (ETP-5806 CP-6b).
+   *
+   * @param dbColumnName AD column DB name (any case)
+   * @return the enforced maximum length, or {@code null} when the column has no override and the
+   *     AD column's own length is the right answer
+   */
+  public static Integer maxLengthOverride(String dbColumnName) {
+    return dbColumnName == null ? null
+        : MAX_LENGTH_OVERRIDES.get(dbColumnName.toUpperCase(java.util.Locale.ROOT));
   }
 
   /**
@@ -174,6 +283,54 @@ public final class AddressVirtualSelectorPolicy {
    */
   public static String publishedNameOverride(String dbColumnName) {
     return dbColumnName == null ? null : PUBLISHED_NAME_OVERRIDES.get(dbColumnName.toUpperCase());
+  }
+
+  /**
+   * The DB column name behind a published structured-address field name — the inverse of
+   * {@link #publishedNameOverride} (ETP-5806 CP-10b).
+   *
+   * @param publishedName the field name as {@code etendo_schema} advertises it, e.g. {@code streetName}
+   * @return the DB column name (e.g. {@code EM_OBSEPA_StrtNm}'s upper-cased form), or {@code null}
+   *     when {@code publishedName} is not one of the 3 overridden names
+   */
+  public static String rawColumnNameForPublishedName(String publishedName) {
+    return publishedName == null ? null : PUBLISHED_NAME_TO_COLUMN.get(publishedName);
+  }
+
+  /**
+   * The DAL property behind a published structured-address field name, when {@code dalEntity}'s
+   * OWN table carries that column directly — e.g. {@code bp-location}'s entity, which IS
+   * {@code C_Location} rather than a wrapper around it (ETP-5806 CP-12g, QA finding).
+   *
+   * <p><b>Why this exists alongside {@link #resolveVirtualColumns}.</b> That method only ever
+   * answers for a <em>wrapper</em> entity ({@link #isAddressWrapper}) — one whose own table does
+   * NOT carry the column, and that reaches it through a separate FK-linked
+   * {@code C_Location}/{@code C_BPartner_Location} row. {@code bp-location}'s entity is neither: it
+   * IS {@code C_Location}, so {@code isAddressWrapper} answers {@code false} for it and
+   * {@code streetName}/{@code buildingNumber}/{@code buildingName} are reported as
+   * {@code unknownFields} by {@code McpWriteRequestSupport#reportIfUnknown} even though
+   * {@link com.etendoerp.go.schemaforge.BpLocationHandler} recognises and persists them under
+   * every one of these 3 spellings. The field IS written correctly; only the write response's
+   * {@code unknownFields} lied about it, which an agent client reads as a silent failure.
+   *
+   * <p>Structural: it asks "does THIS entity's own table carry the backing AD column for this
+   * published name", a question answerable for any entity and naming none — not a branch on
+   * {@code bp-location} specifically. An entity that is itself {@code C_Location} (today, only
+   * {@code bp-location}) is the only one that can ever answer non-{@code null} here, but nothing
+   * about the check names that spec.
+   *
+   * @param dalEntity     the DAL entity a write targets; {@code null} answers {@code null}
+   * @param publishedName the field name as a caller may have sent it, e.g. {@code streetName}
+   * @return the property, when {@code dalEntity}'s own table carries the backing column;
+   *     {@code null} otherwise (including when {@code publishedName} is not one of the 3
+   *     structured-address fields)
+   */
+  public static Property ownPropertyForPublishedName(Entity dalEntity, String publishedName) {
+    if (dalEntity == null) {
+      return null;
+    }
+    String rawColumn = rawColumnNameForPublishedName(publishedName);
+    return rawColumn == null ? null : dalEntity.getPropertyByColumnName(rawColumn, false);
   }
 
   /**

@@ -43,6 +43,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.openbravo.dal.core.OBContext;
+import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.common.geography.Location;
 
@@ -139,6 +140,78 @@ class BpLocationHandlerTest {
     @AfterEach
     void closeFlag() {
       flags.close();
+    }
+
+    /**
+     * ETP-5806 QA pass 3 (repro): every MCP {@code etendo_create} on this spec answered
+     * {@code "streetName": {"sent": "Calle Retest P3", "persisted": null}} in
+     * {@code adjustedFields}, for the 3 values it had just saved correctly.
+     *
+     * <p>The cause is not persistence timing: {@code McpSupersededReconciler} computes
+     * {@code adjustedFields} by diffing the body the pre-hook received against the body handed to
+     * persistence, and {@code prepareStructuredAddress} REMOVES the 3 keys on purpose so this
+     * handler is their only writer. A removed key read as "the pre-hook dropped your value", and
+     * {@code adjustedFieldsHint} presents {@code persisted} as what was stored — so an agent
+     * concluded street, number and building were lost. {@code deferredCreateValues} is what lets
+     * the generic reconciler see the real value.
+     */
+    @Test
+    void deferredCreateValuesDeclaresWhatTheHandlerWillPersist() throws Exception {
+      JSONObject body = new JSONObject();
+      body.put("streetName", "Calle Retest P3");
+      body.put("buildingNumber", "9");
+      body.put("buildingName", "Torre P3");
+      body.put("cityName", "Madrid");
+      body.put("country", "106");
+
+      NeoContext ctx = buildCrudContext("POST", null, body);
+      assertNull(handler.handle(ctx));
+      // The pre-hook removed the 3 keys, which is exactly why the diagnostic needed this.
+      assertFalse(body.has("streetName"));
+
+      java.util.Map<String, Object> declared = handler.deferredCreateValues(ctx);
+
+      assertEquals("Calle Retest P3", declared.get("streetName"));
+      assertEquals("9", declared.get("buildingNumber"));
+      assertEquals("Torre P3", declared.get("buildingName"));
+      // Every spelling, because the lookup is by the key the caller actually sent.
+      assertEquals("Calle Retest P3", declared.get("oBSEPAStreetName"));
+      assertEquals("Calle Retest P3", declared.get("EM_OBSEPA_StrtNm"));
+      // The composed lines are overwritten by the post-hook too, whatever the body carried.
+      assertEquals("Calle Retest P3, 9 - Torre P3", declared.get("addressLine1"));
+      assertNull(declared.get("addressLine2"));
+    }
+
+    /**
+     * ETP-5806 QA pass 3 — the declaration is the value REALLY persisted, not an echo of the
+     * body, so a genuine rewrite stays reported: a blank Building Number is stored as "s/n" and
+     * {@code adjustedFields} must say so rather than claim the caller's own value was kept.
+     */
+    @Test
+    void deferredCreateValuesDeclaresTheSlashNFallbackNotTheSentBlank() throws Exception {
+      JSONObject body = new JSONObject();
+      body.put("streetName", "Gran Via");
+      body.put("cityName", "Madrid");
+      body.put("country", "ES");
+      // buildingNumber intentionally never sent at all.
+
+      NeoContext ctx = buildCrudContext("POST", null, body);
+      assertNull(handler.handle(ctx));
+
+      assertEquals("s/n", handler.deferredCreateValues(ctx).get("buildingNumber"));
+    }
+
+    /**
+     * ETP-5806 QA pass 3 — nothing is declared when this handler took no ownership of the write,
+     * so a request it did not intercept keeps the generic diagnostic exactly as it was.
+     */
+    @Test
+    void deferredCreateValuesIsEmptyWithoutAPendingWrite() throws Exception {
+      // A GET is neither a create nor an update, so handle() declines before recording anything.
+      NeoContext ctx = buildCrudContext("GET", null, new JSONObject());
+      assertNull(handler.handle(ctx));
+
+      assertTrue(handler.deferredCreateValues(ctx).isEmpty());
     }
 
     @Test
@@ -518,6 +591,133 @@ class BpLocationHandlerTest {
     }
 
     /**
+     * ETP-5806 CP-12i (QA finding, repro): generic CRUD serializes {@code _identifier} before the
+     * post-hook recomposes {@code Address1}, so an update that changed only {@code buildingNumber}
+     * answered with the NEW {@code addressLine1} next to the OLD {@code _identifier}. A later GET
+     * showed the right value, which is what made the divergence invisible.
+     */
+    @Test
+    void updateRefreshesStaleIdentifierInResponse() throws Exception {
+      Location existing = mock(Location.class);
+      when(existing.getOBSEPAStreetName()).thenReturn("Calle Retest P3");
+      when(existing.getOBSEPABuildingNumber()).thenReturn("9");
+      when(existing.getOBSEPABuildingName()).thenReturn("Torre P3");
+      when(existing.getCityName()).thenReturn("Madrid");
+      org.openbravo.model.common.geography.Country country =
+          mock(org.openbravo.model.common.geography.Country.class);
+      when(country.getId()).thenReturn("ES");
+      when(existing.getCountry()).thenReturn(country);
+      when(obDal.get(Location.class, "loc-12i")).thenReturn(existing);
+
+      // syncLinkedContactNames runs before the flush and reaches OBDal#createCriteria here,
+      // because buildDisplayName has a non-null city to work with — see the PATCH cases above.
+      @SuppressWarnings("unchecked")
+      OBCriteria<org.openbravo.model.common.businesspartner.Location> linkedCriteria =
+          mock(OBCriteria.class);
+      when(obDal.createCriteria(org.openbravo.model.common.businesspartner.Location.class))
+          .thenReturn(linkedCriteria);
+      when(linkedCriteria.list()).thenReturn(java.util.List.of());
+
+      JSONObject body = new JSONObject();
+      body.put("buildingNumber", "11");
+
+      NeoContext preCtx = buildCrudContext("PUT", "loc-12i", body);
+      assertNull(handler.handle(preCtx));
+
+      when(existing.getIdentifier())
+          .thenReturn("Calle Retest P3, 11 - Torre P3 - 28001 - Madrid - España");
+
+      NeoContext postCtx = buildCrudContext("PUT", "loc-12i", body);
+      postCtx.setPreviousResult(
+          wrapRecord("loc-12i", "Calle Retest P3, 9 - Torre P3 - 28001 - Madrid - España"));
+
+      NeoResponse result = handler.afterHandle(postCtx);
+
+      assertNotNull(result);
+      JSONObject recordJson =
+          result.getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
+      assertEquals("Calle Retest P3, 11 - Torre P3", recordJson.getString("addressLine1"));
+      assertEquals("Calle Retest P3, 11 - Torre P3 - 28001 - Madrid - España",
+          recordJson.getString("_identifier"));
+    }
+
+    /**
+     * ETP-5806 CP-12i — a response that never carried an {@code _identifier} does not gain one:
+     * this fixes a stale value, it does not widen the projection.
+     */
+    @Test
+    void updateWithoutIdentifierInResponseDoesNotAddOne() throws Exception {
+      Location existing = mock(Location.class);
+      when(existing.getOBSEPAStreetName()).thenReturn("Gran Via");
+      when(existing.getOBSEPABuildingNumber()).thenReturn("45");
+      when(existing.getCityName()).thenReturn("Madrid");
+      org.openbravo.model.common.geography.Country country =
+          mock(org.openbravo.model.common.geography.Country.class);
+      when(country.getId()).thenReturn("ES");
+      when(existing.getCountry()).thenReturn(country);
+      when(obDal.get(Location.class, "loc-12i-b")).thenReturn(existing);
+
+      // syncLinkedContactNames runs before the flush and reaches OBDal#createCriteria here,
+      // because buildDisplayName has a non-null city to work with — see the PATCH cases above.
+      @SuppressWarnings("unchecked")
+      OBCriteria<org.openbravo.model.common.businesspartner.Location> linkedCriteria =
+          mock(OBCriteria.class);
+      when(obDal.createCriteria(org.openbravo.model.common.businesspartner.Location.class))
+          .thenReturn(linkedCriteria);
+      when(linkedCriteria.list()).thenReturn(java.util.List.of());
+
+      JSONObject body = new JSONObject();
+      body.put("buildingNumber", "47");
+
+      NeoContext preCtx = buildCrudContext("PUT", "loc-12i-b", body);
+      assertNull(handler.handle(preCtx));
+
+      NeoContext postCtx = buildCrudContext("PUT", "loc-12i-b", body);
+      postCtx.setPreviousResult(wrapRecord("loc-12i-b"));
+
+      NeoResponse result = handler.afterHandle(postCtx);
+
+      assertNotNull(result);
+      assertFalse(result.getBody().getJSONObject("response").getJSONArray("data")
+          .getJSONObject(0).has("_identifier"));
+    }
+
+    /**
+     * ETP-5806 CP-10b (QA finding, repro): the response carries ONE spelling of each structured
+     * field — the published name the schema advertises — never the raw DAL property alongside it.
+     * The duplicate was not in any schema view, so an agent that asked for it by name got it back
+     * in {@code unknownFields} while the response carried its value.
+     */
+    @Test
+    void createResponseCarriesOnlyTheCanonicalFieldNames() throws Exception {
+      JSONObject body = new JSONObject();
+      body.put("streetName", "Gran Via");
+      body.put("buildingNumber", "45");
+      body.put("buildingName", "Torre A");
+      body.put("cityName", "Madrid");
+      body.put("country", "ES");
+
+      NeoContext preCtx = buildCrudContext("POST", null, body);
+      assertNull(handler.handle(preCtx));
+
+      Location saved = mock(Location.class);
+      when(obDal.get(Location.class, "new-loc-10b")).thenReturn(saved);
+
+      NeoContext postCtx = buildCrudContext("POST", null, body);
+      postCtx.setPreviousResult(wrapRecord("new-loc-10b"));
+
+      NeoResponse result = handler.afterHandle(postCtx);
+
+      assertNotNull(result);
+      JSONObject recordJson =
+          result.getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
+      assertEquals("Gran Via", recordJson.getString("streetName"));
+      assertFalse(recordJson.has("oBSEPAStreetName"));
+      assertFalse(recordJson.has("oBSEPABuildingNumber"));
+      assertFalse(recordJson.has("oBSEPABuildingName"));
+    }
+
+    /**
      * ETP-5806 follow-up (QA finding): a create whose body never carries {@code buildingNumber}
      * at all persists {@code "s/n"} — the same convention the frontend already applies — instead
      * of the request having been rejected as missing a mandatory field.
@@ -601,6 +801,19 @@ class BpLocationHandlerTest {
       when(existingCountry.getId()).thenReturn("ES");
       when(existing.getCountry()).thenReturn(existingCountry);
       when(obDal.get(Location.class, "loc-1")).thenReturn(existing);
+      // syncLinkedContactNames (ETP-5806 CP-12c) runs unconditionally after the setters above and
+      // calls OBDal#createCriteria on C_BPartner_Location — these getters give buildDisplayName
+      // enough to compute a non-null name, unlike the bare-mock create tests above where every
+      // getter is null and that call short-circuits before reaching createCriteria at all. Left
+      // unstubbed, createCriteria() returns Mockito's default null and criteria.list() NPEs,
+      // silently swallowed by afterHandle's catch-all — which skipped flush() with no visible
+      // failure except this test's own verify(obDal).flush(). No linked contacts for this case.
+      @SuppressWarnings("unchecked")
+      OBCriteria<org.openbravo.model.common.businesspartner.Location> linkedCriteria =
+          mock(OBCriteria.class);
+      when(obDal.createCriteria(org.openbravo.model.common.businesspartner.Location.class))
+          .thenReturn(linkedCriteria);
+      when(linkedCriteria.list()).thenReturn(java.util.List.of());
 
       JSONObject body = new JSONObject();
       body.put("buildingName", "Torre A"); // partial body: only the optional field changes
@@ -618,6 +831,61 @@ class BpLocationHandlerTest {
       verify(existing).setOBSEPABuildingName("Torre A");
       verify(existing).setAddressLine1("Gran Via, 45 - Torre A");
       verify(obDal).flush();
+    }
+
+    /**
+     * ETP-5806 CP-12c (QA finding, Pasada 2, bloqueante) — repro: editing a C_Location through
+     * {@code bp-location} correctly updates the record's own computed Address1 preview, but the
+     * Contacts window's "Dirección" column and {@code _identifier} (both sourced from
+     * {@code C_BPartner_Location.Name}) kept showing the value from before the edit, because this
+     * handler only ever wrote {@code C_Location}'s own columns and never touched any linked
+     * {@code C_BPartner_Location} row. Editing the exact same record through
+     * {@code contacts/locationAddress} instead DID propagate, since that handler recomputes its
+     * own row's name on every update ({@code ContactAddressName#forUpdate}).
+     *
+     * <p>Asserts {@link BpLocationHandler} now re-syncs every {@code C_BPartner_Location} linked
+     * to the edited {@code C_Location} with the freshly-computed display name.
+     */
+    @Test
+    void patchResyncsTheNameOfEveryLinkedContactAddress() throws Exception {
+      Location existing = mock(Location.class);
+      when(existing.getOBSEPAStreetName()).thenReturn("Gran Via");
+      when(existing.getOBSEPABuildingNumber()).thenReturn("45");
+      when(existing.getOBSEPABuildingName()).thenReturn("Torre A");
+      when(existing.getCityName()).thenReturn("Madrid");
+      // Simulates the post-write state applyGeoLocFields-equivalent setAddressLine1 left behind —
+      // a plain mock's getter is independent of the setter the production code calls on it.
+      when(existing.getAddressLine1()).thenReturn("Gran Via, 99 - Torre A");
+      org.openbravo.model.common.geography.Country existingCountry =
+          mock(org.openbravo.model.common.geography.Country.class);
+      when(existingCountry.getId()).thenReturn("ES");
+      when(existing.getCountry()).thenReturn(existingCountry);
+      when(obDal.get(Location.class, "loc-1")).thenReturn(existing);
+
+      org.openbravo.model.common.businesspartner.Location linkedContact =
+          mock(org.openbravo.model.common.businesspartner.Location.class);
+      @SuppressWarnings("unchecked")
+      OBCriteria<org.openbravo.model.common.businesspartner.Location> linkedCriteria =
+          mock(OBCriteria.class);
+      when(obDal.createCriteria(org.openbravo.model.common.businesspartner.Location.class))
+          .thenReturn(linkedCriteria);
+      when(linkedCriteria.list()).thenReturn(java.util.List.of(linkedContact));
+
+      JSONObject body = new JSONObject();
+      body.put("buildingNumber", "99"); // the exact repro: only buildingNumber changes
+
+      assertNull(handler.handle(buildCrudContext("PATCH", "loc-1", body)));
+
+      NeoContext postCtx = buildCrudContext("PATCH", "loc-1", body);
+      postCtx.setPreviousResult(wrapRecord("loc-1"));
+
+      NeoResponse result = handler.afterHandle(postCtx);
+
+      assertNotNull(result);
+      verify(existing).setAddressLine1("Gran Via, 99 - Torre A");
+      verify(linkedContact).setName("Madrid, Gran Via, 99 - Torre A");
+      verify(linkedContact).setUpdated(any(java.util.Date.class));
+      verify(obDal).save(linkedContact);
     }
 
     @Test
@@ -1094,18 +1362,29 @@ class BpLocationHandlerTest {
   /**
    * The key spelling a caller actually sends, per channel — the trap the earlier revisions kept
    * falling into. The flag-OFF path has stripped all 3 spellings since {@code 7ed80a64d}; the
-   * flag-ON path read only the PUBLISHED one, and the curated API key for this entity is the DAL
-   * property name, so REST and the SPA ({@code BpLocationForm.jsx}) send
-   * {@code oBSEPAStreetName} — which the ON path did not read at all.
+   * flag-ON path read only the PUBLISHED one, so every other spelling was dropped on the way in.
    *
    * <p>Every test here deliberately sends a spelling the handler did NOT previously expect: a
    * suite that mirrors the handler's own assumption about the wire format cannot catch a
    * wire-format bug.
    *
+   * <p><b>ETP-5806 CP-10b — the SPA is no longer one of the non-canonical senders.</b> An earlier
+   * revision of this javadoc said "the curated API key for this entity is the DAL property name,
+   * so REST and the SPA ({@code BpLocationForm.jsx}) send {@code oBSEPAStreetName}". That stopped
+   * being true once {@code decisions.json} pinned the curated {@code name} overrides and
+   * {@code push-to-neo} wrote them to {@code ETGO_SF_FIELD.JAVA_QUALIFIER}: the contract and the
+   * generated form both carry {@code streetName} now. The DAL-property and raw-column spellings
+   * below are still reachable (notably through {@code /batch}, and on an instance that has not yet
+   * applied {@code export.database}), which is why the input tolerance stays and is still tested —
+   * but the RESPONSE is canonical-only, which is what
+   * {@link #theResponseCarriesOnlyTheCanonicalSpellingOfEachStructuredField} guards.
+   *
    * <ul>
-   *   <li>REST / SPA → the curated API key: {@code oBSEPAStreetName}…</li>
+   *   <li>REST / SPA → the published name, same as MCP, since the qualifier rename</li>
    *   <li>MCP single → the published name {@code etendo_schema} advertises: {@code streetName}…
    *       (already covered by {@link Create}/{@link Update})</li>
+   *   <li>A stale client, or an instance mid-rollout → the raw DAL property:
+   *       {@code oBSEPAStreetName}… still accepted on the way in</li>
    *   <li>{@code /batch} + {@code etendo_batch} → no key mapping runs, so the raw AD column
    *       reaches the body verbatim: {@code EM_OBSEPA_StrtNm}, {@code City},
    *       {@code C_Country_ID}</li>
@@ -1353,13 +1632,29 @@ class BpLocationHandlerTest {
     }
 
     /**
-     * The response carries the value under BOTH spellings, because both are on the wire: MCP reads
+     * <b>Tolerant input, canonical output</b> — the asymmetry this handler deliberately keeps
+     * (ETP-5806 CP-10b, QA pass 3). The body here is deliberately the NON-canonical spelling (the
+     * raw DAL property), and it is still accepted and persisted; the response comes back under the
+     * one canonical published name.
+     *
+     * <p><b>This test previously asserted the opposite</b> and was renamed from
+     * {@code theResponseCarriesBothSpellingsOfEachStructuredField} (test-reuse-policy.md point 2:
+     * rewritten, not deleted — the coverage it held is kept and inverted, so it now guards the new
+     * contract instead of the retired one). Its old javadoc justified the duplicate with "MCP reads
      * {@code streetName} from {@code etendo_schema}, the SPA reads {@code oBSEPAStreetName} from
-     * the contract. Writing only one left the other showing the pre-write value.
+     * the contract". That premise is dead: {@code decisions.json} pins the curated {@code name}
+     * overrides, {@code push-to-neo} wrote them to {@code ETGO_SF_FIELD.JAVA_QUALIFIER} (committed
+     * in {@code ETGO_SF_FIELD.xml}), and {@code artifacts/bp-location/contract.json} plus the
+     * generated {@code BpLocationForm.jsx}/{@code BpLocationPage.jsx} now carry
+     * {@code streetName} — a grep for {@code oBSEPA} over the whole SPA finds nothing. The
+     * duplicate had a real cost: those keys appear in no view of {@code etendo_schema}, so an agent
+     * that read one off a response and asked for it by name got it back in {@code unknownFields}.
      */
     @Test
-    void theResponseCarriesBothSpellingsOfEachStructuredField() throws Exception {
+    void theResponseCarriesOnlyTheCanonicalSpellingOfEachStructuredField() throws Exception {
       JSONObject body = new JSONObject();
+      // INPUT stays tolerant: the raw DAL property is still a spelling a caller may send
+      // (/batch and etendo_batch run no key mapping at all). See KEYS_STREET_NAME.
       body.put("oBSEPAStreetName", "Gran Via");
       body.put("oBSEPABuildingNumber", "45");
       body.put("oBSEPABuildingName", "Torre A");
@@ -1376,15 +1671,28 @@ class BpLocationHandlerTest {
       JSONObject rec = handler.afterHandle(postCtx)
           .getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
 
+      // The non-canonical input WAS accepted and persisted...
+      verify(saved).setOBSEPAStreetName("Gran Via");
+      verify(saved).setOBSEPABuildingNumber("45");
+      verify(saved).setOBSEPABuildingName("Torre A");
+      // ...and comes back under the one name etendo_schema and the SPA both use.
       assertEquals("Gran Via", rec.getString("streetName"));
-      assertEquals("Gran Via", rec.getString("oBSEPAStreetName"));
-      assertEquals("45", rec.getString("oBSEPABuildingNumber"));
-      assertEquals("Torre A", rec.getString("oBSEPABuildingName"));
+      assertEquals("45", rec.getString("buildingNumber"));
+      assertEquals("Torre A", rec.getString("buildingName"));
+      // OUTPUT is canonical only: the raw DAL spelling is never echoed back.
+      assertFalse(rec.has("oBSEPAStreetName"));
+      assertFalse(rec.has("oBSEPABuildingNumber"));
+      assertFalse(rec.has("oBSEPABuildingName"));
     }
 
-    /** A GET enrichment publishes both spellings for the same reason. */
+    /**
+     * A GET enrichment publishes the canonical spelling only, for the same reason — renamed from
+     * {@code aGetIsEnrichedUnderBothSpellings} (ETP-5806 CP-10b). The generic projection already
+     * emits {@code streetName} on its own now that the curated qualifier differs from the DAL
+     * property name; this enrichment is what makes the value current, not what names it.
+     */
     @Test
-    void aGetIsEnrichedUnderBothSpellings() throws Exception {
+    void aGetIsEnrichedUnderTheCanonicalSpellingOnly() throws Exception {
       Location geoLoc = mock(Location.class);
       when(geoLoc.getOBSEPAStreetName()).thenReturn("Gran Via");
       when(geoLoc.getOBSEPABuildingNumber()).thenReturn("45");
@@ -1397,7 +1705,9 @@ class BpLocationHandlerTest {
           .getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
 
       assertEquals("Gran Via", rec.getString("streetName"));
-      assertEquals("Gran Via", rec.getString("oBSEPAStreetName"));
+      assertEquals("45", rec.getString("buildingNumber"));
+      assertFalse(rec.has("oBSEPAStreetName"));
+      assertFalse(rec.has("oBSEPABuildingNumber"));
     }
   }
 
@@ -1533,6 +1843,17 @@ class BpLocationHandlerTest {
         .requestBody(body)
         .endpointType(NeoEndpointType.CRUD)
         .build();
+  }
+
+  /**
+   * ETP-5806 CP-12i — the same envelope generic CRUD produces, carrying the {@code _identifier}
+   * it serialized BEFORE the handler's post-hook recomposed {@code Address1}.
+   */
+  private NeoResponse wrapRecord(String id, String staleIdentifier) throws Exception {
+    NeoResponse wrapped = wrapRecord(id);
+    wrapped.getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0)
+        .put("_identifier", staleIdentifier);
+    return wrapped;
   }
 
   private NeoResponse wrapRecord(String id) throws Exception {
