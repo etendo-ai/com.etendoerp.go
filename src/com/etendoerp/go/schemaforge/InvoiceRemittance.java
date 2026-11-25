@@ -28,6 +28,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONArray;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.criterion.Restrictions;
 import org.openbravo.dal.core.OBContext;
@@ -267,6 +268,31 @@ public final class InvoiceRemittance {
     String key = STATUS_LABEL_PREFIX + status;
     String label = NeoMessageText.text(key);
     return label == null || key.equals(label) ? status : label;
+  }
+
+  /**
+   * ETP-6247: the remittance a payment came from — remitted ({@code REM_SENT}), collected or
+   * returned alike — with its status code and its name in the request language
+   * ({@link #remittanceStatusLabel}), so the list can say «En la remesa N ·
+   * Pendiente de envío» and route edit/delete to the remittance
+   * (a remitted payment refuses both, see {@link #paymentRefusal}). Absent for a
+   * payment registered by hand. Written into an {@code invoicePayments} list item by
+   * {@code PaymentRegistrationService.paymentListItem}.
+   *
+   * @param item    the list item to complete
+   * @param payment the listed payment
+   * @throws JSONException if the item cannot be written
+   */
+  static void putRemittance(JSONObject item, FIN_Payment payment) throws JSONException {
+    Remittance remittance = remittanceOf(payment);
+    if (remittance != null) {
+      item.put("remittanceId", remittance.getId());
+      item.put("remittanceDocumentNo", remittance.getDocumentNo());
+      String status = remittanceStatus(remittance);
+      item.put("remittanceStatus", status == null ? JSONObject.NULL : status);
+      item.put("remittanceStatusLabel", status == null ? JSONObject.NULL
+          : remittanceStatusLabel(status));
+    }
   }
 
   // ─── refusals ──────────────────────────────────────────────────────────────

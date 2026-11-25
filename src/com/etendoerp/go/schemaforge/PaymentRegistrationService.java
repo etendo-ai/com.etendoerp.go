@@ -55,7 +55,6 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentMethod;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FinAccPaymentMethod;
-import org.openbravo.module.remittance.Remittance;
 import org.openbravo.service.db.DalConnectionProvider;
 import org.openbravo.service.json.JsonUtils;
 
@@ -473,28 +472,8 @@ public final class PaymentRegistrationService {
     if (!Boolean.TRUE.equals(p.isProcessed())) {
       item.put("creditSourcesUsed", PaymentInvoiceApplications.creditSourcesUsedByPayment(p));
     }
-    putRemittance(item, p);
+    InvoiceRemittance.putRemittance(item, p);
     return item;
-  }
-
-  /**
-   * ETP-6247: the remittance a payment came from — remitted ({@code REM_SENT}), collected or
-   * returned alike — with its status code and its name in the request language
-   * ({@link InvoiceRemittance#remittanceStatusLabel}), so the list can say «En la remesa N ·
-   * Pendiente de envío» and route edit/delete to the remittance
-   * (a remitted payment refuses both, see {@link InvoiceRemittance#paymentRefusal}). Absent for a
-   * payment registered by hand.
-   */
-  private static void putRemittance(JSONObject item, FIN_Payment p) throws Exception {
-    Remittance remittance = InvoiceRemittance.remittanceOf(p);
-    if (remittance != null) {
-      item.put("remittanceId", remittance.getId());
-      item.put("remittanceDocumentNo", remittance.getDocumentNo());
-      String status = InvoiceRemittance.remittanceStatus(remittance);
-      item.put("remittanceStatus", status == null ? JSONObject.NULL : status);
-      item.put("remittanceStatusLabel", status == null ? JSONObject.NULL
-          : InvoiceRemittance.remittanceStatusLabel(status));
-    }
   }
 
   // ─── PAYMENT METHODS: list the full catalog for the invoice's direction ────
