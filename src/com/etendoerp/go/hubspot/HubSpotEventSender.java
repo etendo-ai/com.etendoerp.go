@@ -98,8 +98,6 @@ class HubSpotEventSender {
 
   static final String SELF_SERVE = "self_serve";
   private static final String PROPERTIES = "properties";
-  // A path of the HubSpot API, appended to the configurable base URL (java:S1075 does not apply).
-  private static final String COMPANIES_PATH = "/crm/v3/objects/companies"; // NOSONAR
   static final String DEAL_SUFFIX = " — Self-serve";
 
   /** Deal properties of the subscription, created by marketing on 2026-10-23. */
@@ -115,7 +113,8 @@ class HubSpotEventSender {
   static final String STATE_SUSPENDED = "suspended";
   static final String STATE_CANCELLED = "cancelled";
 
-  private static final String DEALS_PATH = "/crm/v3/objects/deals"; // NOSONAR - see COMPANIES_PATH
+  // A path of the HubSpot API, appended to the configurable base URL (java:S1075 does not apply).
+  private static final String DEALS_PATH = "/crm/v3/objects/deals"; // NOSONAR
   private static final String PROPERTIES_QUERY = "?properties=";
   private static final String DEAL_STAGE = "dealstage";
   private static final String PLAN = "etendo_plan";
@@ -137,14 +136,22 @@ class HubSpotEventSender {
   static final String COUNTRY_CODE = "hs_country_region_code";
   /** HubSpot's standard company name of the contact (ETP-6363, sent with {@code DEMO_READY}). */
   static final String CONTACT_COMPANY = "company";
+  /**
+   * Marketing's contact property of the channel a contact came by (ETP-6363). The signup API's
+   * accounts (the website's self-serve) are given theirs by marketing; the app's own sign-ups are
+   * {@link #CHANNEL_APP}, so the two can be told apart.
+   */
+  static final String ENTRY_CHANNEL = "canal_entrada";
+  /** {@link #ENTRY_CHANNEL} of an account created in the app itself. */
+  static final String CHANNEL_APP = "trial_app";
 
   /**
    * ETP-6363 — the fields of the sign-up form ("Alta app – onboarding"), from the contact's own
-   * properties: what is known at sign-up. The phone, the sector and the country code are not
-   * fields of the form; the account's event writes them on the contact right after.
+   * properties: what is known at sign-up. The phone, the sector, the country code and the entry
+   * channel are not fields of the form; the account's event writes them on the contact right after.
    */
   static final List<String> SIGNUP_FORM_FIELDS = List.of(EMAIL, "firstname", "lastname",
-      COUNTRY, "etendo_camino_entrada");
+      COUNTRY, "etendo_camino_entrada", ACCOUNT_ID);
   /** HubSpot's object type of a contact, which each form field names. */
   static final String CONTACT_OBJECT_TYPE = "0-1";
   /** How many attempts the account's event waits for the sign-up form's contact. */
@@ -170,6 +177,7 @@ class HubSpotEventSender {
   private final HubSpotOutboxStore store;
   private final DemoTrials trials;
   private final HubSpotSignupFormSender signupForms;
+  private final HubSpotCompanies companies;
 
   HubSpotEventSender(HubSpotClient client, HubSpotConfiguration configuration,
       HubSpotOutboxStore store, DemoTrials trials) {
@@ -183,6 +191,7 @@ class HubSpotEventSender {
     this.store = store;
     this.trials = trials;
     this.signupForms = new HubSpotSignupFormSender(client, signupForm);
+    this.companies = new HubSpotCompanies(client);
   }
 
   /**
@@ -303,14 +312,14 @@ class HubSpotEventSender {
     JSONObject existingDeal = searchDeal(event.accountId());
     if (existingDeal == null) {
       // An account confirmed before the deal moved to the confirmation (ETP-6082) has none yet.
-      String companyId = createCompany(companyName, country, contactId);
+      String companyId = companies.forContact(companyName, country, event.email(), contactId);
       return createAccountDeal(event, StringUtils.defaultIfBlank(companyName, event.email()),
           contactId, companyId);
     }
     String dealId = existingDeal.getString("id");
     if (configuration.pipelineId().equals(pipelineOf(existingDeal))
         && StringUtils.isNotBlank(companyName)) {
-      completeAccountDeal(dealId, companyName, country, contactId);
+      completeAccountDeal(dealId, companyName, country, event.email(), contactId);
     }
     return dealId;
   }
@@ -333,14 +342,14 @@ class HubSpotEventSender {
    * retry finds the company already associated and does not create a second one.
    */
   private void completeAccountDeal(String dealId, String companyName, String country,
-      String contactId) throws CallFailed, JSONException {
+      String email, String contactId) throws CallFailed, JSONException {
     updateDeal(dealId, new JSONObject().put(DEAL_NAME, companyName + DEAL_SUFFIX));
     if (dealCompany(dealId) != null) {
       return;
     }
-    String companyId = createCompany(companyName, country, contactId);
+    String companyId = companies.forContact(companyName, country, email, contactId);
     if (companyId != null) {
-      call("PUT", "/crm/v4/objects/deals/" + encode(dealId) // NOSONAR - see COMPANIES_PATH
+      call("PUT", "/crm/v4/objects/deals/" + encode(dealId) // NOSONAR - a HubSpot API path (S1075)
           + "/associations/default/companies/" + encode(companyId), null);
     }
   }
@@ -661,7 +670,7 @@ class HubSpotEventSender {
         .put(ASSOCIATIONS, associations)));
   }
 
-  /** The company of a deal, best effort like {@link #createCompany}. */
+  /** The company of a deal, best effort like {@link HubSpotCompanies}. */
   private String dealCompany(String dealId) throws CallFailed, JSONException {
     String path = DEALS_PATH + "/" + encode(dealId) + "/associations/companies"; // NOSONAR
     Response response = request("GET", path, null);
@@ -703,9 +712,14 @@ class HubSpotEventSender {
    *                  and keeps the way in marketing gave it
    */
   private JSONObject contactBase(PendingEvent event, boolean selfServe) throws JSONException {
-    JSONObject properties = new JSONObject().put(EMAIL, event.email());
+    // ETP-6363: the account's id on the contact too, so marketing joins it to the product's data.
+    JSONObject properties = new JSONObject().put(EMAIL, event.email())
+        .put(ACCOUNT_ID, event.accountId());
     if (selfServe) {
       properties.put("etendo_camino_entrada", SELF_SERVE);
+      if (StringUtils.isBlank(event.signupChannel())) {
+        properties.put(ENTRY_CHANNEL, CHANNEL_APP);
+      }
     }
     String name = StringUtils.trimToEmpty(event.name());
     if (!name.isEmpty()) {
@@ -758,8 +772,25 @@ class HubSpotEventSender {
     return found == null ? null : found.getString("id");
   }
 
-  /** The deal of the account: the only one holding its id, which HubSpot keeps unique. */
+  /**
+   * The deal of the account: the only one holding its id, which HubSpot keeps unique. The one its
+   * {@code ACCOUNT_CREATED} created is read by id first (ETP-6363): HubSpot's search finds a new
+   * deal only some seconds later, and an event sent right after it would otherwise create a second
+   * deal, which HubSpot refuses (the account's id is already taken). One deleted in HubSpot is
+   * searched for like any other.
+   */
   private JSONObject searchDeal(String accountId) throws CallFailed, JSONException {
+    String recorded = store.findAccountDealId(accountId);
+    if (recorded != null) {
+      String path = DEALS_PATH + "/" + encode(recorded) + PROPERTIES_QUERY + PIPELINE;
+      Response response = request("GET", path, null);
+      if (response.isSuccess()) {
+        return new JSONObject(response.body());
+      }
+      if (response.isRetryable()) {
+        throw new CallFailed(Outcome.retry(describe("GET", path, response)));
+      }
+    }
     return searchDeal(new JSONArray().put(equalTo(ACCOUNT_ID, accountId)));
   }
 
@@ -778,35 +809,6 @@ class HubSpotEventSender {
   }
 
 
-  /**
-   * Creates the company. A company is a courtesy: the deal is what links HubSpot with Etendo, so a
-   * refusal (a token without the companies scope, for one) leaves the deal without a company
-   * instead of holding the deal back.
-   */
-  private String createCompany(String name, String country, String contactId)
-      throws CallFailed, JSONException {
-    if (StringUtils.isBlank(name)) {
-      return null;
-    }
-    JSONObject properties = new JSONObject().put("name", name);
-    if (StringUtils.isNotBlank(country)) {
-      properties.put("country", country);
-    }
-    JSONObject body = new JSONObject()
-        .put(PROPERTIES, properties)
-        .put(ASSOCIATIONS, new JSONArray().put(association(contactId, COMPANY_TO_CONTACT)));
-    Response response = request("POST", COMPANIES_PATH, body);
-    if (!response.isSuccess()) {
-      if (response.status() == 429 || response.status() >= 500) {
-        throw new CallFailed(Outcome.retry(describe("POST", COMPANIES_PATH,
-            response)));
-      }
-      log.warn("HubSpot refused the company '{}'; the deal is created without it: {}", name,
-          describe("POST", COMPANIES_PATH, response));
-      return null;
-    }
-    return idOf(new JSONObject(response.body()));
-  }
 
 
   private JSONObject call(String method, String path, JSONObject body)
@@ -879,7 +881,7 @@ class HubSpotEventSender {
   }
 
   /** Carries the outcome of a call that ended the send early. */
-  private static final class CallFailed extends Exception {
+  static final class CallFailed extends Exception {
     private static final long serialVersionUID = 1L;
     private final transient Outcome outcome;
 

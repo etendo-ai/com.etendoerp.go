@@ -148,7 +148,7 @@ class DalHubSpotOutboxStore implements HubSpotOutboxStore {
 
   private static final String PENDING_SQL = "select o.etgo_hubspot_outbox_id, o.etgo_account_id,"
       + " o.event_type, o.environment_id, o.payload, o.attempt_count, o.next_attempt_at,"
-      + " a.email, a.name, o.occurred_at, a.phone, a.sector, a.countrycode"
+      + " a.email, a.name, o.occurred_at, a.phone, a.sector, a.countrycode, a.signup_channel"
       + " from etgo_hubspot_outbox o join etgo_account a on a.etgo_account_id = o.etgo_account_id"
       + " where o.status = 'PENDING' and o.isactive = 'Y'"
       + " order by o.created, o.etgo_hubspot_outbox_id";
@@ -328,9 +328,19 @@ class DalHubSpotOutboxStore implements HubSpotOutboxStore {
       pending.add(new PendingEvent((String) c[0], (String) c[1], (String) c[2], (String) c[3],
           (String) c[4], c[5] == null ? 0 : ((Number) c[5]).intValue(), instant(c[6]),
           (String) c[7], (String) c[8], instant(c[9]), (String) c[10], (String) c[11],
-          (String) c[12]));
+          (String) c[12], (String) c[13]));
     }
     return pending;
+  }
+
+  @Override
+  public String findAccountDealId(String accountId) {
+    List<?> rows = query("select hubspot_object_id from etgo_hubspot_outbox"
+        + " where etgo_account_id = :account and event_type = 'ACCOUNT_CREATED'"
+        + " and status = 'SENT'")
+        .setParameter(PARAM_ACCOUNT, accountId)
+        .getResultList();
+    return rows.isEmpty() ? null : StringUtils.trimToNull((String) rows.get(0));
   }
 
   @Override

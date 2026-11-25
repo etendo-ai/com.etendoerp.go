@@ -244,6 +244,16 @@ interface HubSpotOutboxStore {
   String findDealId(String accountId);
 
   /**
+   * The deal the account's {@code ACCOUNT_CREATED} event created (ETP-6363). HubSpot's search
+   * indexes a new deal only some seconds later, so the account's next event, often sent in the same
+   * run, takes it from here instead of finding nothing and creating a second one.
+   *
+   * @param accountId the account
+   * @return the deal's id, or {@code null} while that event has not been sent
+   */
+  String findAccountDealId(String accountId);
+
+  /**
    * Finds the status of one of an account's events.
    *
    * @param accountId the account
@@ -362,10 +372,20 @@ interface HubSpotOutboxStore {
    * @param phone         the account's phone, or {@code null}
    * @param sector        the business sector chosen at sign-up, or {@code null}
    * @param countryCode   the country chosen at sign-up (ISO alpha-2), or {@code null}
+   * @param signupChannel the signup API channel that created the account (the website), or
+   *                      {@code null} for an account created in the app itself
    */
   record PendingEvent(String id, String accountId, String eventType, String environmentId,
       String payload, int attemptCount, Instant nextAttemptAt, String email, String name,
-      Instant occurredAt, String phone, String sector, String countryCode) {
+      Instant occurredAt, String phone, String sector, String countryCode, String signupChannel) {
+
+    /** An event of an account created in the app (ETP-6363: no signup API channel). */
+    PendingEvent(String id, String accountId, String eventType, String environmentId,
+        String payload, int attemptCount, Instant nextAttemptAt, String email, String name,
+        Instant occurredAt, String phone, String sector, String countryCode) {
+      this(id, accountId, eventType, environmentId, payload, attemptCount, nextAttemptAt, email,
+          name, occurredAt, phone, sector, countryCode, null);
+    }
 
     /** An event of an account with no country (ETP-6363: asked only from then on). */
     PendingEvent(String id, String accountId, String eventType, String environmentId,
