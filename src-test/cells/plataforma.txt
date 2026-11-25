@@ -4,7 +4,7 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=plataforma [-Pkind=mock|integration|all]
 
-# --- con mocks (658)
+# --- con mocks (662)
 com.etendoerp.go.accounts.AccountDemoExpiryHandlerTest
 com.etendoerp.go.accounts.AccountGroupKeyHandlerTest
 com.etendoerp.go.agentchat.AgentChatConversationsServletTest
@@ -63,6 +63,7 @@ com.etendoerp.go.mcp.McpEntityNamesPrimaryTest
 com.etendoerp.go.mcp.McpEntityNamesTest
 com.etendoerp.go.mcp.McpFeedbackToolTest
 com.etendoerp.go.mcp.McpFieldProjectionTest
+com.etendoerp.go.mcp.McpFieldValidationRulesTest
 com.etendoerp.go.mcp.McpFieldValuesActionTest
 com.etendoerp.go.mcp.McpFieldViewSingleResolverCallSiteTest
 com.etendoerp.go.mcp.McpFieldViewTest
@@ -319,6 +320,7 @@ com.etendoerp.go.schemaforge.AnonymousAttachmentStreamerTest
 com.etendoerp.go.schemaforge.BatchJobJdbcStoreSqlTest
 com.etendoerp.go.schemaforge.BatchJobServiceTest
 com.etendoerp.go.schemaforge.BatchRowGrouperTest
+com.etendoerp.go.schemaforge.BatchServiceDeclarativeValidationTest
 com.etendoerp.go.schemaforge.BatchServiceRobustnessTest
 com.etendoerp.go.schemaforge.BatchServiceTest
 com.etendoerp.go.schemaforge.CalloutRequestBuilderDateTest
@@ -376,6 +378,7 @@ com.etendoerp.go.schemaforge.NeoCsvExportServiceTest
 com.etendoerp.go.schemaforge.NeoCurrencyPrecisionTest
 com.etendoerp.go.schemaforge.NeoCurrencyTotalsTest
 com.etendoerp.go.schemaforge.NeoCustomizedSelectorCheckTest
+com.etendoerp.go.schemaforge.NeoDeclarativeValidationTest
 com.etendoerp.go.schemaforge.NeoDefaultTenantGuardTest
 com.etendoerp.go.schemaforge.NeoDefaultsCascadeHelperTest
 com.etendoerp.go.schemaforge.NeoDefaultsEndpointTest

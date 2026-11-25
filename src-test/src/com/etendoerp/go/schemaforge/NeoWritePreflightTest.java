@@ -21,6 +21,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -73,6 +74,7 @@ public class NeoWritePreflightTest {
   private MockedStatic<NeoActionRecordGuard> targets;
   private MockedStatic<NeoFieldFilter> fieldFilters;
   private MockedStatic<OBContext> obContext;
+  private MockedStatic<NeoDeclarativeValidation> declarative;
   private Tab adTab;
   private SFEntity sfEntity;
 
@@ -86,6 +88,7 @@ public class NeoWritePreflightTest {
         .thenReturn(null);
     targets = mockStatic(NeoActionRecordGuard.class);
     fieldFilters = mockStatic(NeoFieldFilter.class);
+    declarative = mockStatic(NeoDeclarativeValidation.class);
     obContext = mockStatic(OBContext.class);
     obContext.when(OBContext::getOBContext).thenReturn(mock(OBContext.class));
 
@@ -109,6 +112,7 @@ public class NeoWritePreflightTest {
     targets.close();
     fieldFilters.close();
     obContext.close();
+    declarative.close();
     Mockito.framework().clearInlineMocks();
   }
 
@@ -130,6 +134,31 @@ public class NeoWritePreflightTest {
     ownership.verify(() -> NeoReferenceOwnership.refuseUnownedReferences(eq(adTab),
         fields.capture(), parentId == null ? isNull() : eq(parentId)));
     return fields;
+  }
+
+  /** A declared-constraint refusal comes back before any reference check runs. */
+  @Test
+  public void testDeclarativeRefusalPrecedesTheReferenceChecks() throws Exception {
+    NeoResponse refusal = NeoResponse.error(400, new JSONObject("{\"error\":{}}"));
+    NeoContext ctx = context("POST", new JSONObject("{\"etgoEmail\":\"bad\"}"), null);
+    declarative.when(() -> NeoDeclarativeValidation.refusalFor(ctx, adTab)).thenReturn(refusal);
+
+    assertSame(refusal, NeoWritePreflight.refusalFor(ctx));
+
+    ownership.verifyNoInteractions();
+    activeness.verifyNoInteractions();
+  }
+
+  /** The update target guard still answers first: nobody learns the constraints of a row they cannot write. */
+  @Test
+  public void testTargetGuardPrecedesDeclarativeValidation() throws Exception {
+    NeoResponse blocked = NeoResponse.error(403, "no");
+    NeoContext ctx = context("PATCH", new JSONObject("{}"), null);
+    targets.when(() -> NeoActionRecordGuard.updateRefusalFor(sfEntity, ctx)).thenReturn(blocked);
+
+    assertSame(blocked, NeoWritePreflight.refusalFor(ctx));
+
+    declarative.verifyNoInteractions();
   }
 
   /** Reads and deletes run no reference check (delete has a separate target guard). */

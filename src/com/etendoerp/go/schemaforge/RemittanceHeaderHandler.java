@@ -401,13 +401,14 @@ public class RemittanceHeaderHandler implements NeoHandler {
     if (request == null) {
       return null;
     }
-    String raw = NeoRequestBodyParser.readRequestBody(request);
-    if (StringUtils.isBlank(raw)) {
-      return null;
-    }
     try {
+      String raw = NeoRequestBodyParser.readRequestBody(request);
+      if (StringUtils.isBlank(raw)) {
+        return null;
+      }
       return NeoRequestBodyParser.parseJsonObjectSafely(raw);
     } catch (Exception e) {
+      // Oversized, malformed or unreadable: no body.
       return null;
     }
   }

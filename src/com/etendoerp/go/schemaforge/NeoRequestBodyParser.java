@@ -42,6 +42,13 @@ public final class NeoRequestBodyParser {
   /** Deepest array/object nesting accepted by the one-argument parse methods. */
   public static final int MAX_JSON_DEPTH = BoundedJsonParser.DEFAULT_MAX_DEPTH;
 
+  /**
+   * Largest JSON request body {@link #readRequestBody} accepts (ETP-4558). The container's
+   * {@code maxRequestSize} only bounds multipart requests, so without this a JSON write was read
+   * whole whatever its size, before any validation could run.
+   */
+  public static final int MAX_JSON_BODY_BYTES = 10 * 1024 * 1024;
+
   private NeoRequestBodyParser() {
   }
 
@@ -51,9 +58,24 @@ public final class NeoRequestBodyParser {
    * @param request the HTTP request whose body is read
    * @return the request body text decoded as UTF-8
    * @throws IOException if an I/O error occurs while reading the request input stream
+   * @throws MalformedJsonException if the body exceeds {@link #MAX_JSON_BODY_BYTES}; the message
+   *     states only the limit, never the body
    */
-  public static String readRequestBody(HttpServletRequest request) throws IOException {
-    return new String(request.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+  public static String readRequestBody(HttpServletRequest request)
+      throws IOException, MalformedJsonException {
+    if (request.getContentLengthLong() > MAX_JSON_BODY_BYTES) {
+      throw tooLarge();
+    }
+    byte[] bytes = request.getInputStream().readNBytes(MAX_JSON_BODY_BYTES + 1);
+    if (bytes.length > MAX_JSON_BODY_BYTES) {
+      throw tooLarge();
+    }
+    return new String(bytes, StandardCharsets.UTF_8);
+  }
+
+  private static MalformedJsonException tooLarge() {
+    return new MalformedJsonException(
+        "Request body too large (limit " + MAX_JSON_BODY_BYTES / (1024 * 1024) + " MB)");
   }
 
   /**

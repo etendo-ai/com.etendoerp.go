@@ -340,7 +340,7 @@ public class NeoFieldFilter {
       //   GET:  propToApiMap (propName → qualifier) for renameToApiKeys()
       // A property-path field (ETP-6148) has no column: its qualifier is its API key, and it is
       // collected apart, never into the column maps or the writable set.
-      String qualifier = sfField.getJavaQualifier();
+      String qualifier = apiKeyQualifier(sfField);
       String propertyPath = propertyPathOf(sfField);
       Property prop = propertyPath == null
           ? resolveProperty(sfField, dalEntity, dalEntityName)
@@ -371,6 +371,18 @@ public class NeoFieldFilter {
         }
       }
     }
+  }
+
+  /**
+   * The field's API key as the push stored it ({@code JAVA_QUALIFIER}): the name the client sends
+   * and receives, not a handler qualifier. The one place this column is read as an API key, shared
+   * with the declarative validation rules (ETP-4558).
+   *
+   * @param sfField the field row
+   * @return the stored API key, possibly {@code null}
+   */
+  public static String apiKeyQualifier(SFField sfField) {
+    return sfField.getJavaQualifier();
   }
 
   /** Adds an included property-path field to {@code pathBuilder}, under its API key. */

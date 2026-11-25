@@ -55,6 +55,8 @@ import com.etendoerp.go.schemaforge.util.NeoValidationErrorResponseBuilder;
  *
  * <p><b>What it checks today.</b>
  * <ul>
+ *   <li>{@link NeoDeclarativeValidation} (ETP-4558): the per-field {@code validation} constraints
+ *       (required, length, range, enum, format, allowed URL schemes).</li>
  *   <li>{@link NeoActionRecordGuard}: the row a PUT/PATCH/DELETE targets must be writable by the
  *       current tenant — or, for an update its customization declares consumed into tenant-owned
  *       storage ({@link NeoHandler#consumesTargetWrite}, ETP-6062), readable.</li>
@@ -97,6 +99,12 @@ final class NeoWritePreflight {
     Tab adTab = context.getAdTab();
     if (adTab == null || adTab.getTable() == null) {
       return null;
+    }
+    // ETP-4558: declared field constraints first; cheapest check, and nothing below may run on
+    // an invalid body.
+    NeoResponse invalid = NeoDeclarativeValidation.refusalFor(context, adTab);
+    if (invalid != null) {
+      return invalid;
     }
     String bodyParent = bodyParentId(context.getRequestBody());
     String queryParent = queryParentId(context.getQueryParams());

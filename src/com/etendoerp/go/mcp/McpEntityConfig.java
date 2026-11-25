@@ -370,7 +370,7 @@ final class McpEntityConfig {
   private static List<String> validateBody(Level level, McpConfigSection section, JSONObject body) {
     List<String> unknown = new ArrayList<>();
     for (String key : keysOf(body)) {
-      if (!section.getAllowedKeys().contains(key)) {
+      if (!section.allowsUnknownKeys() && !section.getAllowedKeys().contains(key)) {
         unknown.add(key);
       }
     }
