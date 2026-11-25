@@ -278,7 +278,7 @@ gatekeeper:
 - **Schema Forge pipeline — NOT enforced today.** An earlier revision of this document claimed
   `resolve-curated.js` forces `readOnly`, `push-to-neo.js` sets `Is_ReadOnly` in `ETGO_SF_FIELD`,
   and the pipeline validator blocks a non-read-only contract field backed by a stored computed
-  column. None of that exists in `@etendosoftware/schema-forge-cli` (verified at 0.3.47: grepping
+  column. None of that exists in `@etendo-ai/schema-forge-cli` (verified at 0.3.47: grepping
   `storedComputed` / `isStoredComputed` in those three files returns nothing). Until it is
   implemented, `"visibility": "readOnly"` must be set by hand in the window's `decisions.json` — it
   is the only thing between the pipeline and an editable input bound to a column the DAL maps
