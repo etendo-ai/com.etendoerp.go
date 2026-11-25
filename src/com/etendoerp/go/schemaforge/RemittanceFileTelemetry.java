@@ -32,6 +32,7 @@ import org.openbravo.module.remittance.Remittance;
 
 import com.etendoerp.go.schemaforge.telemetry.NeoRoleGroups;
 import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryEvents;
+import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryIdentity;
 import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryService;
 
 /**
@@ -46,12 +47,21 @@ import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryService;
  * {@code role_groups} (the SPA's role segmentation, {@link NeoRoleGroups}). No record id, amount or
  * name ever leaves this class; {@link NeoTelemetryService} drops any key it does not allow.
  *
- * <p><b>Best effort, once the action succeeds.</b> The properties are read on the request
- * thread and the event is handed to {@link NeoBatchScope#runAfterCommit}, which outside a batch
- * runs it at once — when the action has succeeded but BEFORE the request's own commit, so a commit
- * that failed afterwards would still have emitted it — and inside a batch only after the batch
- * commits (never when it rolls back). It is sent on one bounded background thread, the pattern of
- * {@link BankBounceKpiTelemetry}. Never throws into the action.
+ * <p><b>Identity.</b> The sender thread has no session, so the user, client and account the
+ * event belongs to ({@code ad_user_id}, {@code ad_client_id}, {@code etgo_account_id},
+ * {@code tenant_type}) are captured with {@link NeoTelemetryService#captureIdentity} on the
+ * request thread, before anything is deferred, and handed to the sender with
+ * {@link NeoTelemetryIdentity#runWith} (ETP-6228) — the pattern of
+ * {@link BankBounceKpiTelemetry}. Without it the event would carry no {@code ad_user_id}, and the
+ * remittance KPI counts distinct users.
+ *
+ * <p><b>Best effort, once the action succeeds.</b> The properties and the identity are read on
+ * the request thread and the event is sent right after the action has succeeded, but BEFORE the
+ * request's own commit, so a commit that failed afterwards would still have emitted it.
+ * {@code downloadFile} is refused inside a batch ({@code ETGO_RemittanceFileDownloadInBatch}), so
+ * the send is never deferred to a batch commit; it still goes through
+ * {@link NeoBatchScope#runAfterCommit}, which outside a batch runs it at once. It is sent on one
+ * bounded background thread and never throws into the action.
  */
 final class RemittanceFileTelemetry {
 
@@ -87,7 +97,11 @@ final class RemittanceFileTelemetry {
           remittance.getClient() != null ? remittance.getClient().getId() : null, collection,
           invoiceCount, BankBounceKpiTelemetry.channel(), NeoRoleGroups.current());
       String clientId = (String) properties.get(PROP_ACCOUNT_ID);
-      NeoBatchScope.runAfterCommit(() -> send(properties, clientId));
+      NeoTelemetryService service = telemetry();
+      // ETP-6228: the sender thread has no session, so the identity is captured here, on the
+      // request thread, before the send can be deferred.
+      NeoTelemetryIdentity identity = service.captureIdentity(clientId, null);
+      NeoBatchScope.runAfterCommit(() -> send(service, identity, properties, clientId));
     } catch (RuntimeException e) {
       log.debug("Remittance file telemetry skipped: {}", e.getMessage());
     }
@@ -117,11 +131,12 @@ final class RemittanceFileTelemetry {
     return properties;
   }
 
-  private static void send(Map<String, Object> properties, String clientId) {
+  private static void send(NeoTelemetryService service, NeoTelemetryIdentity identity,
+      Map<String, Object> properties, String clientId) {
     try {
-      NeoTelemetryService service = telemetry();
-      SENDER.execute(() -> service.emit(NeoTelemetryEvents.BACKEND_REMITTANCE_FILE_GENERATED,
-          properties, clientId));
+      SENDER.execute(() -> NeoTelemetryIdentity.runWith(identity,
+          () -> service.emit(NeoTelemetryEvents.BACKEND_REMITTANCE_FILE_GENERATED, properties,
+              clientId)));
     } catch (RejectedExecutionException e) {
       log.debug("Remittance file telemetry queue full; dropping the event");
     }

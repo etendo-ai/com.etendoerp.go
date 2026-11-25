@@ -107,7 +107,8 @@ user `0`) or no session means no identity: events from a scheduler or an anonymo
 without the ids.
 
 Emitters that send from a background thread (`BankBounceKpiTelemetry`, `ContactTypeTelemetry`,
-`AccountingKpiTelemetry`, `GoodsShipmentTelemetry`, `InvoiceInboxTelemetry`, `PortalKpiTelemetry`)
+`AccountingKpiTelemetry`, `GoodsShipmentTelemetry`, `InvoiceInboxTelemetry`, `PortalKpiTelemetry`,
+`RemittanceFileTelemetry`)
 capture the identity on the calling thread through the service (`NeoTelemetryService.captureIdentity`,
 so it uses the service's own resolver) and hand it to the sender (`NeoTelemetryIdentity.runWith`);
 `McpSessionManager.executeInContext` captures it for the call's client and user on the request
@@ -627,6 +628,7 @@ afterwards would still have emitted it. A download is refused inside a batch (42
 | `channel` | `ui` or `mcp` (`NeoWriteChannel`, as the bounce KPIs) |
 | `flag_enabled` | always `true` |
 | `role_groups` | list, see *Payload Safety*; omitted when no role can be read |
+| `ad_user_id`, `ad_client_id`, `etgo_account_id`, `tenant_type` | the common identity (see *Common identity on every event*), captured on the request thread before the send is handed to the sender thread; the remittance KPI counts distinct `ad_user_id` |
 
 No record id, document number, amount or name.
 
