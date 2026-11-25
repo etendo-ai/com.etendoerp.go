@@ -440,6 +440,9 @@ class McpConfigSourcedataTest {
   private static final List<String> INVOICE_PAYMENT_CHILDREN = List.of(
       "0D5FAC6A352140EABD483FF77539FAEA", "1F7ACD054BF14A148B7A11CD32A8704D",
       "28A6378134714F1E8D3C0869C1C77438", "1343B4002EE14A9896594655770261ED");
+  /** sales-invoice and purchase-invoice paymentPlan (a subset of the list above). */
+  private static final Set<String> PAYMENT_PLANS = Set.of("28A6378134714F1E8D3C0869C1C77438",
+      "1343B4002EE14A9896594655770261ED");
   private static final String FA_TRANSACTION = "AF50E181A0094E439C7B46B25A9E38FC";
   private static final String FA_RECONCILIATIONS = "F904BC5EBBCA4C55BE9F62871E2AD171";
   private static final String FA_ACCOUNT = "BE3EAEED69644E56B0ECDCFE4A7E9BC1";
@@ -522,7 +525,14 @@ class McpConfigSourcedataTest {
       JSONObject verbs = payload.getJSONObject(McpVerbsSection.NAME);
       assertEveryWriteHidden(verbs, id);
       assertTrue(verbs.getString(McpVerbsSection.KEY_INSTEAD).contains("registerPayment"), id);
-      assertFalse(payload.has(McpActionsSection.NAME), id);
+      if (PAYMENT_PLANS.contains(id)) {
+        // ETP-5812: the Classic UpdatePaymentPlan process, which Classic does not display either.
+        JSONObject actions = payload.getJSONObject(McpActionsSection.NAME);
+        assertEquals(Set.of("updatePaymentPlan"),
+            setOf(actions.getJSONArray(McpActionsSection.KEY_HIDDEN)), id);
+      } else {
+        assertFalse(payload.has(McpActionsSection.NAME), id);
+      }
       assertResolvesCleanly(id);
     }
   }
@@ -562,6 +572,67 @@ class McpConfigSourcedataTest {
     assertTrue(verbs.getString(McpVerbsSection.KEY_INSTEAD).contains(
         "etendo_action(spec:'bank-reconciliation'"), verbs.getString(McpVerbsSection.KEY_INSTEAD));
     assertResolvesCleanly(FA_RECONCILIATIONS);
+  }
+
+  /** ETGO_SF_ENTITY of financial-account/importedBankStatements. */
+  private static final String FA_IMPORTED_BANK_STATEMENTS = "495659D935FB48EAA6E796F9ED42CAE7";
+
+  /** The actions section exactly as the MCP resolves it for the entity's row. */
+  private static McpActionsSection.View actionsViewOf(String entityId)
+      throws IOException, JSONException {
+    McpConfigSections.resetForTests();
+    McpConfigCache.invalidateAll();
+    try {
+      SFSpec spec = mock(SFSpec.class);
+      when(spec.getId()).thenReturn("spec-of-" + entityId);
+      SFEntity entity = mock(SFEntity.class);
+      when(entity.getId()).thenReturn(entityId);
+      when(entity.getETGOSFSpec()).thenReturn(spec);
+      when(entity.get(McpEntityConfig.PROPERTY_MCP_CONFIG))
+          .thenReturn(payloadOf(entityId).toString());
+      return McpActionsSection.forEntity(entity);
+    } finally {
+      McpConfigCache.invalidateAll();
+    }
+  }
+
+  /**
+   * ETP-5812: the Classic process buttons that the scheduling bundle made runnable but that have an
+   * agent route of their own are refused, each with a reason naming that route, and listed as
+   * withheld so the agent learns why.
+   */
+  @Test
+  @DisplayName("the Classic process buttons with an agent route are refused with a reason naming"
+      + " that route")
+  void classicProcessButtonsWithAnAgentRouteAreRefused() throws IOException, JSONException {
+    Map<String, String> buttonByEntity = new TreeMap<>(Map.of(
+        FA_RECONCILIATIONS, "aPRMProcessReconciliation",
+        FA_IMPORTED_BANK_STATEMENTS, "aPRMProcessBankStatement"));
+    for (String id : PAYMENT_PLANS) {
+      buttonByEntity.put(id, "updatePaymentPlan");
+    }
+    for (Map.Entry<String, String> entry : buttonByEntity.entrySet()) {
+      String id = entry.getKey();
+      String button = entry.getValue();
+      McpActionsSection.View view = actionsViewOf(id);
+      assertFalse(view.isUnusable(), id);
+      assertTrue(view.isHidden(button), id + " must refuse " + button);
+      assertEquals(Set.of(button), view.withheldActions().keySet(), id);
+      assertFalse(view.reasonOf(button).isBlank(), id + " needs a reason");
+      assertResolvesCleanly(id);
+    }
+    String reconciliation = actionsViewOf(FA_RECONCILIATIONS).reasonOf("aPRMProcessReconciliation");
+    assertTrue(reconciliation.contains("etendo_action(spec:'bank-reconciliation'"), reconciliation);
+    String statement = actionsViewOf(FA_IMPORTED_BANK_STATEMENTS)
+        .reasonOf("aPRMProcessBankStatement");
+    assertTrue(statement.contains("etendo_action(spec:'bank-statements'")
+        && statement.contains("'processStatement'")
+        && statement.contains("'reactivateStatement'"), statement);
+    for (String id : PAYMENT_PLANS) {
+      String plan = actionsViewOf(id).reasonOf("updatePaymentPlan");
+      assertTrue(plan.contains("due date") && plan.contains("payments"), plan);
+      assertFalse(plan.contains("flag"), "it is a Classic process, not a flag: " + plan);
+    }
   }
 
   @Test
@@ -964,6 +1035,10 @@ class McpConfigSourcedataTest {
     for (String key : List.of("RM_ReceiveMaterials", "RM_CreateInvoice")) {
       assertFalse(reasons.optString(key, "").isBlank(), "a reason for " + key);
     }
+    // ETP-5812: the button is the Classic returns invoice; a return to vendor has its own route.
+    String createInvoice = actionsViewOf(PURCHASE_ORDER_HEADER).redirectReasonOf("RM_CreateInvoice");
+    assertTrue(createInvoice.contains("createReturnInvoice")
+        && createInvoice.contains("return-to-vendor-shipment"), createInvoice);
     assertFalse(actions.optString(McpActionsSection.KEY_REDIRECT_REASON, "").isBlank());
     Set<String> declared = new PurchaseOrderHeaderHandler().actionContracts().keySet();
     assertTrue(declared.containsAll(Set.of("createGoodsReceipt", "createPurchaseInvoice")), declared

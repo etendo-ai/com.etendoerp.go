@@ -16991,3 +16991,22 @@ version), `ETGO_MCP_ROUTINE_VERSION` (parameters and steps per version, cascade-
 no DAL entity — so saving a routine or recording an execution never joins or rolls back with the steps' business
 transaction. A failure to record an execution is logged and the answer carries no `executionId`; the steps' outcome
 is unchanged. Executions are kept indefinitely for now.
+
+#### Classic process buttons with a scheduling bundle — verdict per button (ETP-5812)
+
+With the scheduling-bundle connection (ETP-5809) these five Classic buttons can run. `etendo_action` refuses a button
+only when it is not included, the role lacks access to its process, or `MCP_CONFIG.actions` hides or redirects it: a
+button the catalogue lists as `invokable:false` because Classic does not display its field is still callable by name.
+So every button below that has an agent route of its own is hidden or redirected in `MCP_CONFIG.actions` (405 with
+the reason; a hidden one is listed under `withheldActions`, a redirected one keeps `useInstead`). The domain owners
+(returns, finance) still have to validate the behaviour.
+
+| Button (AD process) | Where (entity, button) | Verdict | Reason |
+|---|---|---|---|
+| `FIN_BankStatementProcess` | `financial-account/importedBankStatements`, `aPRMProcessBankStatement` | **Hidden** (`actions.hidden`) | One route, the application's: `bank-statements` `processStatement` / `reactivateStatement`. The Classic process behaves differently: with `P` and lines dated before another processed statement it answers a warning (200, `status:"warning"`) without processing, and `R` refuses a statement with reconciled lines, which `reactivateStatement` allows (ETP-4921). |
+| `FIN_ReconciliationProcess` | `financial-account/reconciliations`, `aprmProcessRec` | **Not offered** | Its field is curated `discarded` in `ETGO_SF_FIELD.xml`, so `etendo_action` answers *Action not found*. |
+| `FIN_ReconciliationProcess` (`ReconciliationProcess`) | `financial-account/reconciliations`, `aPRMProcessReconciliation` (`EM_APRM_Process_Reconciliation`) | **Hidden** (`actions.hidden`) | Included (`system`) but not displayed by Classic; running it would reconcile outside the `bank-reconciliation` flow. The reason points at `etendo_action(spec:'bank-reconciliation', …)`. |
+| `RMCreateInvoice` | `sales-order/header`, `rMCreateInvoice` | **Not offered** | The field is not included (curated `discarded`); *Action not found*. The return specs that include it (`return-from-customer`, `return-to-vendor`) are not shown to MCP (`SHOWINMCP=N`). A return is invoiced with `createReturnInvoice` on `return-material-receipt` / `return-to-vendor-shipment`. |
+| `RMCreateInvoice` | `purchase-order/header`, `RM_CreateInvoice` | **Redirected** to `createPurchaseInvoice` (`actions.redirect`, since ETP-5714) | Included (`system`) but not displayed by Classic on the purchase order. The redirect refuses it (405) by any spelling; its reason says that `createPurchaseInvoice` invoices the order and that a return to vendor is invoiced with `createReturnInvoice` on `return-to-vendor-shipment`. |
+| `RMInsertOrphanLine` | `sales-order/header` and `purchase-order/header`, `rMAddOrphanLine` | **Not offered** | The field is not included (curated `discarded`); *Action not found*. `sales-quotation/quotation` includes it and hides `RM_AddOrphanLine` explicitly; the return specs that include it are not shown to MCP (`SHOWINMCP=N`). Returns declare `importShipmentLines` / `importReceiptLines` for adding lines. |
+| `UpdatePaymentPlan` | `sales-invoice/paymentPlan`, `purchase-invoice/paymentPlan`, `updatePaymentPlan` | **Hidden** (`actions.hidden`) | A Classic process (`AD_PROCESS` `UpdatePaymentPlan`, parameters `DueDate` and `FIN_Payment_Priority_ID`) that changes an installment's due date and payment priority; Classic does not display it on the Payment Plan tabs. Before it was hidden it was still callable (live, with a real installment id it failed with *id to load is required for loading*). The installments change only through the invoice's payments (`registerPayment`). |
