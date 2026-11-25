@@ -38,6 +38,7 @@ import com.etendoerp.go.schemaforge.email.EmailProviderRequest;
 import com.etendoerp.go.schemaforge.email.EmailRecipientResolution;
 import com.etendoerp.go.schemaforge.email.EmailRecipientSet;
 
+import java.math.BigDecimal;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
@@ -49,8 +50,13 @@ import java.util.stream.Collectors;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.Test;
 import org.mockito.MockedStatic;
+import org.openbravo.base.model.Entity;
+import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.access.User;
+import org.openbravo.model.ad.system.Client;
 import org.openbravo.model.common.businesspartner.BusinessPartner;
+import org.openbravo.model.common.enterprise.DocumentType;
+import org.openbravo.model.common.invoice.Invoice;
 
 /**
  * Unit tests for sales document email contract wiring and recipient resolution, and for which
@@ -59,6 +65,7 @@ import org.openbravo.model.common.businesspartner.BusinessPartner;
  * @covers com.etendoerp.go.schemaforge.email.contracts.SalesDocumentEmailContractProvider
  * @covers com.etendoerp.go.schemaforge.email.contracts.SalesDocumentEmailRecipientResolver
  * @covers com.etendoerp.go.schemaforge.email.contracts.DalOrderEmailDocumentResolver
+ * @covers com.etendoerp.go.schemaforge.email.contracts.DalInvoiceEmailDocumentResolver
  * @covers com.etendoerp.go.schemaforge.email.contracts.SalesInvoiceSendEmailContract
  * @covers com.etendoerp.go.schemaforge.email.contracts.SalesOrderSendEmailContract
  * @covers com.etendoerp.go.schemaforge.email.contracts.SalesQuotationSendEmailContract
@@ -218,6 +225,70 @@ public class SalesDocumentEmailContractsTest {
       policy.verifyNoInteractions();
       portalDal.verifyNoInteractions();
     }
+  }
+
+  /**
+   * The invoice resolver marks a credit note with the {@code creditNote} type variant, so the sales
+   * invoice email names it «Factura rectificativa» (ETP-6209 QA). The rule is the portal's: an
+   * {@code ARC} or {@code ARI_RM} category, or the localization module's rectificative flag when
+   * that module is installed. The amount's sign plays no part.
+   */
+  @Test
+  public void invoiceResolverMarksOnlyARectificativeInvoiceAsACreditNote() {
+    // Columns: document category, the flag's property exists, its value, total, expected variant.
+    Object[][] cases = {
+        { "ARC", false, null, BigDecimal.TEN, DalInvoiceEmailDocumentResolver.CREDIT_NOTE },
+        { "ARI_RM", false, null, BigDecimal.TEN, DalInvoiceEmailDocumentResolver.CREDIT_NOTE },
+        { "ARI", true, Boolean.TRUE, BigDecimal.TEN, DalInvoiceEmailDocumentResolver.CREDIT_NOTE },
+        { "ARI", true, Boolean.FALSE, BigDecimal.TEN, null },
+        { "ARI", false, null, BigDecimal.TEN, null },
+        // A normal invoice with a negative total is still an invoice.
+        { "ARI", false, null, new BigDecimal("-50.00"), null },
+    };
+    for (Object[] c : cases) {
+      DocumentType documentType = invoiceDocumentType((String) c[0], (Boolean) c[1],
+          (Boolean) c[2]);
+      Invoice invoice = invoice(documentType, (BigDecimal) c[3]);
+      OBDal obDal = mock(OBDal.class);
+      when(obDal.get(Invoice.class, "inv-1")).thenReturn(invoice);
+
+      try (MockedStatic<OBDal> dal = mockStatic(OBDal.class)) {
+        dal.when(OBDal::getInstance).thenReturn(obDal);
+
+        EmailDocumentRecord record = new DalInvoiceEmailDocumentResolver().resolve("inv-1")
+            .orElseThrow(() -> new AssertionError(Arrays.toString(c)));
+
+        assertEquals(Arrays.toString(c), c[4], record.getDocumentTypeVariant());
+        assertEquals("CO", record.getDocumentStatus());
+        assertEquals("INV-001", record.getDocumentNumber());
+      }
+    }
+  }
+
+  private static DocumentType invoiceDocumentType(String category, boolean hasFlag,
+      Boolean flag) {
+    Entity entity = mock(Entity.class);
+    when(entity.hasProperty("etsgIsRectificative")).thenReturn(hasFlag);
+    DocumentType documentType = mock(DocumentType.class);
+    when(documentType.getDocumentCategory()).thenReturn(category);
+    when(documentType.getEntity()).thenReturn(entity);
+    when(documentType.get("etsgIsRectificative")).thenReturn(flag);
+    return documentType;
+  }
+
+  private static Invoice invoice(DocumentType documentType, BigDecimal total) {
+    // Client "0" is readable without an OBContext; no business partner skips the email lookup.
+    Client client = mock(Client.class);
+    when(client.getId()).thenReturn("0");
+    Invoice invoice = mock(Invoice.class);
+    when(invoice.getId()).thenReturn("inv-1");
+    when(invoice.isActive()).thenReturn(Boolean.TRUE);
+    when(invoice.getClient()).thenReturn(client);
+    when(invoice.getDocumentNo()).thenReturn("INV-001");
+    when(invoice.getDocumentStatus()).thenReturn("CO");
+    when(invoice.getGrandTotalAmount()).thenReturn(total);
+    when(invoice.getTransactionDocument()).thenReturn(documentType);
+    return invoice;
   }
 
   private static EmailProviderRequest resolve(DefaultDocumentSendEmailContract contract)

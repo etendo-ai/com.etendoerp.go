@@ -29,8 +29,10 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
+import java.util.List;
 import java.util.Optional;
 
 import org.codehaus.jettison.json.JSONObject;
@@ -47,6 +49,7 @@ import org.openbravo.model.common.order.Order;
 import com.etendoerp.go.portal.PortalDocumentKind;
 import com.etendoerp.go.portal.PortalLink;
 import com.etendoerp.go.portal.PortalLinkService;
+import com.etendoerp.go.portal.PortalLogoReference;
 import com.etendoerp.go.schemaforge.email.EmailAuthorizationResult;
 import com.etendoerp.go.schemaforge.email.EmailContractCommand;
 import com.etendoerp.go.schemaforge.email.EmailContractCommandSupport;
@@ -70,6 +73,7 @@ public class PortalLinkRenewalEmailContractTest {
   private static final String NEW_ID = "LINK-2";
   private static final String RECORD_ID = "DOC-1";
   private static final String NEW_URL = "https://app.example.test/portal/new-token";
+  private static final String LOGO_URL = "https://app.example.test/sws/portal/public-logo/LOGO-1";
 
   private MockedStatic<OBDal> obDalStatic;
   private OBDal obDal;
@@ -209,6 +213,78 @@ public class PortalLinkRenewalEmailContractTest {
         .contains("consultar la factura rectificativa"));
   }
 
+  /**
+   * The renewal card opens with its issuer (ETP-6209 QA): the tenant's public logo when the
+   * logo-finder seam has one, its initials otherwise; title, button, subject and footer follow the
+   * link's language, no Etendo signature closes it in either, and the provider request carries the
+   * resolved To and CC.
+   */
+  @Test
+  public void theCardOpensWithTheIssuersLogoOrInitialsInTheLinksLanguage() throws Exception {
+    PortalLinkService.MintedLink minted = mock(PortalLinkService.MintedLink.class);
+    when(minted.getId()).thenReturn(NEW_ID);
+    when(minted.getUrl()).thenReturn(NEW_URL);
+    when(minted.getValidity()).thenReturn(Duration.ofHours(48));
+    when(linkService.mintRenewal(EXPIRED_ID)).thenReturn(Optional.of(minted));
+    PortalLogoReference.PublicLogo logo = mock(PortalLogoReference.PublicLogo.class);
+    when(logo.getUrl()).thenReturn(LOGO_URL);
+    when(logo.getWidth()).thenReturn(300);
+    when(logo.getHeight()).thenReturn(100);
+    EmailRecipientSet recipients = EmailRecipientSet.of(
+        Arrays.asList("billing@customer.test", "ap@customer.test"),
+        Collections.singletonList("boss@customer.test"));
+    // Columns: language, has a logo, title, button, subject.
+    Object[][] cases = {
+        { "es_ES", true, "Tu nuevo enlace al portal de cliente", "Acceder a mi portal",
+            "Tu nuevo enlace al portal de cliente de Acme Ltd" },
+        { "es_ES", false, "Tu nuevo enlace al portal de cliente", "Acceder a mi portal",
+            "Tu nuevo enlace al portal de cliente de Acme Ltd" },
+        { "en_US", true, "Your new customer portal link", "Go to my portal",
+            "Your new link to the Acme Ltd customer portal" },
+        { "en_US", false, "Your new customer portal link", "Go to my portal",
+            "Your new link to the Acme Ltd customer portal" },
+    };
+    for (Object[] c : cases) {
+      String label = c[0] + (((Boolean) c[1]) ? "/logo" : "/initials");
+      PortalLink expired = link(PortalDocumentKind.INVOICE, true);
+      when(expired.getLanguage()).thenReturn((String) c[0]);
+      when(expired.getClientName()).thenReturn("Acme Ltd");
+      when(expired.getClientId()).thenReturn("CLIENT-1");
+      when(expired.getOrganizationId()).thenReturn("ORG-1");
+      when(linkService.findLink(EXPIRED_ID)).thenReturn(Optional.of(expired));
+      Optional<PortalLogoReference.PublicLogo> found = ((Boolean) c[1]) ? Optional.of(logo)
+          : Optional.empty();
+      List<String> asked = new ArrayList<>();
+      PortalLinkRenewalEmailContract contract = new PortalLinkRenewalEmailContract(linkService,
+          () -> true, (clientId, orgId) -> {
+            asked.add(clientId + "/" + orgId);
+            return found;
+          });
+
+      EmailProviderRequest request = resolve(contract, recipients);
+
+      String body = request.getData().getString("body");
+      assertEquals(label, Collections.singletonList("CLIENT-1/ORG-1"), asked);
+      if ((Boolean) c[1]) {
+        // 300x100 fitted into the round avatar: aspect kept, 42x14.
+        assertTrue(label + ": " + body, body.contains("<img src=\"" + LOGO_URL
+            + "\" width=\"42\" height=\"14\""));
+        assertFalse(label + ": " + body, body.contains(">AL</td>"));
+      } else {
+        assertTrue(label + ": " + body, body.contains(">AL</td>"));
+        assertFalse(label + ": " + body, body.contains(LOGO_URL));
+      }
+      assertTrue(label + ": " + body, body.contains(c[2] + "</h1>"));
+      assertTrue(label + ": " + body, body.contains((String) c[3]));
+      assertEquals(label, c[4], request.getData().getString("subject"));
+      assertFalse(label + ": " + body, body.contains("Equipo de Etendo"));
+      assertFalse(label + ": " + body, body.contains("the Etendo team"));
+      assertTrue(label + ": " + body, body.contains("utm_content=mail_reenvio_enlace"));
+      assertEquals(label, recipients.getTo(), request.getRecipients().getTo());
+      assertEquals(label, recipients.getCc(), request.getRecipients().getCc());
+    }
+  }
+
   @Test
   public void copyKeyIsCreditNoteOnlyForARectificativeInvoice() {
     // Columns: document category, the localization flag's property exists, its value, expected key.
@@ -253,10 +329,14 @@ public class PortalLinkRenewalEmailContractTest {
   }
 
   private EmailProviderRequest resolve() throws Exception {
-    EmailRecipientResolution recipient = EmailRecipientResolution.serverResolved(
-        EmailRecipientSet.of(Collections.singletonList("billing@customer.test"),
-            Collections.<String>emptyList()));
-    EmailContractResolution resolution = contract().resolve(command(new JSONObject()), recipient);
+    return resolve(contract(), EmailRecipientSet.of(
+        Collections.singletonList("billing@customer.test"), Collections.<String>emptyList()));
+  }
+
+  private static EmailProviderRequest resolve(PortalLinkRenewalEmailContract contract,
+      EmailRecipientSet recipients) throws Exception {
+    EmailContractResolution resolution = contract.resolve(command(new JSONObject()),
+        EmailRecipientResolution.serverResolved(recipients));
     assertTrue("expected a ready resolution, got: " + resolution.getMessage(),
         resolution.isReady());
     return resolution.getProviderRequest();

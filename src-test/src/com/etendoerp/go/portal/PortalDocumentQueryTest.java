@@ -285,9 +285,10 @@ public class PortalDocumentQueryTest {
     Date today = new Date(86_400_000L);
     // Columns: kind, group, statuses bound, a fragment of its condition (null: none), binds :today.
     Object[][] cases = {
-        // An expired quotation awaits nothing (ETP-6209 QA).
+        // An expired quotation (validUntil before today) awaits nothing; one with no validUntil,
+        // or valid until today itself, still does (ETP-6209 QA).
         { PortalDocumentKind.QUOTATION, "awaiting", Arrays.asList("UE", "CO"),
-            "e.validUntil >= :today", true },
+            "(e.validUntil is null or e.validUntil >= :today)", true },
         { PortalDocumentKind.QUOTATION, "accepted", Arrays.asList("ETGO_AC", "CA", "ETGO_CI"),
             null, false },
         { PortalDocumentKind.QUOTATION, "rejected", Arrays.asList("CJ"), null, false },

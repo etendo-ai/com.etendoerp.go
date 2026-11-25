@@ -60,6 +60,7 @@ import com.etendoerp.go.schemaforge.email.render.EmailContent;
  * @covers com.etendoerp.go.schemaforge.email.DefaultDocumentSendEmailContract
  * @covers com.etendoerp.go.schemaforge.email.DocumentSendPortalLink
  * @covers com.etendoerp.go.schemaforge.email.DocumentSendCopy
+ * @covers com.etendoerp.go.schemaforge.email.EmailDocumentRecord
  */
 public class DefaultDocumentSendEmailContractTest {
 
@@ -641,6 +642,86 @@ public class DefaultDocumentSendEmailContractTest {
       }
       assertEquals(String.valueOf(c[0]), expected, columns);
     }
+  }
+
+  /**
+   * A document whose resolver reports a type variant is named by the contract's variant label in
+   * the subject, the body sentence, the summary block and the portal card's title (ETP-6209 QA: a
+   * credit note sent through sales-invoice-send is a «Factura rectificativa»). A variant the
+   * catalog does not declare, or no variant, keeps the contract's own label.
+   */
+  @Test
+  public void aDocumentTypeVariantRenamesTheDocumentEverywhereElseTheContractLabelStays()
+      throws Exception {
+    PortalLinkService portalLinks = mock(PortalLinkService.class);
+    PortalLinkService.MintedLink minted = mock(PortalLinkService.MintedLink.class);
+    when(minted.getId()).thenReturn("LINK-1");
+    when(minted.getUrl()).thenReturn("https://app.example.test/portal/tok");
+    when(minted.getValidity()).thenReturn(Duration.ofHours(48));
+    when(portalLinks.mintForSend(any(), any(), any(), any(), any(), any()))
+        .thenReturn(Optional.of(minted));
+    // Columns: contract, variant, language, expected label, a label that must not appear.
+    String[][] cases = {
+        { "sales-invoice-send", "creditNote", "es_ES", "Factura rectificativa",
+            "Factura de Venta" },
+        { "sales-invoice-send", "creditNote", "en_US", "Credit Note", "Sales Invoice" },
+        { "sales-invoice-send", null, "es_ES", "Factura de Venta", "rectificativa" },
+        { "sales-invoice-send", "noSuchVariant", "es_ES", "Factura de Venta", "rectificativa" },
+        // No catalog entry for the contract at all: the label it was constructed with.
+        { CONTRACT_NAME, "creditNote", "es_ES", "Documento", "rectificativa" },
+    };
+    for (String[] c : cases) {
+      String label = c[0] + "/" + c[1] + "/" + c[2];
+      EmailDocumentRecord document = new EmailDocumentRecord("Cliente", RECIPIENT_EMAIL,
+          RECORD_ID, DOCUMENT_NUMBER, null, DOWNLOAD_LINK, "client-1")
+          .withDetails(Collections.singletonList(
+              EmailDocumentDetail.text("document.detail.total", "10,00 EUR")))
+          .withDocumentTypeVariant(c[1]);
+      JSONObject command = new JSONObject().put("recordId", RECORD_ID).put("language", c[2]);
+
+      JSONObject letter = readyRequest(new DefaultDocumentSendEmailContract(c[0], "Documento",
+          recordId -> Optional.of(document)), command).getData();
+      JSONObject card = readyRequest(portalContract(c[0], document, portalLinks), command)
+          .getData();
+
+      assertEquals(label, c[3] + " #" + DOCUMENT_NUMBER + " — Cliente",
+          letter.getString("subject"));
+      String body = letter.getString("body");
+      assertTrue(label + ": " + body,
+          body.contains(c[3] + " <strong>" + DOCUMENT_NUMBER + "</strong>"));
+      assertTrue(label + " summary: " + body, body.contains(">" + c[3] + "</td>"));
+      assertFalse(label + ": " + body, body.contains(c[4]));
+      String cardBody = card.getString("body");
+      assertTrue(label + " card: " + cardBody,
+          cardBody.contains(">" + c[3] + " " + DOCUMENT_NUMBER + "</h1>"));
+      assertFalse(label + " card: " + cardBody, cardBody.contains(c[4]));
+    }
+  }
+
+  private static EmailProviderRequest readyRequest(DefaultDocumentSendEmailContract contract,
+      JSONObject commandBody) {
+    EmailContractResolution resolution = contract.resolve(
+        new EmailContractCommand(contract.getName(), commandBody),
+        EmailRecipientResolution.serverResolved(RECIPIENT_EMAIL));
+    assertTrue("expected a ready resolution, got: " + resolution.getMessage(),
+        resolution.isReady());
+    return resolution.getProviderRequest();
+  }
+
+  private static DefaultDocumentSendEmailContract portalContract(String contractName,
+      EmailDocumentRecord document, PortalLinkService portalLinks) {
+    return new DefaultDocumentSendEmailContract(contractName, "Documento",
+        recordId -> Optional.of(document)) {
+      @Override
+      protected Optional<PortalDocumentKind> portalDocumentKind() {
+        return Optional.of(PortalDocumentKind.INVOICE);
+      }
+
+      @Override
+      protected PortalLinkService portalLinkService() {
+        return portalLinks;
+      }
+    };
   }
 
   private static DefaultDocumentSendEmailContract portalContract(PortalLinkService portalLinks) {

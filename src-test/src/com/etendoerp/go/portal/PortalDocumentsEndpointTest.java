@@ -635,6 +635,20 @@ public class PortalDocumentsEndpointTest {
     assertEquals(Date.from(LocalDate.now().withDayOfMonth(1)
         .atStartOfDay(ZoneId.systemDefault()).toInstant()),
         shipment.getAllValues().get(1).dateFrom);
+    // The quotation highlight counts the list's "awaiting" group, bound to the server's today, so
+    // an expired quotation drops out of the tile exactly as it drops out of the tab.
+    ArgumentCaptor<PortalDocumentQuery.Filter> quotation =
+        ArgumentCaptor.forClass(PortalDocumentQuery.Filter.class);
+    query.verify(() -> PortalDocumentQuery.count(eq(SESSION), eq(PortalDocumentKind.QUOTATION),
+        quotation.capture()), org.mockito.Mockito.atLeastOnce());
+    PortalDocumentQuery.Filter awaiting = quotation.getAllValues().stream()
+        .filter(filter -> filter.group != null).findFirst()
+        .orElseThrow(() -> new AssertionError("no grouped quotation count"));
+    assertTrue(awaiting.group == PortalDocumentQuery.group(PortalDocumentKind.QUOTATION,
+        "awaiting"));
+    assertTrue("the awaiting group binds :today", awaiting.group.usesToday());
+    assertEquals(Date.from(LocalDate.now().atStartOfDay(ZoneId.systemDefault()).toInstant()),
+        awaiting.today);
   }
 
   @Test
