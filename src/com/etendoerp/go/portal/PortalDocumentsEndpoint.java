@@ -134,8 +134,11 @@ final class PortalDocumentsEndpoint {
     JSONArray balances = new JSONArray();
     Map<String, BigDecimal> outstandingByIso = new LinkedHashMap<>();
     Map<String, Object[]> overdue = new HashMap<>();
+    Map<String, BigDecimal> overdueByIso = new LinkedHashMap<>();
     for (Object[] row : PortalDocumentQuery.overdueByCurrency(session, today)) {
       overdue.put((String) row[0], row);
+      overdueByIso.merge(StringUtils.defaultString((String) row[0]),
+          PortalDocumentQuery.amount(row[1]), BigDecimal::add);
     }
     for (Object[] row : PortalDocumentQuery.outstandingByCurrency(session)) {
       JSONObject balance = new JSONObject();
@@ -156,6 +159,8 @@ final class PortalDocumentsEndpoint {
     // currency was converted (the app's rule); balances[] keeps the per-currency figures.
     PortalCurrencyTotals converter = PortalCurrencyTotals.of(session);
     body.put("convertedBalance", converter.convert(outstandingByIso));
+    // The overdue part of it, by the same rule (null when nothing is overdue).
+    body.put("convertedOverdue", converter.convert(overdueByIso));
 
     long overdueInvoices = 0;
     for (Object[] row : overdue.values()) {

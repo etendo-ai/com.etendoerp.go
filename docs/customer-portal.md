@@ -434,7 +434,8 @@ the functional repo's `flags-registry.json` (`bp-self-service-portal`).
   the confirm answer carry `clientId`. No log, usage event or KPI payload carries the token or a
   portal URL.
 - **Multi-currency totals (CP-47, `PortalCurrencyTotals`).** `GET /documents` adds
-  `convertedTotal`, `GET /home` adds `convertedBalance` (outstanding) and `convertedPaidThisYear`,
+  `convertedTotal`, `GET /home` adds `convertedBalance` (outstanding), `convertedOverdue` (its
+  overdue part; `balances[].overdue…` stay) and `convertedPaidThisYear`,
   each `{amount, currency, approximate}` in the company currency (the link organization's, then
   its legal entity's, then the tenant's), folded by the app's own `NeoCurrencyTotals` with today's
   `C_Conversion_Rate` (core `FinancialUtils#getConversionRate`, from the link's organization up to

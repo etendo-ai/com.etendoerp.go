@@ -564,33 +564,44 @@ public class PortalDocumentsEndpointTest {
   }
 
   /**
-   * QA CP-47: «Tu saldo» and «Pagado este año» as one amount each in the company currency, folded
-   * from the same per-currency figures the page already receives.
+   * QA CP-47: «Tu saldo», its overdue part and «Pagado este año» as one amount each in the company
+   * currency, folded from the same per-currency figures the page already receives.
    */
   @Test
-  public void homeFoldsTheBalanceAndThePaidThisYearIntoTheCompanyCurrency() throws Exception {
+  public void homeFoldsTheBalanceTheOverdueAndThePaidThisYearIntoTheCompanyCurrency()
+      throws Exception {
     query.when(() -> PortalDocumentQuery.outstandingByCurrency(SESSION)).thenReturn(Arrays.asList(
         new Object[] { "EUR", new BigDecimal("300"), 4L },
         new Object[] { "USD", new BigDecimal("80"), 1L }));
+    query.when(() -> PortalDocumentQuery.overdueByCurrency(eq(SESSION), any())).thenReturn(
+        Arrays.asList(new Object[] { "EUR", new BigDecimal("50"), day(2026, 1, 10), 2L },
+            new Object[] { "USD", new BigDecimal("20"), day(2026, 1, 12), 1L }));
     query.when(() -> PortalDocumentQuery.paidSince(eq(SESSION), any())).thenReturn(
         Collections.singletonList(new Object[] { "EUR", new BigDecimal("500"), 3L }));
     JSONObject balance = new JSONObject().put("amount", "372.40").put("currency", "EUR")
         .put("approximate", true);
+    JSONObject overdue = new JSONObject().put("amount", "68.10").put("currency", "EUR")
+        .put("approximate", true);
     JSONObject paid = new JSONObject().put("amount", "500.00").put("currency", "EUR")
         .put("approximate", false);
-    when(converter.convert(any())).thenReturn(balance, paid);
+    when(converter.convert(any())).thenReturn(balance, overdue, paid);
 
     JSONObject home = PortalDocumentsEndpoint.home(SESSION);
 
     ArgumentCaptor<Map> byIso = ArgumentCaptor.forClass(Map.class);
-    verify(converter, times(2)).convert(byIso.capture());
+    verify(converter, times(3)).convert(byIso.capture());
     Map<String, BigDecimal> outstanding = new java.util.LinkedHashMap<>();
     outstanding.put("EUR", new BigDecimal("300"));
     outstanding.put("USD", new BigDecimal("80"));
     assertEquals(outstanding, byIso.getAllValues().get(0));
+    Map<String, BigDecimal> late = new java.util.LinkedHashMap<>();
+    late.put("EUR", new BigDecimal("50"));
+    late.put("USD", new BigDecimal("20"));
+    assertEquals(late, byIso.getAllValues().get(1));
     assertEquals(Collections.singletonMap("EUR", new BigDecimal("500")),
-        byIso.getAllValues().get(1));
+        byIso.getAllValues().get(2));
     assertEquals(balance.toString(), home.getJSONObject("convertedBalance").toString());
+    assertEquals(overdue.toString(), home.getJSONObject("convertedOverdue").toString());
     assertEquals(paid.toString(), home.getJSONObject("convertedPaidThisYear").toString());
   }
 
