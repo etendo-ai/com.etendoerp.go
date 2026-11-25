@@ -44,6 +44,7 @@ import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.WindowAccess;
 import org.openbravo.model.ad.ui.Window;
 
+import com.etendoerp.go.schemaforge.util.GoFeature;
 import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.ReportAccessCatalog;
 
@@ -226,5 +227,28 @@ class SFMyReportAccessTest {
 
     assertEquals("DB error", responseVars.get(ERROR));
     assertNull(responseVars.get(RESULT));
+  }
+
+  // ── ETP-4802: GO Access rows in the report catalog ─────────────────────────────────
+
+  @Test
+  @DisplayName("A read-only GO Access row surfaces the five financial reports for a role with no grant")
+  void testGoAccessRowSurfacesFinancialReports() throws Exception {
+    givenRestrictedRole("role-go-fin");
+    stubAllAccessEmpty();
+    goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+        .thenReturn(Map.of(GoFeature.FINANCIAL_REPORTS.id, "read-only"));
+
+    webhook.get(parameters, responseVars);
+
+    JSONObject reportAccess = parseResult().getJSONObject("reportAccess");
+    long financial = ReportAccessCatalog.ROWS.stream()
+        .filter(r -> GoFeature.FINANCIAL_REPORTS.legacyId.equals(r.anchorId)).count();
+    assertEquals(financial, reportAccess.length());
+    for (ReportAccessCatalog.Row row : ReportAccessCatalog.ROWS) {
+      if (GoFeature.FINANCIAL_REPORTS.legacyId.equals(row.anchorId)) {
+        assertEquals("read-only", reportAccess.getString(row.id));
+      }
+    }
   }
 }

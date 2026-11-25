@@ -19,7 +19,9 @@ package com.etendoerp.go.schemaforge.util;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -82,9 +84,9 @@ class RoleAccessMatrixTest {
   @SuppressWarnings({ "unchecked", "rawtypes" })
   private void givenGoAccessRows(Object[]... rows) {
     NativeQuery rowsQuery = mock(NativeQuery.class);
-    when(session.createNativeQuery(org.mockito.ArgumentMatchers.contains("etgo_go_access")))
+    when(session.createNativeQuery(contains("etgo_go_access")))
         .thenReturn(rowsQuery);
-    when(rowsQuery.setParameter(anyString(), org.mockito.ArgumentMatchers.any()))
+    when(rowsQuery.setParameter(anyString(), any()))
         .thenReturn(rowsQuery);
     when(rowsQuery.list()).thenReturn(List.of(rows));
   }

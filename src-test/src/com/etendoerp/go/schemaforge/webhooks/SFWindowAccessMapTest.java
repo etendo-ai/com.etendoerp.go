@@ -55,6 +55,7 @@ import com.etendoerp.go.schemaforge.InvoiceInboxFlag;
 import com.etendoerp.go.schemaforge.SepaRemittancesFlag;
 import com.etendoerp.go.schemaforge.data.Account;
 import com.etendoerp.go.schemaforge.data.SFSpec;
+import com.etendoerp.go.schemaforge.util.GoFeature;
 import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 import com.etendoerp.go.schemaforge.util.OwnerSupport;
@@ -1006,5 +1007,53 @@ class SFWindowAccessMapTest {
         webhook.get(parameters, responseVars);
 
         assertEquals(originalParams, parameters);
+    }
+
+    // ── ETP-4802: GO Access rows on the SPA windowAccess map ─────────────────────────────
+
+    @Test
+    @DisplayName("A read-only GO Access row restricts a role with a legacy read-write grant")
+    void testReadOnlyGoAccessRowRestrictsLegacyFullGrant() throws Exception {
+        givenRestrictedRole("role-go-ro");
+        stubWindowAccessRows(Arrays.asList(windowAccessRow(GoFeature.FISCAL_MODELS.legacyId, true)));
+        stubShowAcctFieldsQuery(Collections.singletonList("N"));
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.FISCAL_MODELS.id, "read-only"));
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals("read-only", windowAccess.getString(GoFeature.FISCAL_MODELS.legacyId));
+    }
+
+    @Test
+    @DisplayName("A GO Access row makes the anchor appear for a role with no legacy grant")
+    void testGoAccessRowGrantsARoleWithoutLegacyGrant() throws Exception {
+        givenRestrictedRole("role-go-only");
+        stubWindowAccessRows(Collections.emptyList());
+        stubShowAcctFieldsQuery(Collections.singletonList("N"));
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.SMART_SCAN.id, "full"));
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals(1, windowAccess.length());
+        assertEquals("full", windowAccess.getString(GoFeature.SMART_SCAN.legacyId));
+    }
+
+    @Test
+    @DisplayName("A fiscal-monitor GO Access row never changes the real SII Monitor window entry")
+    void testFiscalMonitorRowDoesNotTouchSiiMonitor() throws Exception {
+        givenRestrictedRole("role-go-monitor");
+        stubWindowAccessRows(Arrays.asList(windowAccessRow(GoFeature.FISCAL_MONITOR.legacyId, true)));
+        stubShowAcctFieldsQuery(Collections.singletonList("N"));
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.FISCAL_MONITOR.id, "read-only"));
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals("full", windowAccess.getString(GoFeature.FISCAL_MONITOR.legacyId));
     }
 }

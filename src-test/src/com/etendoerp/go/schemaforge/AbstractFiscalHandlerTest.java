@@ -23,6 +23,7 @@ import static org.junit.Assert.fail;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockConstruction;
@@ -39,6 +40,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import javax.servlet.ServletOutputStream;
 import javax.servlet.WriteListener;
@@ -65,10 +67,13 @@ import org.junit.Test;
 import org.openbravo.base.exception.OBException;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
+import org.openbravo.model.ad.access.Role;
 
 import com.etendoerp.go.common.BoundedJsonParser;
 import com.etendoerp.go.common.MalformedJsonException;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
 
 /**
@@ -312,6 +317,33 @@ public class AbstractFiscalHandlerTest {
     handler.handle("known", "POST", req, resp);
 
     verify(servlet).sendError(eq(resp), eq(HttpServletResponse.SC_FORBIDDEN), eq("Access denied"));
+  }
+
+  /**
+   * ETP-4802 — the gate reads the current role's GO Access row: a read-only row on fiscal-models
+   * lets GET through and returns 403 for POST, whatever the classic Tax Report grant says.
+   */
+  @Test
+  public void testReadOnlyGoAccessRowAllowsGetAndForbidsPost() throws IOException {
+    HttpServletRequest  req  = mock(HttpServletRequest.class);
+    HttpServletResponse resp = mock(HttpServletResponse.class);
+    Role role = mock(Role.class);
+    accessMock.when(NeoAccessHelper::resolveCurrentRole).thenReturn(role);
+    accessMock.when(() -> NeoAccessHelper.isWriteMethod(anyString())).thenCallRealMethod();
+    try (MockedStatic<GoFeatureAccess> goAccess =
+        mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS)) {
+      goAccess.when(() -> GoFeatureAccess.grantedTiers(role))
+          .thenReturn(Map.of(GoFeature.FISCAL_MODELS.id, RoleAccessMatrix.READ_ONLY));
+      StubHandler handler = new StubHandler(servlet, false);
+
+      handler.handle("known", "GET", req, resp);
+      verify(servlet, never()).sendError(eq(resp), eq(HttpServletResponse.SC_FORBIDDEN),
+          eq("Access denied"));
+
+      handler.handle("known", "POST", req, resp);
+      verify(servlet).sendError(eq(resp), eq(HttpServletResponse.SC_FORBIDDEN),
+          eq("Access denied"));
+    }
   }
 
   /**

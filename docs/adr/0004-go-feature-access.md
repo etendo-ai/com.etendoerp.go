@@ -37,16 +37,20 @@ handlers, `RoleAccessMatrix` / `ReportAccessCatalog` tiers (overlay), and `NeoAt
   the declaration also names Java-side support tables. Follow-up if features must be added without a
   release.
 
-**Seeding and migration (this PR)**
-- `SeedGoAccessScript` (module script, compiled class committed) inserts one GO Access row per role
-  that holds an active classic grant on a feature's proxy/anchor (`AD_Window_Access` or
-  `OBUIAPP_Process_Access`), at the same `IsReadWrite`, skipping inactive grants. Idempotent:
-  `INSERT ... WHERE NOT EXISTS` on role + feature, backed by the unique index; it never touches an
-  existing row. System templates are roles too, so their grants are seeded by the same script.
-- The legacy fallback stays for one release as a safety net (roles created from a template after
-  the seed hold only the classic grant and are still decided by it). Dropping it, the classic
-  proxy grants in `TemplateRoleWindowAccess` / `EnsureSystemRoleTemplatesScript` and propagating GO
-  Access rows from the templates is the follow-up.
+**Seeding is deliberately NOT done (revocation safety)**
+- An earlier revision seeded one GO Access row per role from its classic grants. It was withdrawn:
+  a GO Access row decides ahead of the classic grant, but every path that maintains role access
+  (`TemplateRoleWindowAccess` / `EnsureSystemRoleTemplatesScript`, template propagation,
+  `UserRoleCompositionService`, overlap reconciliation, the roles-matrix editor) writes only the
+  classic grants. A seeded row would therefore outlive the removal of the classic grant (a user
+  who loses the Finance template keeps Modelos Fiscales) and ignore template edits.
+- So GO Access rows exist only when an administrator creates them in the Role window, and until
+  they do the classic proxy/anchor grant is the grant source and every role keeps today's access.
+  A manually created row is an explicit grant that must be removed with the role's other access.
+- The criterion "migrate every proxy and anchor including the role-template grants" is therefore
+  NOT met by this PR. It needs the write paths above to create/update/delete the matching GO Access
+  row together with the classic grant (and a seed after that), then dropping the legacy fallback;
+  that is the follow-up and needs the human reviewer's acceptance of this deferral.
 - SPA: all SPA access goes through `SFWindowAccessMap` (page guards, `menu.json` anchors) and
   `SFListMenu` (`allowedIds`); both apply the GO Access tier, so the SPA answers like the backend.
 - An inactive GO Access row is ignored (the legacy grant decides again): deactivating a row does
@@ -60,7 +64,8 @@ handlers, `RoleAccessMatrix` / `ReportAccessCatalog` tiers (overlay), and `NeoAt
   fallback in `NeoAccessHelper#hasAccessToConstituentWindows`). TODO(ETP-4802): functional decision
   on its grant source, then declare it as a feature and close the fallback. This is an explicit
   exception to the ticket's "no permissive fallback" criterion, taken from the human guidance.
-- Retiring the classic proxies/anchors and the SPA ids; propagating GO Access rows from templates.
+- Keeping GO Access rows in step with the classic grants in every write path, then seeding, then
+  retiring the classic proxies/anchors and the SPA ids.
 - Identifier uniqueness validation in sf-validate-pipeline: the DB unique index covers role +
   feature; `GoFeature.ids()` is the single identifier list.
 - The AD dictionary records were written by hand: `update.database` hung against the shared local

@@ -17,6 +17,7 @@
 
 package com.etendoerp.go.schemaforge.util;
 
+import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
@@ -35,9 +36,9 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
@@ -54,7 +55,7 @@ import org.openbravo.model.ad.access.Role;
 
 /**
  * The shared GO feature access check (ETP-4802): GO Access row first, legacy classic grant when the
- * role has none, no permissive fallback, and the same decision before and after seeding.
+ * role has none, no permissive fallback, and the same decision before and with a row at the legacy tier.
  *
  * @covers com.etendoerp.go.schemaforge.util.GoFeatureAccess
  * @covers com.etendoerp.go.schemaforge.util.GoFeature
@@ -99,9 +100,9 @@ public class GoFeatureAccessTest {
     }
   }
 
-  /** Seeding a row at the legacy tier changes nobody's decision, with or without the legacy grant. */
+  /** A row at the legacy tier decides like the legacy grant, with or without that grant. */
   @Test
-  public void seedingARowAtTheLegacyTierKeepsEveryDecision() {
+  public void aRowAtTheLegacyTierKeepsEveryDecision() {
     for (GoFeature feature : GoFeature.values()) {
       for (String legacy : List.of(NONE, RoleAccessMatrix.READ_ONLY, RoleAccessMatrix.FULL)) {
         boolean[] before = decisions(feature, Map.of(), legacy);
@@ -109,7 +110,7 @@ public class GoFeatureAccessTest {
         // A classic process grant has no write tier, and the one process feature is only ever
         // read (hasReadAccess): its seeded tier is compared on read only.
         int compared = feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS ? 1 : 2;
-        assertArrayEquals(feature.id + "/" + legacy + " after seeding",
+        assertArrayEquals(feature.id + "/" + legacy + " with a row at the legacy tier",
             Arrays.copyOf(before, compared),
             Arrays.copyOf(decisions(feature, seeded, legacy), compared));
         // the legacy fallback can later be dropped without changing the decision
@@ -239,11 +240,7 @@ public class GoFeatureAccessTest {
   private static final Path AD_REFERENCE = Paths.get("src-db", "database", "sourcedata",
       "AD_REFERENCE.xml");
 
-  private static void assertArrayEquals(String message, boolean[] expected, boolean[] actual) {
-    org.junit.Assert.assertArrayEquals(message, expected, actual);
-  }
-
-  /** {read, write} decision of a role with the given rows and legacy tier. */
+    /** {read, write} decision of a role with the given rows and legacy tier. */
   private static boolean[] decisions(GoFeature feature, Map<String, String> rows, String legacy) {
     try (Env env = new Env(rows, legacy)) {
       return new boolean[] { GoFeatureAccess.hasAccess(env.role, feature, "GET"),
