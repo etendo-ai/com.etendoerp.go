@@ -165,8 +165,13 @@ public class PurchaseInvoiceImportDuaTest {
   public void aLegacyF5WithoutTheCheckNeedsItsDua() throws Exception {
     when(stored.getAeatsiiClaveTipoFc()).thenReturn("F5");
 
-    assertRefused(PurchaseInvoiceImportDua.checkHeaderWrite(
-        crud("PATCH", INVOICE_ID, new JSONObject().put("description", "x"))), 400);
+    NeoResponse response = PurchaseInvoiceImportDua.checkHeaderWrite(
+        crud("PATCH", INVOICE_ID, new JSONObject().put("description", "x")));
+
+    // check off (stored N), no DUA, SII active: refused with the import-DUA key
+    assertRefused(response, 400);
+    assertEquals(PurchaseInvoiceImportDua.MSG_DUA_REQUIRED, response.getBody()
+        .getJSONObject("error").getJSONArray(NeoProcessService.MESSAGE_KEYS).getString(0));
   }
 
   @Test
