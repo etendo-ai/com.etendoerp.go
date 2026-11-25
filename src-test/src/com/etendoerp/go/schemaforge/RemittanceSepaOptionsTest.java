@@ -18,9 +18,7 @@
 package com.etendoerp.go.schemaforge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -28,8 +26,8 @@ import org.junit.jupiter.api.Test;
 import org.openbravo.module.remittance.Remittance;
 
 /**
- * Unit tests for {@link RemittanceSepaOptions} (ETP-6247): the per-remittance direct debit scheme
- * and financed flag.
+ * Unit tests for {@link RemittanceSepaOptions} (ETP-6247): the per-remittance direct debit
+ * scheme.
  *
  * @covers com.etendoerp.go.schemaforge.RemittanceSepaOptions
  */
@@ -44,28 +42,17 @@ class RemittanceSepaOptionsTest {
   }
 
   @Test
-  void aRemittanceWithoutASchemeIsCoreAndNotFinanced() {
+  void aRemittanceWithoutASchemeIsCore() {
     Remittance remittance = mock(Remittance.class);
 
     assertEquals("CORE", RemittanceSepaOptions.scheme(remittance));
-    assertFalse(RemittanceSepaOptions.financed(remittance));
   }
 
   @Test
-  void theStoredOptionsAreRead() {
+  void theStoredSchemeIsRead() {
     Remittance remittance = mock(Remittance.class);
     when(remittance.get(RemittanceSepaOptions.PROPERTY_SCHEME)).thenReturn("b2b");
-    when(remittance.get(RemittanceSepaOptions.PROPERTY_FINANCED)).thenReturn(Boolean.TRUE);
 
     assertEquals("B2B", RemittanceSepaOptions.scheme(remittance));
-    assertTrue(RemittanceSepaOptions.financed(remittance));
-  }
-
-  @Test
-  void theFinancedPrefixDefaultsToTheProvisionalConstant() {
-    Remittance remittance = mock(Remittance.class);
-
-    assertEquals(RemittanceSepaOptions.FINANCED_PREFIX, RemittanceSepaOptions.financedPrefix(remittance));
-    assertEquals("FSDD", RemittanceSepaOptions.FINANCED_PREFIX);
   }
 }

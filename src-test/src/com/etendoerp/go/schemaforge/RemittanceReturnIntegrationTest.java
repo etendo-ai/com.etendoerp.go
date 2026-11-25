@@ -432,7 +432,6 @@ public class RemittanceReturnIntegrationTest extends WeldBaseTest {
     assertTrue("the creditor identifier the file used is kept: " + returned.getCreditorIdentifier(),
         SepaCreditorId.isValid(returned.getCreditorIdentifier()));
     assertNull("the scheme is not written", returned.getDirectDebitScheme());
-    assertFalse(Boolean.TRUE.equals(returned.isFinanced()));
   }
 
   /**
@@ -944,7 +943,6 @@ public class RemittanceReturnIntegrationTest extends WeldBaseTest {
     assertEquals("IBAN", iban, remittance.getIBAN());
     assertEquals("creditor identifier", creditorId, remittance.getCreditorIdentifier());
     assertEquals("direct debit scheme", scheme, remittance.getDirectDebitScheme());
-    assertFalse("financed", Boolean.TRUE.equals(remittance.isFinanced()));
   }
 
   /** The organization's own information with a structured address, as the SEPA file needs. */

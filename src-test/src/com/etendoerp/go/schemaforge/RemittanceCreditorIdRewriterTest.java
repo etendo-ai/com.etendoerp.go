@@ -217,14 +217,14 @@ class RemittanceCreditorIdRewriterTest {
         + "</CstmrDrctDbtInitn></Document>";
   }
 
-  private static String options(String xml, String scheme, String prefix) throws IOException {
+  private static String options(String xml, String scheme) throws IOException {
     return new String(RemittanceCreditorIdRewriter.applyOptions(
-        xml.getBytes(StandardCharsets.UTF_8), scheme, prefix), StandardCharsets.UTF_8);
+        xml.getBytes(StandardCharsets.UTF_8), scheme), StandardCharsets.UTF_8);
   }
 
   @Test
-  void b2bReplacesTheInstrumentOfEveryPaymentBlock() throws Exception {
-    String out = options(withInstrument("REM-1"), "B2B", null);
+  void b2bReplacesTheInstrumentOfEveryPaymentBlockAndLeavesTheMessageId() throws Exception {
+    String out = options(withInstrument("REM-1"), "B2B");
 
     assertEquals(2, out.split("<Cd>B2B</Cd>", -1).length - 1, out);
     assertFalse(out.contains("<Cd>CORE</Cd>"), out);
@@ -232,32 +232,7 @@ class RemittanceCreditorIdRewriterTest {
   }
 
   @Test
-  void financedPrefixesTheMessageIdOnceAndKeepsItWithin35() throws Exception {
-    assertTrue(options(withInstrument("REM-1"), null, "FSDD").contains("<MsgId>FSDDREM-1</MsgId>"));
-    assertTrue(options(withInstrument("FSDDREM-1"), null, "FSDD")
-        .contains("<MsgId>FSDDREM-1</MsgId>"), "already prefixed: untouched");
-    String longId = "X".repeat(35);
-    assertTrue(options(withInstrument(longId), null, "FSDD")
-        .contains("<MsgId>FSDD" + "X".repeat(31) + "</MsgId>"));
-  }
-
-  /** Nit: a long id keeps its unique END (the sequence), its start is what is cut. */
-  @Test
-  void aFinancedIdTooLongKeepsTheOriginalsUniqueTail() throws Exception {
-    String original = "HEAD-" + "0".repeat(20) + "-UNIQUE-0042"; // 37 characters
-    String expected = "FSDD" + original.substring(original.length() - 31);
-
-    assertEquals(expected, RemittanceCreditorIdRewriter.prefixedMsgId("FSDD", original));
-    assertTrue(expected.endsWith("-UNIQUE-0042"));
-    assertEquals(35, expected.length());
-    assertEquals("FSDDREM-1", RemittanceCreditorIdRewriter.prefixedMsgId("FSDD", "REM-1"));
-    assertTrue(options(withInstrument(original), null, "FSDD")
-        .contains("<MsgId>" + expected + "</MsgId>"));
-  }
-
-  @Test
-  void aFileWithoutWhatIsAskedToChangeIsRefused() {
-    assertThrows(IOException.class, () -> options("<Document><PmtInf/></Document>", "B2B", null));
-    assertThrows(IOException.class, () -> options("<Document><PmtInf/></Document>", null, "FSDD"));
+  void aFileWithoutAnInstrumentIsRefused() {
+    assertThrows(IOException.class, () -> options("<Document><PmtInf/></Document>", "B2B"));
   }
 }

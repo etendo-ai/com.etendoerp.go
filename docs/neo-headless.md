@@ -2910,7 +2910,7 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
   the items. `remittanceType` offers only the provisioned types linked to the request's
   `FIN_Financial_Account_ID`; each item is `{id, label, direction}` (ETP-6247), `direction` being
   `collection` | `payment` from the type's payment method pay-in flag, so the SPA can show the scheme
-  and financed options before the first save. Through the MCP, `etendo_selectors` takes the account
+  option before the first save. Through the MCP, `etendo_selectors` takes the account
   as `recordContext.financialAccount` (or `FIN_Financial_Account_ID`) and passes it on (ETP-5850;
   before, the key was dropped and the selector answered no types). Writes stay strict: saving with
   an account without a valid IBAN is
@@ -3088,49 +3088,37 @@ invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed 
     is rolled back by the caller). No stand-in IBAN can be committed on the account.
   - **fileReadiness** `ETGO_RemittanceFileAccountNoIban` now judges the remittance's IBAN (its copy,
     else its account's).
-- **Direct debit scheme and financed flag (ETP-6247).** A COLLECTION remittance carries two options
-  of its own, columns of `org.openbravo.module.remittance`: `REM_REMITTANCE.DD_SCHEME` (`CORE` |
-  `B2B`, `VARCHAR(4)`, DAL `directDebitScheme`) and `REM_REMITTANCE.ISFINANCED` (`Y`/`N`, default
-  `N`, DAL `financed`); both `AD_FIELD`s on the remittance header, read-only once processed, and
-  frozen by `REM_REMITTANCE_TRG` after processing. `RemittanceHeaderWrites` sets `DD_SCHEME` to `CORE` on the create of a collection when the body
-  has none (none for a payment; the Classic callout does the same on a type change, and an empty value is read as `CORE`). The database does not default it. They are a per-remittance replacement of Classic's TYPE
-  parameters `CORE_B2B` and `SEPA_DD_Financed_58`, so the type does not change.
-  - **Write: the header's CRUD**, fields `directDebitScheme` and `financed` (decisions
+- **Direct debit scheme (ETP-6247).** A COLLECTION remittance carries its own scheme, a column of
+  `org.openbravo.module.remittance`: `REM_REMITTANCE.DD_SCHEME` (`CORE` | `B2B`, `VARCHAR(4)`, DAL
+  `directDebitScheme`); an `AD_FIELD` on the remittance header, read-only once processed, and
+  frozen by `REM_REMITTANCE_TRG` after processing. `RemittanceHeaderWrites` sets it to `CORE` on
+  the create of a collection when the body has none (none for a payment; the Classic callout does
+  the same on a type change, and an empty value is read as `CORE`). The database does not default
+  it. It is a per-remittance replacement of Classic's TYPE parameter `CORE_B2B`, so the type does
+  not change.
+  - **Write: the header's CRUD**, field `directDebitScheme` (decisions
     `entities.remittance.fields`, editable, not in the generic form; the SPA block «Opciones
-    avanzadas» owns them; needs the NEO push). `RemittanceHeaderWrites` normalizes them (scheme
-    upper-cased, `financed` to a boolean from `true`/`Y`), 422 `ETGO_RemittanceSchemeInvalid` for a
-    scheme other than CORE/B2B. On a **payment** remittance they do not apply: `B2B` or
-    `financed: true` (or `"Y"`) is refused, 422 `ETGO_RemittanceOptionsCollectionOnly`; `CORE` /
-    `false` are dropped from the body. Committee decision (ETP-6247): «Remesa financiada» exists
-    only for collections (pain.008), never for payments (pain.001). An update that moves a
-    collection to a payment type (or account) also writes `financed: false`, so a flag left by the
-    collection does not survive; a new payment keeps the column default `N`. Processed remittances
-    are not editable.
-  - **Read.** The fields travel with the header record; `sepaFileData` (with a saved remittance)
-    also answers `collection` (boolean), `directDebitScheme` (`null` for a payment) and `financed`
-    (always `false` for a payment, whatever is stored). Cobro or pago for the UI: the
-    `remittanceType` selector's `direction` (`collection` | `payment`) before saving, and
-    `sepaFileData.collection` for a saved remittance; the header record itself carries no derived
-    direction.
-  - **File.** `CoreDirectDebit` reads both from the type and has no per-remittance hook, so, as for the
-    IBAN and the creditor identifier, the output is rewritten by structure
+    avanzadas» owns it; needs the NEO push). `RemittanceHeaderWrites` upper-cases it, 422
+    `ETGO_RemittanceSchemeInvalid` for a scheme other than CORE/B2B. On a **payment** remittance it
+    does not apply: `B2B` is refused, 422 `ETGO_RemittanceOptionsCollectionOnly`; `CORE` is dropped
+    from the body. Processed remittances are not editable.
+  - **Read.** The field travels with the header record; `sepaFileData` (with a saved remittance)
+    also answers `collection` (boolean) and `directDebitScheme` (`null` for a payment). Cobro or
+    pago for the UI: the `remittanceType` selector's `direction` (`collection` | `payment`) before
+    saving, and `sepaFileData.collection` for a saved remittance; the header record itself carries
+    no derived direction.
+  - **File.** `CoreDirectDebit` reads the scheme from the type and has no per-remittance hook, so,
+    as for the IBAN and the creditor identifier, the output is rewritten by structure
     (`RemittanceCreditorIdRewriter.applyOptions`) and then validated against the XSD: `B2B` sets
-    `PmtInf/PmtTpInf/LclInstrm/Cd` of every block; financed gives `GrpHdr/MsgId` the prefix within
-    35 characters: when it does not fit, the ORIGINAL id is cut from its start
-    (`RemittanceCreditorIdRewriter.prefixedMsgId`), so its unique end (the document number) is kept
-    (untouched when it already starts with the prefix). The rewrite runs only on a CORE (collection)
-    type, so a payment's pain.001 never gets the prefix, even with a stale `ISFINANCED = Y`
-    (`RemittanceFileGenerator.withOptions`). A plain CORE, non-financed remittance is
-    not rewritten (the type already writes CORE); a file without `LclInstrm/Cd` or `MsgId` to change
-    is a `ETGO_RemittanceFileGenerationFailed`. The prefix is the type's own
-    `SEPA_DD_Financed_58` value when it has one, else `RemittanceSepaOptions.FINANCED_PREFIX`
-    (`FSDD`, PROVISIONAL: the real text is not decided; the one place to change).
-  - **Known cost / debt.** Classic's own «Create File» button ignores these columns and writes what
-    the type says, so a file made there can differ from GO's. B2B is not validated beyond what CORE
-    needs (a mandate and its date): the debtor must be a company and the mandate a B2B one, but GO has
-    no field for the mandate type; that validation is tracked debt, not implemented. «Financed»
-    changes only the message identifier: no accounting, settlement or return effect (nothing in REM or
-    automated.remittance reads it).
+    `PmtInf/PmtTpInf/LclInstrm/Cd` of every block. Only a CORE (collection) type is rewritten; a
+    plain CORE remittance is not (the type already writes CORE); a file without `LclInstrm/Cd` to
+    change is a `ETGO_RemittanceFileGenerationFailed`. The message identifier is always the
+    generator's own.
+  - **Known cost / debt.** Classic's own «Create File» button ignores the column and writes what the
+    type says, so a file made there can differ from GO's. B2B is not validated beyond what CORE
+    needs (a mandate and its date): the debtor must be a company and the mandate a B2B one, but GO
+    has no field for the mandate type; that validation is tracked debt, not implemented.
+- Financed remittances (Classic Remit for Discount) are not supported in GO.
 - **Customer bank account IBAN** (ETP-6247; contacts `bankAccount`, `ContactBankAccountHandler`,
   `@NeoExtension(spec = "contacts", entity = "bankAccount")`, every write channel: REST single,
   `/batch`, MCP). On `POST`/`PUT`/`PATCH` the IBAN the body sends — under `iBAN` or any casing of

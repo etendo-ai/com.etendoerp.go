@@ -74,7 +74,7 @@ import org.openbravo.module.remittance.utility.REM_RemittanceCreateFile;
 
 /**
  * Real-database acceptance of the SEPA files (ETP-6247), including a collection or payment whose
- * own values differ from its account's (creditor identifier, IBAN, B2B scheme, financed prefix):
+ * own values differ from its account's (creditor identifier, IBAN, B2B scheme):
  * the generated XML is parsed and validated against the XSD, and the copies the generation snapshots
  * on the remittance (the database makes none) are what a regeneration writes. See the tests named after those behaviors.
  *
@@ -191,25 +191,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
   }
 
   /**
-   * ETP-6247 (committee): financing is a collection option only. A payment remittance that still
-   * carries {@code ISFINANCED = Y} (data saved before the rule) gets no financed prefix on its
-   * pain.001 message identifier, and the file validates.
-   */
-  @Test
-  public void aPaymentWithAStaleFinancedFlagGetsNoFinancedPrefix() throws Exception {
-    Remittance remittance = processedPayment(
-        r -> r.set(RemittanceSepaOptions.PROPERTY_FINANCED, true));
-    assertTrue("the stale flag is there", RemittanceSepaOptions.financed(remittance));
-
-    String xml = new String(goFile(remittance), StandardCharsets.UTF_8);
-
-    String msgId = values(dom(xml), "GrpHdr", "MsgId").get(0);
-    assertFalse(msgId, msgId.startsWith(RemittanceSepaOptions.financedPrefix(remittance)));
-    assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_SCT, "pain.001.001.09"),
-        xml));
-  }
-
-  /**
    * EPC132-08 2025 v1.0: DbtrAgt is 1..1 (2.53) and CdtrAgt 0..1, BICFI only (2.114). With no BIC
    * anywhere the debtor agent is NOTPROVIDED and the creditor agent is left out; the file validates.
    */
@@ -285,14 +266,13 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
   // ---------------------------------------------------------------- the remittance's own values
 
   @Test
-  public void aB2bFinancedCollectionCarriesTheRemittanceOwnValuesAndValidatesAgainstTheXsd()
+  public void aB2bCollectionCarriesTheRemittanceOwnValuesAndValidatesAgainstTheXsd()
       throws Exception {
     Remittance remittance = processedCollection(r -> {
       differentAccountValues(r);
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
       r.setIBAN(OWN_IBAN);
       r.setDirectDebitScheme(RemittanceSepaOptions.SCHEME_B2B);
-      r.setFinanced(true);
     }, RemittanceProcessAction.GROUPING_NONE, SALES_DUE_A);
 
     String xml = new String(goFile(remittance), StandardCharsets.UTF_8);
@@ -309,9 +289,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertEquals("the line's debtor IBAN is untouched", List.of(PARTNER_IBAN),
         values(doc, "DrctDbtTxInf", "DbtrAcct", "Id", "IBAN"));
     assertEquals(List.of("B2B"), values(doc, "PmtInf", "PmtTpInf", "LclInstrm", "Cd"));
-    String msgId = values(doc, "GrpHdr", "MsgId").get(0);
-    assertTrue(msgId, msgId.startsWith(RemittanceSepaOptions.financedPrefix(remittance)));
-    assertTrue(msgId, msgId.length() <= RemittanceSepaOptions.MSG_ID_MAX_LENGTH);
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
         xml));
   }
@@ -325,7 +302,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
       r.setIBAN(OWN_IBAN);
       r.setDirectDebitScheme(RemittanceSepaOptions.SCHEME_B2B);
-      r.setFinanced(true);
     }, RemittanceProcessAction.GROUPING_NONE, SALES_DUE_A,
         SALES_DUE_B);
     // The generator opens a new PmtInf block when the collection date changes.
@@ -357,8 +333,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     for (String id : values(doc, "CdtrSchmeId", "Id", "PrvtId", "Othr", "Id")) {
       assertEquals(OWN_CREDITOR_ID, id);
     }
-    assertTrue(values(doc, "GrpHdr", "MsgId").get(0)
-        .startsWith(RemittanceSepaOptions.financedPrefix(remittance)));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
         xml));
   }
@@ -502,7 +476,7 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
   }
 
   @Test
-  public void aCoreNonFinancedCollectionOnlyTakesTheRemittanceIdAndIban() throws Exception {
+  public void aCoreCollectionOnlyTakesTheRemittanceIdAndIban() throws Exception {
     Remittance remittance = processedCollection(r -> {
       differentAccountValues(r);
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
@@ -510,7 +484,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     }, RemittanceProcessAction.GROUPING_NONE, SALES_DUE_A);
     assertEquals("a collection without a stored scheme is CORE", "CORE",
         RemittanceSepaOptions.scheme(remittance));
-    assertFalse(remittance.isFinanced());
 
     String xml = new String(goFile(remittance), StandardCharsets.UTF_8);
 
@@ -519,8 +492,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertEquals(List.of(OWN_CREDITOR_ID),
         values(doc, "InitgPty", "Id", "OrgId", "Othr", "Id"));
     assertEquals(List.of(OWN_IBAN), values(doc, "PmtInf", "CdtrAcct", "Id", "IBAN"));
-    String msgId = values(doc, "GrpHdr", "MsgId").get(0);
-    assertFalse(msgId, msgId.startsWith(RemittanceSepaOptions.FINANCED_PREFIX));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
         xml));
   }
@@ -530,7 +501,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     Remittance remittance = processedPayment(r -> {
       r.setIBAN(OWN_IBAN);
       r.setDirectDebitScheme(RemittanceSepaOptions.SCHEME_B2B);
-      r.setFinanced(true);
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
     });
 
@@ -543,8 +513,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertTrue(values(doc, "PmtInf", "PmtTpInf", "LclInstrm", "Cd").isEmpty());
     assertFalse(xml, xml.contains("B2B"));
     assertFalse(xml, xml.contains(OWN_CREDITOR_ID));
-    assertFalse(values(doc, "GrpHdr", "MsgId").get(0)
-        .startsWith(RemittanceSepaOptions.FINANCED_PREFIX));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_SCT, "pain.001.001.09"),
         xml));
   }
@@ -818,7 +786,7 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
 
   /**
    * A remittance of {@code scheme} with one line for all of each of {@code dues}, processed by REM.
-   * {@code customize} runs before it is saved (its own IBAN, creditor identifier, B2B, financed).
+   * {@code customize} runs before it is saved (its own IBAN, creditor identifier, B2B).
    */
   private Remittance processed(Client client, FIN_FinancialAccount account, String scheme,
       String grouping, Consumer<Remittance> customize, FIN_PaymentScheduleDetail... dues)

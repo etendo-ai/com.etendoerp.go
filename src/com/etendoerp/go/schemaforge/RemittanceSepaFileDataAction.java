@@ -259,8 +259,6 @@ final class RemittanceSepaFileDataAction {
     boolean collection = remittance != null && isCollection(remittance);
     response.put(RemittanceHeaderHandler.FIELD_SCHEME,
         collection ? RemittanceSepaOptions.scheme(remittance) : JSONObject.NULL);
-    response.put(RemittanceHeaderHandler.FIELD_FINANCED,
-        collection && RemittanceSepaOptions.financed(remittance));
     return response;
   }
 

@@ -216,10 +216,10 @@ final class RemittanceFileGenerator {
   }
 
   /**
-   * ETP-6247 — a collection's B2B scheme and financed flag are the remittance's, not the type's:
-   * {@code LclInstrm/Cd} becomes {@code B2B} and a financed message identifier gets its prefix
-   * ({@link RemittanceCreditorIdRewriter#applyOptions}). Nothing is rewritten for a plain CORE
-   * remittance (the provisioned type already writes CORE) nor for a payment.
+   * ETP-6247 — a collection's B2B scheme is the remittance's, not the type's: {@code LclInstrm/Cd}
+   * becomes {@code B2B} ({@link RemittanceCreditorIdRewriter#applyOptions}). Nothing is rewritten
+   * for a plain CORE remittance (the provisioned type already writes CORE) nor for a payment. The
+   * message identifier is the generator's own: financed remittances are not supported in GO.
    */
   private static byte[] withOptions(Remittance remittance, byte[] xml) throws Refusal {
     String type = RemittanceSepaFileSetup.schemeOf(remittance.getRemittanceType());
@@ -227,14 +227,11 @@ final class RemittanceFileGenerator {
       return xml;
     }
     String scheme = RemittanceSepaOptions.scheme(remittance);
-    boolean b2b = RemittanceSepaOptions.SCHEME_B2B.equals(scheme);
-    boolean financed = RemittanceSepaOptions.financed(remittance);
-    if (!b2b && !financed) {
+    if (!RemittanceSepaOptions.SCHEME_B2B.equals(scheme)) {
       return xml;
     }
     try {
-      return RemittanceCreditorIdRewriter.applyOptions(xml, b2b ? scheme : null,
-          financed ? RemittanceSepaOptions.financedPrefix(remittance) : null);
+      return RemittanceCreditorIdRewriter.applyOptions(xml, scheme);
     } catch (IOException e) {
       log.warn("Could not apply the direct debit options to the SEPA file of remittance {}",
           remittance.getId(), e);
