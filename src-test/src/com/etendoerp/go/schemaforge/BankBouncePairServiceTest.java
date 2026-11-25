@@ -679,6 +679,121 @@ class BankBouncePairServiceTest {
   // restorePair
   // ---------------------------------------------------------------------------
 
+  /**
+   * Pins today's contract of {@code validate}: which line is the original and which the bounce is
+   * decided by the data (dates, bounce wording), never by the order of the request, and the 60-day
+   * window, the sign and the amount are enforced on the server. The panel's free pick relies on
+   * the client blocking what the server would accept with swapped roles.
+   */
+  @Nested
+  @DisplayName("discardPair — roles by date and wording, the 60-day window, amount and sign (pinned contract)")
+  class DiscardRolesByDate {
+
+    private BankBouncePairService.Validated validated(String first, String second)
+        throws Exception {
+      return BankBouncePairService.validate(handler, account, first, second,
+          new Detection(handler, account, true));
+    }
+
+    @Test
+    @DisplayName("a negative line dated AFTER the positive one (within 60 days) is accepted with the roles swapped: the credit is stored as the original, whatever the request order")
+    void negativeAfterPositiveSwapsTheRoles() throws Exception {
+      Line credit = pendingLine("L-CREDIT", "50.00", DAY, "ACME", "ABONO");
+      Line debit = pendingLine("L-DEBIT", "-50.00", DAY.plusDays(10), "ACME", "PAGO");
+
+      for (String[] order : new String[][] { { "L-DEBIT", "L-CREDIT" }, { "L-CREDIT", "L-DEBIT" } }) {
+        BankBouncePairService.Validated v = validated(order[0], order[1]);
+
+        assertNull(v.error(), "accepted today: " + order[0] + " first");
+        assertSame(credit.mock, v.original(), "the earlier (credit) line takes the original role");
+        assertSame(debit.mock, v.bounce());
+      }
+      assertEquals(200, BankBouncePairService.discardPair(handler,
+          body(debit.id, credit.id)).getHttpStatus());
+      assertSame(debit.mock, credit.value(BankBouncePairService.COL_PAIR_LINE));
+      assertSame(credit.mock, debit.value(BankBouncePairService.COL_PAIR_LINE));
+    }
+
+    @Test
+    @DisplayName("the same pair 61 days apart with the negative line later is refused DISCARD_NOT_ALLOWED, in either request order")
+    void negativeAfterPositiveStillHasTheWindow() throws Exception {
+      Line credit = pendingLine("L-CREDIT", "50.00", DAY, "ACME", "ABONO");
+      Line debit = pendingLine("L-DEBIT", "-50.00",
+          DAY.plusDays(BankBounceDetector.WINDOW_DAYS + 1L), "ACME", "PAGO");
+
+      assertCoded(BankBouncePairService.discardPair(handler, body(debit.id, credit.id)), 409,
+          BankBounceErrors.CODE_DISCARD_NOT_ALLOWED);
+      assertCoded(BankBouncePairService.discardPair(handler, body(credit.id, debit.id)), 409,
+          BankBounceErrors.CODE_DISCARD_NOT_ALLOWED);
+      assertNothingWritten(credit, debit);
+    }
+
+    @Test
+    @DisplayName("same day, the OUTFLOW line carries the bounce wording: the roles are SWAPPED today (the line without wording is the original, so the inflow), whatever the request order")
+    void sameDayOutflowWithBounceWordingSwapsTheRoles() throws Exception {
+      Line outflow = pendingLine("L-OUT", "-50.00", DAY, "ACME", "DEVOLUCION TRANSFERENCIA");
+      Line inflow = pendingLine("L-IN", "50.00", DAY, "ACME", "ABONO");
+
+      for (String[] order : new String[][] { { "L-IN", "L-OUT" }, { "L-OUT", "L-IN" } }) {
+        BankBouncePairService.Validated v = validated(order[0], order[1]);
+
+        assertNull(v.error(), "accepted: " + order[0] + " first");
+        assertSame(inflow.mock, v.original(), "the line WITHOUT the wording takes the original role");
+        assertSame(outflow.mock, v.bounce());
+        assertEquals(BankBounceDetector.SIGNAL_RETURN_TEXT, v.signal());
+      }
+    }
+
+    @Test
+    @DisplayName("same day, the INFLOW line carries the bounce wording: outflow = original and the signal is return_text, high")
+    void sameDayInflowWithBounceWording() throws Exception {
+      Line outflow = pendingLine("L-OUT", "-50.00", DAY, "ACME", "TRANSFERENCIA");
+      Line inflow = pendingLine("L-IN", "50.00", DAY, "ACME", "DEVOLUCION TRANSFERENCIA");
+
+      BankBouncePairService.Validated v = validated(outflow.id, inflow.id);
+
+      assertNull(v.error());
+      assertSame(outflow.mock, v.original());
+      assertSame(inflow.mock, v.bounce());
+      assertEquals(BankBounceDetector.SIGNAL_RETURN_TEXT, v.signal());
+      assertEquals(BankBounceDetector.CONFIDENCE_HIGH, v.confidence());
+    }
+
+    @Test
+    @DisplayName("the outflow exactly 60 days before the inflow is accepted, 61 refused DISCARD_NOT_ALLOWED (either request order)")
+    void sixtyAcceptedSixtyOneRefused() throws Exception {
+      Line outflow60 = pendingLine("L-OUT60", "-50.00", DAY, "ACME", "X");
+      Line inflow60 = pendingLine("L-IN60", "50.00", DAY.plusDays(60), "ACME", "Y");
+      Line outflow61 = pendingLine("L-OUT61", "-70.00", DAY, "ACME", "X");
+      Line inflow61 = pendingLine("L-IN61", "70.00", DAY.plusDays(61), "ACME", "Y");
+
+      assertNull(validated(inflow60.id, outflow60.id).error());
+      assertNull(validated(outflow60.id, inflow60.id).error());
+      for (String[] order : new String[][] { { "L-OUT61", "L-IN61" }, { "L-IN61", "L-OUT61" } }) {
+        assertCoded(BankBouncePairService.discardPair(handler, body(order[0], order[1])), 409,
+            BankBounceErrors.CODE_DISCARD_NOT_ALLOWED);
+      }
+      assertNothingWritten(outflow61, inflow61);
+    }
+
+    @Test
+    @DisplayName("one cent of difference is AMOUNT_MISMATCH in either direction; the same sign is SIGN_MISMATCH even with equal amounts")
+    void oneCentAndSameSign() throws Exception {
+      Line outflow = pendingLine("L-OUT", "-50.00", DAY, "ACME", "X");
+      Line moreIn = pendingLine("L-MORE", "50.01", DAY.plusDays(1), "ACME", "Y");
+      Line lessIn = pendingLine("L-LESS", "49.99", DAY.plusDays(1), "ACME", "Y");
+      Line twin = pendingLine("L-TWIN", "-50.00", DAY.plusDays(1), "ACME", "Z");
+
+      assertCoded(BankBouncePairService.discardPair(handler, body(outflow.id, moreIn.id)), 409,
+          BankBounceErrors.CODE_AMOUNT_MISMATCH);
+      assertCoded(BankBouncePairService.discardPair(handler, body(lessIn.id, outflow.id)), 409,
+          BankBounceErrors.CODE_AMOUNT_MISMATCH);
+      assertCoded(BankBouncePairService.discardPair(handler, body(outflow.id, twin.id)), 409,
+          BankBounceErrors.CODE_SIGN_MISMATCH);
+      assertNothingWritten(outflow, moreIn, lessIn, twin);
+    }
+  }
+
   @Nested
   @DisplayName("restorePair — always the pair, gated by the flag like the discard")
   class Restore {

@@ -78,6 +78,10 @@ final class BankBounceAiQuestions {
   static final String PROMPT_VERSION = "bounce-ai-v2";
   /** The option that means "none of the candidate outflows is the one this rejection reverses". */
   static final String NONE = "none";
+  /** What the "none" option means to the model. */
+  static final String NONE_DESCRIPTION = "The line does not reverse any of the listed outflows: it"
+      + " may be a refund, a credit, a new payment or a collection, or the evidence is not enough.";
+
   /** A component with a question that has more candidates than this is not asked. */
   static final int MAX_CANDIDATES = 8;
   /** Questions per decision call: a component that cannot fit is never asked. */
@@ -858,10 +862,6 @@ final class BankBounceAiQuestions {
     }
     return out;
   }
-
-  /** What the "none" option means to the model. */
-  static final String NONE_DESCRIPTION = "The line does not reverse any of the listed outflows: it"
-      + " may be a refund, a credit, a new payment or a collection, or the evidence is not enough.";
 
   /** What the model is told before the evidence block. */
   static final String GUIDANCE = StringUtils.join(List.of(
