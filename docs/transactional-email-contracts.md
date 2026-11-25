@@ -532,18 +532,40 @@ Document-send contracts generate `download_link` from server configuration:
 
 | Property | Environment Variable | Purpose |
 |----------|----------------------|---------|
-| `etendo.go.email.documentDownloadBaseUrl` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_BASE_URL` | Base URL for signed document download links, normally `/etendo/sws/neo/document-download` |
-| `etendo.go.email.documentDownloadTokenSecret` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_SECRET` | Server-side HMAC secret used to sign document download tokens |
-| `etendo.go.email.documentDownloadTokenTtlSeconds` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_TTL_SECONDS` | Optional token lifetime in seconds. Defaults to 7 days and never allows less than 60 seconds |
+| `etendo.go.email.documentDownloadBaseUrl` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_BASE_URL` | Base URL for document download links, normally `/etendo/sws/neo/document-download` |
+| `etendo.go.email.documentDownloadTokenSecret` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_SECRET` | Server-side HMAC secret used to sign document download tokens. Required for any link, share links included, because the signed token is their fallback |
+| `etendo.go.email.documentDownloadTokenTtlSeconds` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_TTL_SECONDS` | Optional link lifetime in seconds, for share links and signed tokens alike. Defaults to 7 days and never allows less than 60 seconds |
 
-Document download links are generated as `{base}/{token}`. The token is tied to the email send
-event through the resolved idempotency key and contains the trusted document record id and client
-id resolved by the server-side contract. The public download endpoint treats the signed token as a
-short-lived bearer authorization: it validates the HMAC signature and expiration, then serves only
-the cached `ETGO_PREVIEW_FILE` file for the token client/spec/record tuple. The send attempt is
-still audited by `TransactionalEmailService`, but the download endpoint does not depend on
-process-local audit state so links keep working across restarts and clustered nodes until their
-token expires.
+Document download links come in two formats (ETP-5035; full contract in `docs/neo-headless.md`
+§4.8):
+
+- **Share link, `{base}/{shareCode}`** — what new emails carry. The code is 10 random characters of
+  `[A-Za-z0-9]`, and the contract, spec, record id, client id, idempotency key and expiry live in
+  one `ETGO_Doc_Share_Link` row (`DocShareLinkService`). The row is committed on a pooled
+  connection of its own before the email is sent, so a later rollback of the send transaction
+  cannot leave the recipient with a dead link. An unknown, expired or revoked code answers
+  `404 Document not found`, the same answer as a missing file, so the response never tells whether
+  a record exists.
+- **Signed token, `{base}/{token}`** — the fallback when the share-link row cannot be stored (a WARN
+  names the send's idempotency key), and the format of every link sent before ETP-5035. The token
+  carries the same claims, signed with HMAC; the endpoint validates the signature and expiration
+  and answers `403 Invalid or expired link` when either fails, `404 Document file not found` when
+  the file is gone.
+
+Either way the endpoint serves the record's main attachment for the link's client/spec/record
+tuple, and does not depend on process-local audit state, so links keep working across restarts
+and clustered nodes until they expire. The send attempt is still audited by
+`TransactionalEmailService`; the link a recipient got is the `download_link` of its
+`ETGO_Email_Send_Log` row. Every send attempt mints a new share link, also one that ends up not
+sent (duplicate, throttled, suppressed), and the stored idempotency key is per record, so all the
+links of one document share it.
+
+Each download of a live share link that serves the file counts one open (`Open_Count`, and
+`First_Opened_At` once). Downloads whose `User-Agent` names a known email security scanner or link
+previewer (Microsoft Safe Links, Google's image proxy, Mimecast, Proofpoint, Barracuda and others;
+the list is `NeoDocumentDownloadService.EMAIL_SCANNER_USER_AGENT_TOKENS`) get the file but are not
+counted. Scanners that present a plain browser `User-Agent` still count, so the open count is an
+upper bound. Expired and revoked share-link rows are kept: nothing deletes them automatically.
 
 ## Document summary block (ETP-5003)
 

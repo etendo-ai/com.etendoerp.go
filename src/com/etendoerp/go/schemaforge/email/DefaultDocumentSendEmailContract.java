@@ -808,8 +808,10 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
         EmailContractCommandSupport.FIELD_RECORD_ID);
     String documentRecordId = EmailContractCommandSupport.firstNonBlank(
         document == null ? null : document.getRecordId(), recordId);
-    // The download-link token key stays stable per record so re-sends with edited recipients do
-    // not mint new tokens; it must not depend on the recipient-set hash.
+    // The download-link key is per record, not per send: it never depends on the recipient-set
+    // hash, so every link minted for one document carries the same key. Each send attempt still
+    // mints a new share link (ETP-5035), also one that ends up not sent (duplicate, throttled,
+    // suppressed); the link a recipient got is the download_link of its send log row.
     String downloadTokenKey = EmailContractCommandSupport.idempotencyKey(name,
         document.getClientId(), documentRecordId);
     if (StringUtils.isAnyBlank(documentRecordId, document.getClientId(), downloadTokenKey)) {
