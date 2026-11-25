@@ -31,6 +31,7 @@ import java.util.regex.Pattern;
 import org.openbravo.module.bptaxidkey.ViesService;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.hibernate.criterion.Restrictions;
@@ -121,6 +122,8 @@ public class ContactsLocationAddressHandler implements NeoHandler {
   private static final String FIELD_LOCATION_ADDRESS = "locationAddress";
   /** Free-text region, resolved server-side against the payload's own country. See {@link #resolveRegionByName}. */
   private static final String FIELD_REGION_NAME = "regionName";
+  /** Query parameter carrying the parent Business Partner id. */
+  private static final String QUERY_PARENT_ID = "parentId";
   private static final String FIELD_RESPONSE = "response";
   private static final String FIELD_UPDATED = "updated";
   private static final String FIELD_DATA = "data";
@@ -154,7 +157,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     } catch (Exception e) {
       SessionHandler.getInstance().rollback();
       log.error("ContactsLocationAddressHandler error in {} (recordId={}, parentId={}, cause={})",
-          method, recordId, parentIdOf(ctx), rootCauseOf(e).getClass().getName(), e);
+          method, recordId, parentIdOf(ctx), rootCauseClassOf(e), e);
       return NeoResponse.error(500, "Location handler error: " + e.getMessage());
     }
     // GET list and DELETE fall through to default CRUD
@@ -171,15 +174,12 @@ public class ContactsLocationAddressHandler implements NeoHandler {
   }
 
   private static String parentIdOf(NeoContext ctx) {
-    return ctx.getQueryParams() != null ? ctx.getQueryParams().get("parentId") : null;
+    return ctx.getQueryParams() != null ? ctx.getQueryParams().get(QUERY_PARENT_ID) : null;
   }
 
-  private static Throwable rootCauseOf(Throwable t) {
-    Throwable root = t;
-    while (root.getCause() != null && root.getCause() != root) {
-      root = root.getCause();
-    }
-    return root;
+  private static String rootCauseClassOf(Throwable t) {
+    Throwable root = ExceptionUtils.getRootCause(t);
+    return (root != null ? root : t).getClass().getName();
   }
 
   /** An ISO 3166-1 alpha-2 code ({@code ES}); a {@code C_Country_ID} is never two letters. */
@@ -264,7 +264,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
         StructuredAddressComposer.isEnabled(GoAccountResolver.currentAccountEmail());
     String bpId = body != null ? body.optString(FIELD_BUSINESS_PARTNER, null) : null;
     if (StringUtils.isBlank(bpId) && ctx.getQueryParams() != null) {
-      bpId = ctx.getQueryParams().get("parentId");
+      bpId = ctx.getQueryParams().get(QUERY_PARENT_ID);
     }
     if (StringUtils.isBlank(bpId)) {
       return NeoResponse.error(400, "Missing parentId (Business Partner ID)");
