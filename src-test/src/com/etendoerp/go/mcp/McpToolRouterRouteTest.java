@@ -589,6 +589,150 @@ class McpToolRouterRouteTest {
       }
     }
 
+    /** ETP-5810: a misspelled or unsupported operation key is refused by name, not dropped. */
+    @Test
+    @DisplayName("an unknown key in an operation is refused as unknown_argument naming it")
+    void batchRefusesUnknownOperationKey() throws Exception {
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        JSONObject args = buildBatchArgs();
+        args.getJSONArray("operations").getJSONObject(0).put("parentRf", "op0");
+
+        JSONObject result = router.handleBatch(args);
+
+        JSONObject body = new JSONObject(
+            result.getJSONArray("content").getJSONObject(0).getString("text"));
+        assertFalse(body.getBoolean("committed"));
+        assertEquals(0, body.getJSONObject("failedAt").getInt("index"));
+        assertEquals("op1", body.getJSONObject("failedAt").getString("id"));
+        JSONObject error = body.getJSONObject("error");
+        assertEquals("unknown_argument", error.getString("error"));
+        assertEquals("operations[0].parentRf", error.getString("field"));
+        assertTrue(error.getString("detail").contains("operations[0].parentRf"));
+        assertEquals(new JSONArray(List.of("id", "spec", "entity", "parentRef", "body")).toString(),
+            error.getJSONArray("available").toString());
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.never())
+            .executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+      }
+    }
+
+    /** ETP-5810: an operation using only declared keys still reaches BatchService. */
+    @Test
+    @DisplayName("an operation with only declared keys is not refused by the key guard")
+    void batchAcceptsDeclaredOperationKeys() throws Exception {
+      SFSpec spec = mockSpec();
+      supportMock.when(() -> McpToolRouterSupport.findActiveSpecByName(SPEC_NAME))
+          .thenReturn(spec);
+      supportMock.when(() -> McpToolRouterSupport.hasSpecAccess(spec, "W", "POST"))
+          .thenReturn(true);
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        JSONObject batchResult = new JSONObject();
+        batchResult.put("committed", true);
+        when(mockBatch.executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+            org.mockito.ArgumentMatchers.anyBoolean())).thenReturn(batchResult);
+        JSONObject args = buildBatchArgs();
+        args.getJSONArray("operations").getJSONObject(0).put("parentRef", "op0");
+
+        JSONObject result = router.handleBatch(args);
+
+        assertFalse(result.has("isError"));
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.times(1)).executeBatch(any(),
+            any(), org.mockito.ArgumentMatchers.anyBoolean(),
+            org.mockito.ArgumentMatchers.anyBoolean());
+      }
+    }
+
+    /**
+     * ETP-5810: MCP batch is create-only. The DELETE operation the REST /sws/neo/batch caller may
+     * send ({@code method}/{@code recordId}) is refused over MCP — on the atomic path and on the
+     * default async one — and nothing runs: a delete goes through etendo_delete.
+     */
+    @Test
+    @DisplayName("a DELETE operation (method/recordId) is refused and neither the batch nor a job runs")
+    void batchRefusesDeleteOperation() throws Exception {
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class);
+          MockedStatic<McpBatchJobTools> jobMock = mockStatic(McpBatchJobTools.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        for (boolean sync : new boolean[] { true, false }) {
+          JSONObject args = buildBatchArgs();
+          if (!sync) {
+            args.remove("async");
+          }
+          JSONObject op = args.getJSONArray("operations").getJSONObject(0);
+          op.remove("body");
+          op.put("method", "DELETE");
+          op.put("recordId", "ABCDEF0123456789ABCDEF0123456789");
+
+          JSONObject result = router.handleBatch(args);
+
+          JSONObject body = new JSONObject(
+              result.getJSONArray("content").getJSONObject(0).getString("text"));
+          assertFalse(body.getBoolean("committed"), body.toString());
+          assertEquals(0, body.getJSONObject("failedAt").getInt("index"));
+          JSONObject error = body.getJSONObject("error");
+          assertEquals("unknown_argument", error.getString("error"));
+          String field = error.getString("field");
+          assertTrue(field.equals("operations[0].method") || field.equals("operations[0].recordId"),
+              field);
+        }
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.never())
+            .executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+        jobMock.verify(() -> McpBatchJobTools.submitBatchJob(any(), any(), any()),
+            org.mockito.Mockito.never());
+      }
+    }
+
+    /**
+     * ETP-5810: the IMP-40 root-argument guard covers etendo_batch. A mistyped {@code asyn:false}
+     * used to be dropped, and the batch ran async and row by row instead of atomically.
+     */
+    @Test
+    @DisplayName("an undeclared root argument of etendo_batch is refused before anything runs")
+    void batchRejectsUnknownRootArgument() throws Exception {
+      try (MockedStatic<com.etendoerp.go.schemaforge.BatchService> batchMock =
+          mockStatic(com.etendoerp.go.schemaforge.BatchService.class);
+          MockedStatic<McpBatchJobTools> jobMock = mockStatic(McpBatchJobTools.class)) {
+        com.etendoerp.go.schemaforge.BatchService mockBatch =
+            mock(com.etendoerp.go.schemaforge.BatchService.class);
+        batchMock.when(com.etendoerp.go.schemaforge.BatchService::forBatchOnly)
+            .thenReturn(mockBatch);
+        JSONObject args = buildBatchArgs();
+        args.remove("async");
+        args.put("asyn", false);
+
+        JSONObject result = router.route("etendo_batch", args, WRITE_SCOPES);
+
+        assertTrue(result.getBoolean("isError"), result.toString());
+        JSONObject envelope = new JSONObject(
+            result.getJSONArray("content").getJSONObject(0).getString("text"));
+        assertEquals("unknown_argument", envelope.getString("error"));
+        assertEquals("asyn", envelope.getString("field"));
+        String available = envelope.getJSONArray("available").toString();
+        assertTrue(available.contains("\"async\"") && available.contains("\"operations\""),
+            available);
+        org.mockito.Mockito.verify(mockBatch, org.mockito.Mockito.never())
+            .executeBatch(any(), any(), org.mockito.ArgumentMatchers.anyBoolean(),
+                org.mockito.ArgumentMatchers.anyBoolean());
+        jobMock.verify(() -> McpBatchJobTools.submitBatchJob(any(), any(), any()),
+            org.mockito.Mockito.never());
+      }
+    }
+
     /** ETP-5676: the etendo_batch argument reaches BatchService with the REST option's meaning. */
     @Test
     @DisplayName("an etendo_batch forwards _onlyReturnIds and _skipRedundantCallouts")

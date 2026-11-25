@@ -5776,6 +5776,10 @@ change to the operation's body can fix — `method_not_allowed` (the verb is hid
 batch", which contradicted the operation's own "Do not retry this call": it says to **remove or
 replace** the operation in `failedAt`, then retry the rest.
 
+An operation key the tool does not declare, and an undeclared root argument, are refused before the
+batch runs — and over MCP the batch is create-only, so a DELETE operation is one of them. See
+"`etendo_batch` unknown keys (ETP-5810)" in §4.12.26.
+
 ##### 4.12.4.1 `atomic` / `persisted` — the batch rolls back as a unit (IMP-23)
 
 **`etendo_batch` and `POST /batch` are atomic**: a failure rolls back every operation, so the recovery
@@ -13941,6 +13945,36 @@ the tool is still read-only and idempotent.
 **`etendo_action` is covered by the same guard (ETP-5669).** `ToolRegistry.declaredArgumentNames` has a
 `TOOL_NEO_ACTION` case, so a stray top-level key (e.g. `docAction`) is refused `unknown_argument`; the
 hint adds that the action's own parameters (e.g. `docAction`) go inside `parameters`.
+
+**`etendo_batch` unknown keys (ETP-5810).** Both levels are checked, and nothing runs when either
+refuses: no access check, no transaction, no async job.
+
+- **Root arguments.** `ToolRegistry.declaredArgumentNames` has a `TOOL_NEO_BATCH` case
+  (`buildBatchTool()`), so the IMP-40 guard accepts only `operations`, `async`, `_onlyReturnIds` and
+  `_skipRedundantCallouts`. A mistyped `asyn:false` used to be dropped, and the batch then ran async,
+  row by row, instead of as the one atomic transaction the agent asked for. It is now refused like
+  any other tool's unknown argument: `isError`, `error:"unknown_argument"`, `field:"asyn"`,
+  `available`.
+- **Operation keys.** `McpBatchOperationKeys.rejectUnknown` (called first in
+  `McpToolRouter.handleBatch`, on the synchronous and the async path alike) accepts only the keys
+  `operations.items.properties` declares: `id`, `spec`, `entity`, `parentRef`, `body`. A misspelled
+  `parentRf` used to be dropped, and the line was then created with no parent. The first unknown
+  key is answered with the §4.12.4 pre-flight envelope, not an `isError` block, and the same body is
+  returned whatever `async` says (no `jobId`, nothing is queued):
+
+```json
+{"committed":false,"atomic":true,"persisted":[],"failedAt":{"index":0,"id":"l1"},
+ "hint":"Nothing was persisted: the batch was rejected before the transaction opened, …",
+ "error":{"error":"unknown_argument","field":"operations[0].parentRf",
+          "available":["id","spec","entity","parentRef","body"],"tool":"etendo_batch",…}}
+```
+
+**MCP batch is create-only.** `BatchService` also serves the REST `/sws/neo/batch` DELETE operation
+(`method:"DELETE"`, `recordId`, ETP-6143), and until ETP-5810 an agent sending those keys through
+`etendo_batch` reached it although the tool never advertised it and authorised the batch as `POST`.
+Those keys are now refused as `unknown_argument` (`error.field` = `operations[i].method` or
+`operations[i].recordId`). To delete over MCP, use `etendo_delete`, which checks the role's `DELETE`
+tier. The REST batch is unchanged.
 
 **Missing arguments are reported together (ETP-5669).** `McpToolRouterSupport.validateArgs` names every
 missing key in one answer instead of one per round trip: `Missing required arguments: spec, id` for
