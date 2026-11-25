@@ -3,7 +3,7 @@
 This table is the cross-runtime contract referenced by ADR-0004. Expected values describe the cell
 value after neutralization and before CSV quoting.
 
-**Executable twin:** `@etendosoftware/app-shell-core/lib/csv/csvNeutralizationFixtures.js` exports
+**Executable twin:** `@etendo-ai/app-shell-core/lib/csv/csvNeutralizationFixtures.js` exports
 this same table as data (`CSV_NEUTRALIZATION_FIXTURES`) plus the trigger set
 (`SPREADSHEET_FORMULA_TRIGGERS`). The JavaScript suites are driven by it, and
 `NeoCsvExportServiceTest.spreadsheetNeutralizationFixtures()` mirrors it row for row. Add a trigger
