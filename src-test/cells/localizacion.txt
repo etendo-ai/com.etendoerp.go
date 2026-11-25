@@ -36,6 +36,7 @@ com.etendoerp.go.schemaforge.MarkSubsanationHandlerTest
 com.etendoerp.go.schemaforge.NeoFiscalModelsCatalogServiceTest
 com.etendoerp.go.schemaforge.PurchaseInvoiceSiiDeferredVatTest
 com.etendoerp.go.schemaforge.PurchaseInvoiceTaxExtensionTest
+com.etendoerp.go.schemaforge.PurchaseInvoiceImportDuaTest
 com.etendoerp.go.schemaforge.RectificationFiscalCodeGuardTest
 com.etendoerp.go.schemaforge.RectificationTotalGuardTest
 com.etendoerp.go.schemaforge.RectificativeImportGateTest
