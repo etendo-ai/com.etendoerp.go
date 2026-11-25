@@ -19,7 +19,8 @@ import com.etendoerp.go.common.BoundedJsonParser;
 import com.etendoerp.go.schemaforge.NeoAttachmentAuthorizer.Access;
 import com.etendoerp.go.schemaforge.data.SFSpec;
 import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
-import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoImageHelper;
 import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
 
@@ -220,7 +221,7 @@ class NeoBuiltInEndpointHandler {
    */
   private void handleFiscalModelsCatalogEndpoint(String method,
       HttpServletRequest request, HttpServletResponse response) throws IOException {
-    if (!NeoAccessHelper.hasWindowAccess(RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, method)) {
+    if (!GoFeatureAccess.hasAccess(GoFeature.FISCAL_MODELS, method)) {
       servlet.sendError(response, HttpServletResponse.SC_FORBIDDEN, "Access denied");
       return;
     }

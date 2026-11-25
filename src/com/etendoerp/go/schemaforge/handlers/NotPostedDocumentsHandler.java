@@ -47,7 +47,8 @@ import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoHandler;
 import com.etendoerp.go.schemaforge.NeoResponse;
 import com.etendoerp.go.schemaforge.util.AccountingDocumentTypeSupport;
-import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 
 /**
  * Serves the Not Posted Documents window.
@@ -320,7 +321,7 @@ public class NotPostedDocumentsHandler implements NeoHandler {
    */
   @Override
   public boolean isAccessibleForCurrentRole() {
-    return NeoAccessHelper.hasObuiappProcessAccess(NOT_POSTED_DOCUMENTS_PROCESS_ID);
+    return GoFeatureAccess.hasReadAccess(GoFeature.NOT_POSTED_DOCUMENTS);
   }
 
   @Override

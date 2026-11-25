@@ -48,9 +48,9 @@ import org.openbravo.model.financialmgmt.calendar.Period;
 import org.openbravo.module.taxreportlauncher.TaxReport;
 
 import com.etendoerp.go.common.MalformedJsonException;
-import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoMessageTranslator;
-import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
 
 abstract class AbstractFiscalHandler {
 
@@ -318,7 +318,7 @@ abstract class AbstractFiscalHandler {
     // per-entity. "Modelos Fiscales" access is the role's grant on the Tax Report window
     // (ETP-5116 proxy, shared constant per ETP-5540); the method is tiered against IsReadWrite
     // so a read-only grant still denies POST /fiscal303/submit.
-    if (!NeoAccessHelper.hasWindowAccess(RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, method)) {
+    if (!GoFeatureAccess.hasAccess(GoFeature.FISCAL_MODELS, method)) {
       servlet.sendError(response, HttpServletResponse.SC_FORBIDDEN, "Access denied");
       return;
     }

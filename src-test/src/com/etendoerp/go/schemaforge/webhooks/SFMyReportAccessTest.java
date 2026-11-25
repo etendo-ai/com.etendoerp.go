@@ -76,6 +76,15 @@ class SFMyReportAccessTest {
     obContextMock.when(OBContext::getOBContext).thenReturn(mockContext);
 
     webhook = new SFMyReportAccess();
+    // ETP-4802: the GO Access lookup (native query) finds no row, so every tier stays the legacy one.
+    org.hibernate.Session goAccessSession = mock(org.hibernate.Session.class);
+    org.hibernate.query.NativeQuery goAccessQuery = mock(org.hibernate.query.NativeQuery.class);
+    org.mockito.Mockito.lenient().when(mockDal.getSession()).thenReturn(goAccessSession);
+    org.mockito.Mockito.lenient().when(goAccessSession.createNativeQuery(org.mockito.ArgumentMatchers.anyString()))
+        .thenReturn(goAccessQuery);
+    org.mockito.Mockito.lenient().when(goAccessQuery.setParameter(org.mockito.ArgumentMatchers.anyString(),
+        org.mockito.ArgumentMatchers.any())).thenReturn(goAccessQuery);
+    org.mockito.Mockito.lenient().when(goAccessQuery.list()).thenReturn(java.util.Collections.emptyList());
     parameters = new HashMap<>();
     responseVars = new HashMap<>();
   }

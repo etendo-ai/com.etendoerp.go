@@ -36,11 +36,13 @@ import org.hibernate.Session;
 import org.hibernate.criterion.Criterion;
 import org.hibernate.criterion.SimpleExpression;
 import org.hibernate.query.NativeQuery;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedConstruction;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.openbravo.client.application.Process;
@@ -56,6 +58,7 @@ import org.openbravo.model.ad.ui.Window;
 import com.etendoerp.go.roles.SystemRoleTemplates;
 import com.etendoerp.go.roles.UserRoleCompositionService;
 import com.etendoerp.go.schemaforge.data.SFSpec;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.supportaccess.SupportAccessGuard;
 
 /**
@@ -97,10 +100,22 @@ class SFRolesOverviewTest extends BaseWebhookTest {
 
     private SFRolesOverview webhook;
     private NativeQuery<Object[]> categoryQuery;
+    private MockedStatic<GoFeatureAccess> goFeatureAccess;
+
+    @AfterEach
+    void closeGoFeatureAccess() {
+        goFeatureAccess.close();
+    }
 
     @BeforeEach
     void setUp() {
         webhook = new SFRolesOverview();
+
+        // ETP-4802: the GO Access overlay reads its own table; no role has a GO Access row here,
+        // so every tier stays the legacy classic one.
+        goFeatureAccess = mockStatic(GoFeatureAccess.class);
+        goFeatureAccess.when(() -> GoFeatureAccess.overlayTier(any(), anyString(), anyString()))
+            .thenAnswer(invocation -> invocation.getArgument(2));
 
         // ETP-4907: buildRolesOverview() unconditionally resolves the matrix's window
         // categories via a native query. Default every test to "no category rows" (every

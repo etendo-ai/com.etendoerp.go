@@ -220,7 +220,7 @@ public final class ReportAccessCatalog {
           tier = resolveWindowTierMap(role, Set.of(row.anchorId)).getOrDefault(row.anchorId, NONE);
           break;
       }
-      reportTiers.put(row.id, tier);
+      reportTiers.put(row.id, GoFeatureAccess.overlayTier(role, row.anchorId, tier));
     }
     return reportTiers;
   }

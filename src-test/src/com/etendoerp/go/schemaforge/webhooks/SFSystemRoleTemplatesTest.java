@@ -48,6 +48,7 @@ import org.openbravo.model.ad.system.Client;
 import org.openbravo.model.ad.ui.Window;
 
 import com.etendoerp.go.roles.SystemRoleTemplates;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.data.SFSpec;
 
 /**
@@ -67,10 +68,21 @@ class SFSystemRoleTemplatesTest extends BaseWebhookTest {
     private static final String CALLER_CLIENT_ID = "some-tenant-client";
 
     private SFSystemRoleTemplates webhook;
+    private org.mockito.MockedStatic<GoFeatureAccess> goFeatureAccess;
 
     @BeforeEach
     void setUp() {
         webhook = new SFSystemRoleTemplates();
+
+        // ETP-4802: no role has a GO Access row here, so every tier stays the legacy classic one.
+        goFeatureAccess = org.mockito.Mockito.mockStatic(GoFeatureAccess.class);
+        goFeatureAccess.when(() -> GoFeatureAccess.overlayTier(any(), org.mockito.ArgumentMatchers.anyString(),
+            org.mockito.ArgumentMatchers.anyString())).thenAnswer(invocation -> invocation.getArgument(2));
+    }
+
+    @org.junit.jupiter.api.AfterEach
+    void closeGoFeatureAccess() {
+        goFeatureAccess.close();
     }
 
     // ── mocking helpers ──────────────────────────────────────────────────

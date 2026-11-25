@@ -198,8 +198,9 @@ public final class RoleAccessMatrix {
    * <p>ETP-5540 — the single backend source for "Modelos Fiscales is granted through Tax
    * Report". Besides the roles matrices it is read by {@code NeoAttachmentAuthorizer} (the
    * {@code ETGO_Fiscal_Decl} attachment proxy) and by the fiscal endpoint gates of ETP-5546
-   * ({@code AbstractFiscalHandler}, {@code NeoBuiltInEndpointHandler}). It stays here until
-   * ETP-4802 gives windowless GO features a declarative home in the permission system. The
+   * ({@code AbstractFiscalHandler}, {@code NeoBuiltInEndpointHandler}). ETP-4802 moved the
+   * feature's declaration to {@link GoFeature#FISCAL_MODELS}; this constant remains the legacy
+   * grant id the matrices and {@link GoFeature} read. The
    * role-template grant data ({@code TemplateRoleWindowAccess} and its modulescript copy) keeps
    * the literal id by design.
    */
@@ -372,6 +373,21 @@ public final class RoleAccessMatrix {
   static void mergeProxyAccessTiers(Role role, Map<String, String> tiers) {
     tiers.putAll(resolveWindowTierMap(role, Set.of(TAX_MODELS_PROXY_WINDOW_ID)));
     tiers.putAll(resolveProcessTierMap(role, NOT_POSTED_DOCS_PROXY_PROCESS_ID));
+    overlayGoAccessTiers(role, tiers);
+  }
+
+  /**
+   * ETP-4802 — a role's GO Access row for a feature replaces the tier resolved from the feature's
+   * legacy classic grant, in place. Features without a row keep the legacy tier.
+   */
+  private static void overlayGoAccessTiers(Role role, Map<String, String> tiers) {
+    for (GoFeature feature : GoFeature.values()) {
+      String granted = GoFeatureAccess.grantedTier(role, feature);
+      if (granted != null && (tiers.containsKey(feature.legacyId)
+          || feature == GoFeature.FISCAL_MODELS || feature == GoFeature.NOT_POSTED_DOCUMENTS)) {
+        tiers.put(feature.legacyId, granted);
+      }
+    }
   }
 
   /**

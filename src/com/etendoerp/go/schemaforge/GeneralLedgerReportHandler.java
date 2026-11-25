@@ -32,7 +32,8 @@ import org.hibernate.query.NativeQuery;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 
-import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoReportParam;
 import com.etendoerp.go.schemaforge.util.ReportAccessCatalog;
 
@@ -140,7 +141,7 @@ public class GeneralLedgerReportHandler extends AbstractSqlReportHandler {
    */
   @Override
   public boolean isAccessibleForCurrentRole() {
-    return NeoAccessHelper.hasWindowAccess(ReportAccessCatalog.FINANCIAL_REPORTS_WINDOW_ID);
+    return GoFeatureAccess.hasReadAccess(GoFeature.FINANCIAL_REPORTS);
   }
 
   // -------------------------------------------------------------------------

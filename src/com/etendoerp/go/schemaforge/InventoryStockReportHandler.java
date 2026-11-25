@@ -37,7 +37,8 @@ import org.hibernate.query.NativeQuery;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 
-import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoReportParam;
 
 /**
@@ -54,20 +55,6 @@ public class InventoryStockReportHandler implements NeoHandler {
   private static final String PARAM_INCLUDE_ZERO_STOCK = "includeZeroStock";
   /** The product id: the SQL parameter prefix and the row key that carries it. */
   private static final String KEY_PRODUCT_ID = "productId";
-
-  /**
-   * {@code AD_Window_ID} of the brand-new pseudo-{@code AD_Window} ("Informes de inventario" /
-   * Inventory Stock Report) created specifically as a permission anchor for this handler (0 tabs,
-   * never opened directly — same pattern as Financial Reports/Smart Scan). This spec has no
-   * linked {@code AD_Process} and no {@code AD_TAB_ID} anywhere, so before this gate {@code
-   * NeoAccessHelper#hasReportSpecAccess} fell through to its documented permissive default and
-   * every authenticated role — including ones that should have none — could retrieve this data.
-   * Per the v2 target matrix this window is granted to Compras/Financiero/Almacén, NOT Ventas
-   * (ETP-5116). Do not repoint this constant without also updating {@code
-   * TemplateRoleWindowAccess#purchasingGrants()}/{@code #financeGrants()}/{@code
-   * #inventoryGrants()} and their inlined copies in {@code EnsureSystemRoleTemplatesScript}.
-   */
-  private static final String INVENTORY_STOCK_REPORT_WINDOW_ID = "6346B88619F948F9A42224BDB0B239FA";
 
   /**
    * The report's input contract (ETP-4793 / IMP-19).
@@ -104,7 +91,8 @@ public class InventoryStockReportHandler implements NeoHandler {
 
   @Override
   public boolean isAccessibleForCurrentRole() {
-    return NeoAccessHelper.hasWindowAccess(INVENTORY_STOCK_REPORT_WINDOW_ID);
+    // ETP-4802: GO feature "inventory-stock-report" (anchor window 6346B886..., GO Access row first).
+    return GoFeatureAccess.hasReadAccess(GoFeature.INVENTORY_STOCK_REPORT);
   }
 
   @Override

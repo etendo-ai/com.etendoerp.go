@@ -537,6 +537,7 @@ com.etendoerp.go.schemaforge.telemetry.MixpanelNeoTelemetrySinkTest
 com.etendoerp.go.schemaforge.telemetry.NeoRoleGroupsTest
 com.etendoerp.go.schemaforge.telemetry.NeoTelemetryIdentityTest
 com.etendoerp.go.schemaforge.telemetry.NeoTelemetryServiceTest
+com.etendoerp.go.schemaforge.util.GoFeatureAccessTest
 com.etendoerp.go.schemaforge.util.NeoAccessHelperTest
 com.etendoerp.go.schemaforge.util.NeoActionAvailabilityTest
 com.etendoerp.go.schemaforge.util.NeoActionContractTest

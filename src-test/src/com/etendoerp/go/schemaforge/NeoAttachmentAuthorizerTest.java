@@ -39,8 +39,9 @@ import org.openbravo.model.ad.ui.Tab;
 import org.openbravo.model.ad.ui.Window;
 import org.openbravo.model.ad.utility.Attachment;
 
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
-import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
 
 /**
  * ETP-5205 — write-tier slice of {@link NeoAttachmentAuthorizer} (ADR-0003 D2). The rule: the
@@ -181,42 +182,43 @@ public class NeoAttachmentAuthorizerTest {
   }
 
   // ETP-5205 — ETGO_Fiscal_Decl is shown only by the technical "Fiscal Declarations NEO Support"
-  // window, which no role template grants; Finance reaches fiscal models through Tax Report.
+  // window, which no role template grants; Finance reaches fiscal models through GO Access (or,
+  // until a role has a row, its Tax Report grant: ETP-4802, GoFeatureAccess).
   private static final String FISCAL_SUPPORT_WINDOW = "64D940BC436346329DD4DED863FFA40B";
+  private static final String FISCAL_DECL_TABLE_ID = "F8B5925363A64980B7522FFD98A1628B";
 
   @Test
-  public void fiscalDeclarationWriteIsAllowedThroughTheTaxReportProxy() {
-    try (Env env = new Env(window(FISCAL_SUPPORT_WINDOW, true))) {
+  public void fiscalDeclarationWriteIsAllowedThroughTheFiscalModelsFeature() {
+    try (Env env = new Env(window(FISCAL_SUPPORT_WINDOW, true));
+        MockedStatic<GoFeatureAccess> feature = mockStatic(GoFeatureAccess.class)) {
       env.access.when(() -> NeoAccessHelper.hasWindowAccess(FISCAL_SUPPORT_WINDOW, "POST"))
           .thenReturn(false);
-      env.access.when(() -> NeoAccessHelper.hasWindowAccess(
-          RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, "POST")).thenReturn(true);
+      feature.when(() -> GoFeatureAccess.hasAccess(GoFeature.FISCAL_MODELS, "POST"))
+          .thenReturn(true);
 
-      assertNull(NeoAttachmentAuthorizer.checkWrite(NeoAttachmentAuthorizer.FISCAL_DECL_TABLE_ID));
+      assertNull(NeoAttachmentAuthorizer.checkWrite(FISCAL_DECL_TABLE_ID));
     }
   }
 
   @Test
-  public void fiscalDeclarationWriteIsForbiddenWithoutSupportOrProxyAccess() {
-    try (Env env = new Env(window(FISCAL_SUPPORT_WINDOW, true))) {
+  public void fiscalDeclarationWriteIsForbiddenWithoutSupportOrFeatureAccess() {
+    try (Env env = new Env(window(FISCAL_SUPPORT_WINDOW, true));
+        MockedStatic<GoFeatureAccess> feature = mockStatic(GoFeatureAccess.class)) {
       env.access.when(() -> NeoAccessHelper.hasWindowAccess(anyString(), anyString()))
           .thenReturn(false);
+      feature.when(() -> GoFeatureAccess.hasAccess(GoFeature.FISCAL_MODELS, "POST"))
+          .thenReturn(false);
 
-      NeoResponse denied =
-          NeoAttachmentAuthorizer.checkWrite(NeoAttachmentAuthorizer.FISCAL_DECL_TABLE_ID);
+      NeoResponse denied = NeoAttachmentAuthorizer.checkWrite(FISCAL_DECL_TABLE_ID);
 
       assertNotNull(denied);
       assertEquals(403, denied.getHttpStatus());
     }
   }
 
-  // ETP-5540 — the proxy id is now the shared RoleAccessMatrix constant; pin its literal value so
-  // an accidental change of that constant (which also moves the ETP-5546 fiscal gates) fails here.
   @Test
-  public void fiscalDeclarationProxyIsTheTaxReportWindow() {
-    assertEquals(List.of("3E8FEA1EA7404D979306C9EE7FD2E7E8"),
-        NeoAttachmentAuthorizer.PROXY_WINDOWS_BY_TABLE.get(
-            NeoAttachmentAuthorizer.FISCAL_DECL_TABLE_ID));
+  public void fiscalDeclarationIsDeclaredAsSupportTableOfFiscalModels() {
+    assertEquals(GoFeature.FISCAL_MODELS, GoFeature.forSupportTable(FISCAL_DECL_TABLE_ID));
   }
 
   @Test
@@ -225,7 +227,7 @@ public class NeoAttachmentAuthorizerTest {
       env.access.when(() -> NeoAccessHelper.hasWindowAccess(SALES_ORDER_WINDOW, "POST"))
           .thenReturn(false);
       env.access.when(() -> NeoAccessHelper.hasWindowAccess(
-          RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, "POST")).thenReturn(true);
+          GoFeature.FISCAL_MODELS.legacyId, "POST")).thenReturn(true);
 
       assertNotNull(NeoAttachmentAuthorizer.checkWrite(TABLE_ID));
     }
