@@ -341,6 +341,42 @@ public interface NeoHandler {
   }
 
   /**
+   * Declares the value this customization will itself persist for a create-body key it REMOVED in
+   * its pre-hook, so the {@code adjustedFields} diagnostic reports what was really saved
+   * (ETP-5806 QA pass 3).
+   *
+   * <p><b>Why this exists.</b> {@code adjustedFields} is computed by comparing the create body as
+   * the pre-hook received it against the body it hands to persistence
+   * ({@code McpSupersededReconciler#reconcileSupersededDefaults}). That is the right question for
+   * a pre-hook that genuinely drops a caller's value — the key is gone and nothing writes it, so
+   * {@code persisted: null} is true. It is the WRONG answer for a pre-hook that removes a key
+   * precisely because it has taken over the write: the value is saved moments later by the
+   * post-hook, and the response told the agent the opposite. {@code adjustedFieldsHint} says
+   * "\"persisted\" is what was saved", so an agent reading {@code null} concludes the data was
+   * lost — the same "applied but reported as not applied" failure class as ETP-5806 CP-12g, which
+   * QA classified as blocking.
+   *
+   * <p>Only the customization knows which keys it removed for that reason and what it will write
+   * for them, so it is the one that says so; shared code never names the entity or the field. A
+   * key the body still carries is unaffected — the body always wins — and a removed key with no
+   * entry here keeps reporting {@code persisted: null}, which is the honest answer for a genuine
+   * drop. Declaring the real value also KEEPS the diagnostic working: a customization that
+   * rewrites what the caller sent (a blank Building Number saved as {@code "s/n"}) is still
+   * reported, now with the value that was actually stored.
+   *
+   * <p>Reader: the MCP create path, once, after this customization's pre-hook ran, so the answer
+   * may depend on state the pre-hook recorded. Declare every spelling of a key the pre-hook may
+   * have removed — the lookup is by the key the caller sent. It only corrects a diagnostic; it
+   * changes no value and writes nothing. Must never throw: a failure is treated as "none".
+   *
+   * @param context the create context carrying the final request body
+   * @return key -> the value this customization persists for it; empty by default
+   */
+  default Map<String, Object> deferredCreateValues(NeoContext context) {
+    return Collections.emptyMap();
+  }
+
+  /**
    * Declares the DAL property names this customization resolves server-side on create, so a
    * caller does not have to send them even though AD marks the column mandatory (ETP-5535).
    *

@@ -21,11 +21,21 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+
+import java.sql.Array;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 
 import org.junit.After;
 import org.junit.Test;
@@ -374,5 +384,83 @@ public class TenantOwnershipTest {
     assertTrue(TenantOwnership.isTenantScoped(clientEntity));
     assertFalse(TenantOwnership.isTenantScoped(shared));
     assertFalse(TenantOwnership.isTenantScoped(null));
+  }
+
+  // ── prepareByIdForReadableClients (ETP-6176) ───────────────────────────────
+
+  private static final String SELECT_BY_ID = "SELECT x FROM t WHERE t_id = ?";
+
+  /** The id and the readable clients are bound; the filter is appended, never concatenated. */
+  @Test
+  public void testPrepareByIdAppendsTheReadableClientsFilterAndBindsEverything()
+      throws SQLException {
+    Connection conn = mock(Connection.class);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    Array clientsArray = mock(Array.class);
+    String[] clients = {OWN_CLIENT, SYSTEM_CLIENT};
+    when(conn.prepareStatement(anyString())).thenReturn(ps);
+    when(conn.createArrayOf(eq("varchar"), any(Object[].class))).thenReturn(clientsArray);
+    try (MockedStatic<OBContext> obContext = mockStatic(OBContext.class)) {
+      stubContext(obContext, clients, new String[] {OWN_ORG});
+
+      PreparedStatement prepared = TenantOwnership.prepareByIdForReadableClients(conn,
+          SELECT_BY_ID, "X'1");
+
+      assertSame(ps, prepared);
+      verify(conn).prepareStatement(SELECT_BY_ID + " AND ad_client_id = ANY(?)");
+      verify(ps).setString(1, "X'1");
+      verify(conn).createArrayOf("varchar", clients);
+      verify(ps).setArray(2, clientsArray);
+    }
+  }
+
+  /** A session that exposes no readable clients reads nothing: the array is empty, not skipped. */
+  @Test
+  public void testPrepareByIdWithNullReadableClientsBindsAnEmptyArray() throws SQLException {
+    Connection conn = mock(Connection.class);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    when(conn.prepareStatement(anyString())).thenReturn(ps);
+    try (MockedStatic<OBContext> obContext = mockStatic(OBContext.class)) {
+      stubContext(obContext, null, new String[] {OWN_ORG});
+
+      TenantOwnership.prepareByIdForReadableClients(conn, SELECT_BY_ID, "ID-1");
+
+      verify(conn).prepareStatement(SELECT_BY_ID + " AND ad_client_id = ANY(?)");
+      verify(conn).createArrayOf("varchar", new String[0]);
+    }
+  }
+
+  /** Without a session the read is left unscoped (the fail-open contract of the class). */
+  @Test
+  public void testPrepareByIdWithoutASessionLeavesTheReadUnscoped() throws SQLException {
+    Connection conn = mock(Connection.class);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    when(conn.prepareStatement(anyString())).thenReturn(ps);
+    try (MockedStatic<OBContext> obContext = mockStatic(OBContext.class)) {
+      obContext.when(OBContext::getOBContext).thenReturn(null);
+
+      TenantOwnership.prepareByIdForReadableClients(conn, SELECT_BY_ID, "ID-1");
+
+      verify(conn).prepareStatement(SELECT_BY_ID);
+      verify(ps).setString(1, "ID-1");
+      verify(ps, never()).setArray(Mockito.anyInt(), any());
+    }
+  }
+
+  /** A bind failure closes the statement before the exception reaches the caller. */
+  @Test
+  public void testPrepareByIdClosesTheStatementWhenBindingFails() throws SQLException {
+    Connection conn = mock(Connection.class);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    when(conn.prepareStatement(anyString())).thenReturn(ps);
+    Mockito.doThrow(new SQLException("bind")).when(ps).setString(Mockito.anyInt(), anyString());
+    try (MockedStatic<OBContext> obContext = mockStatic(OBContext.class)) {
+      stubContext(obContext, new String[] {OWN_CLIENT}, new String[] {OWN_ORG});
+
+      assertThrows(SQLException.class,
+          () -> TenantOwnership.prepareByIdForReadableClients(conn, SELECT_BY_ID, "ID-1"));
+
+      verify(ps).close();
+    }
   }
 }

@@ -38,6 +38,7 @@ import com.etendoerp.go.schemaforge.MessageKeyedException;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoResponse;
+import com.etendoerp.go.schemaforge.TenantOwnership;
 import com.etendoerp.go.schemaforge.util.NeoBooleanFormat;
 
 /**
@@ -486,8 +487,8 @@ public final class ContactTypeRules {
       return null;
     }
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(CONTACT_CATEGORY_SQL)) {
-      ps.setString(1, contactId);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        CONTACT_CATEGORY_SQL, contactId)) {
       try (ResultSet rs = ps.executeQuery()) {
         return rs.next() ? StringUtils.trimToNull(rs.getString(1)) : null;
       }
@@ -499,8 +500,7 @@ public final class ContactTypeRules {
       return null;
     }
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(sql)) {
-      ps.setString(1, id);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn, sql, id)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (!rs.next()) {
           return null;
