@@ -31,6 +31,7 @@ import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.access.User;
 import org.openbravo.model.common.currency.Currency;
 
+import com.etendoerp.go.common.NeoCurrencyFormatConfig;
 import com.etendoerp.go.schemaforge.data.Account;
 
 final class DalEmailContractDataResolver implements EmailContractDataResolver {
@@ -63,6 +64,21 @@ final class DalEmailContractDataResolver implements EmailContractDataResolver {
       return Optional.empty();
     }
     return Optional.of(new EmailContactRecord(user.getName(), user.getEmail()));
+  }
+
+  /**
+   * The amount as the customer reads it in the email's summary ("2.431,37 €", ETP-6209 QA CP-44):
+   * the instance-wide separators and the currency's symbol, the formatter the portal decision
+   * emails already use ({@link EmailAmountFormat}). {@link #formatAmount} stays the plain value the
+   * provider payload carries.
+   *
+   * @param amount the amount, {@code null} reads as zero
+   * @param currency its currency
+   * @return the formatted amount
+   */
+  static String formatDisplayAmount(BigDecimal amount, Currency currency) {
+    return EmailAmountFormat.format(amount == null ? BigDecimal.ZERO : amount, currency,
+        NeoCurrencyFormatConfig.fromRuntime());
   }
 
   static String formatAmount(BigDecimal amount, Currency currency) {
