@@ -230,9 +230,7 @@ public final class NeoReferenceSelectorValidation {
       return disagreement;
     }
     Set<String> changed = changedKeys(written, stored, requestFields);
-    Map<String, String> context = null;
-    NeoHandler customization = null;
-    boolean customizationResolved = false;
+    OfferInputs inputs = new OfferInputs(sfEntity, adTab, written, stored, parentId, requestFields);
     for (Property property : written.getProperties()) {
       String key = property.getName();
       boolean sent = requestFields.has(key);
@@ -242,19 +240,55 @@ public final class NeoReferenceSelectorValidation {
         continue;
       }
       current[0] = key;
-      if (context == null) {
-        context = mergedContext(adTab, written, stored, parentId, requestFields);
-      }
-      if (!customizationResolved) {
-        customization = NeoHandlerLookup.forEntityQuietly(sfEntity);
-        customizationResolved = true;
-      }
-      RefusedReference refused = check(sfEntity, customization, column, property, id, context);
+      Map<String, String> context = inputs.context();
+      RefusedReference refused = check(sfEntity, inputs.customization(), column, property, id,
+          context);
       if (refused != null) {
         return refused;
       }
     }
     return null;
+  }
+
+  /**
+   * The merged context and the entity's customization, built once and only when a reference must
+   * actually be judged: a write that sets no reference pays for neither.
+   */
+  private static final class OfferInputs {
+    private final SFEntity sfEntity;
+    private final Tab adTab;
+    private final Entity written;
+    private final BaseOBObject stored;
+    private final String parentId;
+    private final JSONObject requestFields;
+    private Map<String, String> context;
+    private NeoHandler customization;
+    private boolean customizationResolved;
+
+    OfferInputs(SFEntity sfEntity, Tab adTab, Entity written, BaseOBObject stored,
+        String parentId, JSONObject requestFields) {
+      this.sfEntity = sfEntity;
+      this.adTab = adTab;
+      this.written = written;
+      this.stored = stored;
+      this.parentId = parentId;
+      this.requestFields = requestFields;
+    }
+
+    Map<String, String> context() {
+      if (context == null) {
+        context = mergedContext(adTab, written, stored, parentId, requestFields);
+      }
+      return context;
+    }
+
+    NeoHandler customization() {
+      if (!customizationResolved) {
+        customization = NeoHandlerLookup.forEntityQuietly(sfEntity);
+        customizationResolved = true;
+      }
+      return customization;
+    }
   }
 
   /**

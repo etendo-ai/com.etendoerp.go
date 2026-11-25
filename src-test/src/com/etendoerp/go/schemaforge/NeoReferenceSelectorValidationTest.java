@@ -443,6 +443,24 @@ public class NeoReferenceSelectorValidationTest {
     }
   }
 
+  /** A body that cannot be copied to fold its {@code .id} spelling is refused, not let through. */
+  @Test
+  public void testUnfoldableIdSpellingFailsClosed() throws Exception {
+    JSONObject fields = new JSONObject() {
+      @Override
+      public String toString() {
+        return "{";
+      }
+    };
+    fields.put(PARTNER + ".id", PARTNER_ID);
+
+    NeoReferenceSelectorValidation.RefusedReference refused = check(fields);
+
+    assertEquals("record", refused.fieldName());
+    assertNull(refused.value());
+    assertFalse(refused.isVerified());
+  }
+
   /** The {@code <reference>.id} spelling is selector-validated like the plain key. */
   @Test
   public void testIdSpellingOfAReferenceIsValidated() throws Exception {
