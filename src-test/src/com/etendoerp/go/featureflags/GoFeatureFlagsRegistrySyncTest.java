@@ -129,12 +129,13 @@ class GoFeatureFlagsRegistrySyncTest {
   @Test
   void documentedPropertyNamesBelongToARegisteredFlag() throws IOException {
     Set<String> unknown = new TreeSet<>();
-    for (String key : matches(PROPERTY_NAME, 1)) {
+    Set<String> documented = matches(PROPERTY_NAME, 1);
+    for (String key : documented) {
       if (!constantKeys.contains(key)) {
         unknown.add(PropertiesFeatureProvider.PROPERTY_PREFIX + key);
       }
     }
-    assertFalse(matches(PROPERTY_NAME, 1).isEmpty(), "no documented property name found");
+    assertFalse(documented.isEmpty(), "no documented property name found");
     assertTrue(unknown.isEmpty(),
         "property names in the sources that no FLAG_* constant backs: " + unknown);
   }
@@ -144,9 +145,10 @@ class GoFeatureFlagsRegistrySyncTest {
     Set<String> expected = constantKeys.stream()
         .map(PropertiesFeatureProvider::toEnvName)
         .collect(Collectors.toCollection(TreeSet::new));
-    Set<String> unknown = new TreeSet<>(matches(ENV_NAME, 0));
+    Set<String> documented = matches(ENV_NAME, 0);
+    Set<String> unknown = new TreeSet<>(documented);
     unknown.removeAll(expected);
-    assertFalse(matches(ENV_NAME, 0).isEmpty(), "no documented environment name found");
+    assertFalse(documented.isEmpty(), "no documented environment name found");
     assertTrue(unknown.isEmpty(),
         "environment variable names in the sources that no FLAG_* constant backs: " + unknown);
   }
