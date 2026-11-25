@@ -35,6 +35,7 @@ import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.datamodel.Column;
 import org.openbravo.model.ad.ui.Tab;
 
+import com.etendoerp.go.schemaforge.NeoFieldFilter;
 import com.etendoerp.go.schemaforge.data.SFEntity;
 import com.etendoerp.go.schemaforge.data.SFField;
 
@@ -103,7 +104,7 @@ public final class McpFieldValidationRules {
    * which is the key {@code NeoFieldFilter} uses for such a field. {@code null} when neither exists.
    */
   private static String apiKeyOf(SFEntity sfEntity, SFField field) {
-    String qualifier = StringUtils.trimToNull(field.getJavaQualifier());
+    String qualifier = StringUtils.trimToNull(NeoFieldFilter.apiKeyQualifier(field));
     if (qualifier != null) {
       return qualifier;
     }
