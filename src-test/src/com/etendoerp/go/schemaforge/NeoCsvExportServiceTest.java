@@ -462,7 +462,7 @@ class NeoCsvExportServiceTest {
   // choice of inputs: docs/security/csv-neutralization-fixtures.md (referenced by
   // ADR-0004 D2) is the specification, and its executable twin for the two JavaScript
   // implementations is
-  // @etendosoftware/app-shell-core/lib/csv/csvNeutralizationFixtures.js. A trigger is
+  // @etendo-ai/app-shell-core/lib/csv/csvNeutralizationFixtures.js. A trigger is
   // added to that table FIRST, then to every implementation — so this stream must stay
   // in step with it.
 

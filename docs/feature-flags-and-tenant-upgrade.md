@@ -315,14 +315,14 @@ The backend targets on the **account email**. A web client must use the same val
 will bucket the same user differently. **This is not resolved on the client side**, deliberately.
 
 The client does not persist the account email. The only account identity it stores (`sf_auth_user`)
-is written by `buildEnvironmentSessionStorage` in `@etendosoftware/etendo-go-core` as
+is written by `buildEnvironmentSessionStorage` in `@etendo-ai/etendo-go-core` as
 `env.adminUserName || env.adminUser` — the **ERP admin username of the selected environment**.
 Targeting on that would silently disagree with the backend.
 
 The backend now returns the account email at the top level of `GET /sws/go/environments` (see §3).
 That is necessary but **not sufficient**, for two reasons found during integration:
 
-1. **The core helper discards it.** `fetchEnvironments` in `@etendosoftware/etendo-go-core` ends with
+1. **The core helper discards it.** `fetchEnvironments` in `@etendo-ai/etendo-go-core` ends with
    `return data.environments || []`, so anything outside that array never reaches the caller. Reading
    `accountEmail` requires a direct `fetch` rather than the helper — which is the default path.
 2. **Scope mismatch.** The OpenFeature evaluation context has to be set **app-wide at bootstrap**,
@@ -2211,12 +2211,12 @@ The `GET /sws/go/environments` response gained additive fields:
 All are backward compatible; clients that ignore them are unaffected.
 
 > **`accountEmail` is invisible through the core helper.** `fetchEnvironments` in
-> `@etendosoftware/etendo-go-core` returns `data.environments || []`, so it drops every top-level
+> `@etendo-ai/etendo-go-core` returns `data.environments || []`, so it drops every top-level
 > field. A consumer using the helper sees nothing and gets no error. Reading `accountEmail` needs a
 > direct `fetch`. See §1 for why surfacing it is necessary but not sufficient.
 
 > **Open item — the plan badge is not yet rendered.** The environment picker (`EnvSelectStep.jsx`)
-> lives in `@etendosoftware/etendo-go-core`, not in the functional repo, so consuming `plan` needs a
+> lives in `@etendo-ai/etendo-go-core`, not in the functional repo, so consuming `plan` needs a
 > change and version bump on the core side. The backend field is stable and shipped; the UI side is
 > waiting on that pickup.
 
