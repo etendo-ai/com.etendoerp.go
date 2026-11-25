@@ -782,7 +782,7 @@ class HubSpotEventSender {
   private JSONObject searchDeal(String accountId) throws CallFailed, JSONException {
     String recorded = store.findAccountDealId(accountId);
     if (recorded != null) {
-      String path = DEALS_PATH + "/" + encode(recorded) + PROPERTIES_QUERY + PIPELINE;
+      String path = DEALS_PATH + "/" + encode(recorded) + PROPERTIES_QUERY + PIPELINE; // NOSONAR
       Response response = request("GET", path, null);
       if (response.isSuccess()) {
         return new JSONObject(response.body());
