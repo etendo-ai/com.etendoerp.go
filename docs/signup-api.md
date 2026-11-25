@@ -32,7 +32,7 @@ Code: `com.etendoerp.go.signup` (`SignupApiServlet`, `SignupRequest`, `SignupAdm
 `AccountGroupService`, ETP-6223) and `com.etendoerp.go.payment.AccountDemoExpiry` on top of `com.etendoerp.go.rest.SignupAccountService` (account lifecycle,
 background worker, login link) and `AccountRegistrationService` (rules shared with `/register`).
 The login link is consumed by `POST /sws/go/session/link` in `EtendoGoJwtServlet`, and the app
-page that receives it is the `login-link` step of `@etendosoftware/etendo-go-core`'s onboarding.
+page that receives it is the `login-link` step of `@etendo-ai/etendo-go-core`'s onboarding.
 
 ## Authentication: API keys
 
