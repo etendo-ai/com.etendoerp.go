@@ -286,8 +286,8 @@ public final class InvoiceRemittance {
   static void putRemittance(JSONObject item, FIN_Payment payment) throws JSONException {
     Remittance remittance = remittanceOf(payment);
     if (remittance != null) {
-      item.put("remittanceId", remittance.getId());
-      item.put("remittanceDocumentNo", remittance.getDocumentNo());
+      item.put(KEY_REMITTANCE_ID, remittance.getId());
+      item.put(KEY_REMITTANCE_DOCUMENT_NO, remittance.getDocumentNo());
       String status = remittanceStatus(remittance);
       item.put("remittanceStatus", status == null ? JSONObject.NULL : status);
       item.put("remittanceStatusLabel", status == null ? JSONObject.NULL
