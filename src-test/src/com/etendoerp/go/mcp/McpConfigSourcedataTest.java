@@ -934,6 +934,35 @@ class McpConfigSourcedataTest {
     }
   }
 
+  /** Internal Consumption, Physical Inventory and Goods Movement headers (ETP-6406). */
+  private static final List<String> INVENTORY_HEADERS = List.of(
+      "18FDC6F8F6B04F7EA22758965290D51E", "1211A620DEB64FCEBCDB32FDE7E956CB",
+      "59B96B75153149EF993CD7FD3CE9439F");
+
+  /**
+   * ETP-6406: the inventory documents had no {@code MCP_CONFIG}, so an agent posting an Internal
+   * Consumption used the AD {@code Posted} toggle, which skips the cost pre-check and logs core's
+   * cost error ("the product product") as two ERRORs. Like the goods headers, the three hide it
+   * and the Bulk Posting button with reasons that point at {@code post} / {@code unpost}.
+   */
+  @Test
+  @DisplayName("the inventory headers hide the posted and Bulk Posting toggles")
+  void inventoryHeadersHideThePostingToggles() throws IOException, JSONException {
+    for (String id : INVENTORY_HEADERS) {
+      JSONObject actions = payloadOf(id).getJSONObject(McpActionsSection.NAME);
+      Set<String> hidden = setOf(actions.getJSONArray(McpActionsSection.KEY_HIDDEN));
+      assertTrue(hidden.contains("posted"), id + " must hide the posted button");
+      assertTrue(hidden.contains("etblkpBulkposting"), id + " must hide the Bulk Posting button");
+      JSONObject reasons = actions.getJSONObject(McpActionsSection.KEY_REASONS);
+      for (String button : List.of("posted", "etblkpBulkposting")) {
+        String reason = reasons.getString(button);
+        assertTrue(reason.contains("post action") && reason.contains("unpost action"),
+            id + ": " + button + "'s reason must name post and unpost: " + reason);
+      }
+      assertResolvesCleanly(id);
+    }
+  }
+
   /**
    * The redirect target is not validated at runtime, so a typo would silently hand agents a useless
    * hint. Assert each target against the contracts the entity's handler really declares.
