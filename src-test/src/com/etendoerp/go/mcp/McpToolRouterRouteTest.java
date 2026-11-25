@@ -2875,6 +2875,105 @@ class McpToolRouterRouteTest {
       assertTrue(text.contains("topic"));
     }
 
+    private JSONObject docsFailure(Throwable failure) throws Exception {
+      return docsFailure(failure, null);
+    }
+
+    private JSONObject docsFailure(Throwable failure, String token) throws Exception {
+      Context7DocsClient mockClient = mock(Context7DocsClient.class);
+      when(mockClient.fetchDocs(anyString(), org.mockito.ArgumentMatchers.anyInt(),
+          anyString(), org.mockito.ArgumentMatchers.any())).thenThrow((RuntimeException) failure);
+      McpToolRouter docsRouter = new McpToolRouter() {
+        @Override
+        String resolveContext7Token() {
+          return token;
+        }
+      };
+      JSONObject args = new JSONObject();
+      args.put("topic", "finance");
+      return docsRouter.handleDocs(args, mockClient);
+    }
+
+    private String errorText(JSONObject result) throws Exception {
+      assertTrue(result.getBoolean("isError"));
+      return result.getJSONArray("content").getJSONObject(0).getString("text");
+    }
+
+    @Test
+    @DisplayName("docs 401 points the agent to the ETGO_Context7Token preference")
+    void docsUnauthorizedMentionsToken() throws Exception {
+      String text = errorText(docsFailure(new Context7DocsException("status 401", 401, null)));
+      assertTrue(text.contains("ETGO_Context7Token"), text);
+    }
+
+    @Test
+    @DisplayName("docs 429 mentions the rate limit and the token")
+    void docsRateLimitMentionsToken() throws Exception {
+      String text = errorText(docsFailure(new Context7DocsException("status 429", 429, null)));
+      assertTrue(text.contains("rate limit"), text);
+      assertTrue(text.contains("ETGO_Context7Token"), text);
+    }
+
+    @Test
+    @DisplayName("docs 503 and network failures tell the agent to retry later")
+    void docsUnavailableMentionsRetry() throws Exception {
+      assertTrue(errorText(docsFailure(new Context7DocsException("status 503", 503, null)))
+          .contains("retry later"));
+      assertTrue(errorText(docsFailure(new Context7DocsException("timeout", -1, null)))
+          .contains("retry later"));
+    }
+
+    @Test
+    @DisplayName("docs failure log level: 401/403/404 ERROR, others WARN")
+    void docsFailureLogLevelByStatus() {
+      for (int status : new int[] { 401, 403, 404 }) {
+        assertEquals(org.apache.logging.log4j.Level.ERROR, Context7DocsException.logLevel(status));
+      }
+      for (int status : new int[] { 429, 500, 503, -1 }) {
+        assertEquals(org.apache.logging.log4j.Level.WARN, Context7DocsException.logLevel(status));
+      }
+    }
+
+    @Test
+    @DisplayName("docs failure text never contains the configured Context7 API key")
+    void docsFailureNeverLeaksApiKey() throws Exception {
+      String apiKey = "ctx7-secret-api-key";
+      Throwable[] failures = {
+          new Context7DocsException("status 401", 401, null),
+          new Context7DocsException("status 403", 403, null),
+          new Context7DocsException("status 404", 404, null),
+          new Context7DocsException("status 429", 429, null),
+          new Context7DocsException("status 503", 503, null),
+          new Context7DocsException("timeout", -1, null),
+          new IllegalStateException("boom") };
+      for (Throwable failure : failures) {
+        String text = errorText(docsFailure(failure, apiKey));
+        assertFalse(text.contains(apiKey), text);
+      }
+    }
+
+    @Test
+    @DisplayName("docsFailureMessage covers 403 and 404 and keeps the cause chain for -1")
+    void docsFailureMessageCases() {
+      assertTrue((new Context7DocsException("x", 403, null)).agentMessage()
+          .contains("ETGO_Context7Token"));
+      assertTrue((new Context7DocsException("x", 404, null)).agentMessage()
+          .contains("library or URL not found (status 404)"));
+      java.net.ConnectException cause = new java.net.ConnectException("c");
+      cause.initCause(new java.net.UnknownHostException("context7.com"));
+      String text = new Context7DocsException(
+          "Context7 request failed: " + Context7DocsException.describeCauseChain(cause),
+          -1, null).agentMessage();
+      assertTrue(text.contains("UnknownHostException: context7.com"), text);
+    }
+
+    @Test
+    @DisplayName("docs unexpected exception keeps the generic error message")
+    void docsUnexpectedExceptionKeepsGenericPath() throws Exception {
+      String text = errorText(docsFailure(new IllegalStateException("boom")));
+      assertTrue(text.startsWith("Error fetching docs:"), text);
+    }
+
     @Test
     @DisplayName("handleDocs success path returns the docs body via injected client")
     void docsSuccessReturnsBody() throws Exception {
