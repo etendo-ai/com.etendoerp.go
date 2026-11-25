@@ -1443,12 +1443,13 @@ incoming values, plus the tab's literal auxiliary inputs (ETP-6381).
 **An update is judged under the STORED parent.** When the record exists and has a stored link to
 its parent, that parent decides the context, whatever `parentId` or the link value of the body say.
 On a create the order is: explicit `parentId`, then the link value of the body. A create whose explicit
-`parentId` and body link value name different parents is refused (the same 422), since
-persistence would keep one and the check would judge the other.
+`parentId` and body link value name different parents is refused (the same 422, with a `detail`
+naming both parents), since persistence would keep one and the check would judge the other. Ids are
+compared ignoring case.
 
 **`.id` spelling.** A body key `<reference>.id` is treated as `<reference>`, as
 `NeoReferenceOwnership` already does, so it cannot skip the selector check. A body sending both
-spellings with different ids is refused.
+spellings with different ids (compared ignoring case) is refused, with a `detail` naming both.
 
 **Stored-row reads are client-scoped.** The stored record and the parent are loaded only when they
 belong to a client the caller may read; otherwise they read as missing.

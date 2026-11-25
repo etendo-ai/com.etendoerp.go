@@ -165,9 +165,11 @@ public final class NeoReferenceSelectorValidation {
       }
       String plain = idText(requestFields.opt(name));
       String spelled = idText(requestFields.opt(key));
-      if (!Objects.equals(plain, spelled)) {
+      if (!StringUtils.equalsIgnoreCase(plain, spelled)) {
         log.warn("Refused a NEO write: '{}' and '{}' carry different ids", name, key);
-        return new RefusedReference(key, property.getTargetEntity().getName(), spelled, false);
+        return new RefusedReference(key, property.getTargetEntity().getName(), spelled, false,
+            "Fields '" + name + "' and '" + key + "' carry different ids ('" + plain + "' and '"
+                + spelled + "'); send the reference once. The write was rejected.");
       }
     }
     return null;
@@ -465,11 +467,13 @@ public final class NeoReferenceSelectorValidation {
       return null;
     }
     String sent = idText(requestFields.opt(link.getName()));
-    if (sent == null || Objects.equals(sent, parentId)) {
+    if (sent == null || StringUtils.equalsIgnoreCase(sent, parentId)) {
       return null;
     }
     log.warn("Refused a NEO write: parentId and '{}' name different parents", link.getName());
-    return new RefusedReference(link.getName(), link.getTargetEntity().getName(), sent, false);
+    return new RefusedReference(link.getName(), link.getTargetEntity().getName(), sent, false,
+        "Field '" + link.getName() + "' names parent '" + sent + "' but parentId is '" + parentId
+            + "'; send one parent, or the same one in both. The write was rejected.");
   }
 
   private static String effectiveParent(Entity written, Property parentLink, String parentId,
@@ -600,12 +604,20 @@ public final class NeoReferenceSelectorValidation {
     private final String targetEntityName;
     private final String value;
     private final boolean verified;
+    private final String ownDetail;
 
     RefusedReference(String fieldName, String targetEntityName, String value, boolean verified) {
+      this(fieldName, targetEntityName, value, verified, null);
+    }
+
+    /** A refusal that is not a selector answer, with the detail that says what was wrong. */
+    RefusedReference(String fieldName, String targetEntityName, String value, boolean verified,
+        String ownDetail) {
       this.fieldName = fieldName;
       this.targetEntityName = targetEntityName;
       this.value = value;
       this.verified = verified;
+      this.ownDetail = ownDetail;
     }
 
     /** @return the DAL property name refused */
@@ -630,6 +642,9 @@ public final class NeoReferenceSelectorValidation {
 
     /** @return the human detail shared by the REST and MCP 422 bodies */
     public String detail() {
+      if (ownDetail != null) {
+        return ownDetail;
+      }
       if (verified) {
         return "Field '" + fieldName + "' was set to '" + value + "', a record of '"
             + targetEntityName + "' that the app does not offer for this record; the write was"

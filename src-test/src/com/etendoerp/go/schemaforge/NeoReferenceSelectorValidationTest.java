@@ -322,6 +322,20 @@ public class NeoReferenceSelectorValidationTest {
 
       assertEquals(LineFixture.LINK, refused.fieldName());
       assertEquals("OTHER-HEADER", refused.value());
+      assertTrue(refused.detail().contains("parentId is '" + LineFixture.HEADER_ID + "'"));
+    }
+  }
+
+  /** Ids are compared ignoring case: a link value differing from parentId only in case agrees. */
+  @Test
+  public void testParentIdAndLinkValueDifferingOnlyInCaseAgree() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      offers(Boolean.TRUE);
+
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
+          LineFixture.HEADER_ID, new JSONObject().put(LineFixture.LINK,
+              LineFixture.HEADER_ID.toLowerCase(java.util.Locale.ROOT))
+              .put(LineFixture.BIN, LineFixture.BIN_ID)));
     }
   }
 
@@ -375,9 +389,12 @@ public class NeoReferenceSelectorValidationTest {
 
     assertEquals(PARTNER + ".id", refused.fieldName());
     assertEquals("OTHER-BP", refused.value());
+    assertTrue(refused.detail().contains("carry different ids"));
 
     offers(Boolean.TRUE);
     assertNull(check(new JSONObject().put(PARTNER, PARTNER_ID).put(PARTNER + ".id", PARTNER_ID)));
+    assertNull(check(new JSONObject().put(PARTNER, PARTNER_ID)
+        .put(PARTNER + ".id", PARTNER_ID.toLowerCase(java.util.Locale.ROOT))));
   }
 
   /** Object-wrapped ids are compared by their id: different ones conflict, the same one does not. */
