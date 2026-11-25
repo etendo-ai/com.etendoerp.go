@@ -1660,6 +1660,11 @@ public class McpToolRouter {
     // ETP-6148: the property-path fields, read-only, at the same point and for the same reason.
     McpSchemaFieldBuilder.appendVirtualFields(fieldsArray,
         McpPathFieldSchema.build(sfEntity, dalEntity));
+    // ETP-5806 CP-13: the address lines the structured-address composer overwrites on every write
+    // are published read-only, so view:"create" stops offering them as values a caller may set.
+    // After both appendVirtualFields calls, so the wrapper path and the direct table walk are
+    // covered by the one overlay. No-op for every entity without these columns.
+    McpSchemaResponseHints.applyComposerOwnedVisibility(fieldsArray);
     McpSchemaFieldBuilder.applyPreconditionRequirements(fieldsArray, requiredWhenByField);
     // ETP-5473: what the entity's customization refuses a create without, although AD and
     // etendo_defaults do not say so. Flagged on the full array so every view agrees.
