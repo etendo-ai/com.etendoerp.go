@@ -83,6 +83,11 @@ final class PortalDocumentQuery {
   private static final String HAS_OVERDUE_INSTALMENT = "exists (select 1 from FIN_Payment_Schedule"
       + " ps where ps.invoice.id = e.id and ps.active = true and ps.outstandingAmount > 0"
       + " and ps.dueDate < :today)";
+  /**
+   * A quotation still valid today: no {@code ValidUntil}, or one not before today — the
+   * negation of {@code PortalDecisionService#isExpired} at the server's calendar day.
+   */
+  private static final String NOT_EXPIRED = "(e.validUntil is null or e.validUntil >= :today)";
   /** A line not yet fully delivered or not yet fully invoiced. */
   private static final String HAS_PENDING_LINE = "exists (select 1 from OrderLine l"
       + " where l.salesOrder.id = e.id and l.active = true"
@@ -92,7 +97,9 @@ final class PortalDocumentQuery {
     Map<String, Group> quotation = new LinkedHashMap<>();
     // CO is a quotation completed but not yet answered, the same "awaiting" the app's convert and
     // reject actions accept (QuotationTopbarActions: CO or UE). CL and VO show under "all" only.
-    quotation.put("awaiting", new Group(List.of("UE", "CO"), null));
+    // An expired one (a ValidUntil before today) awaits nothing: the portal offers no decision on
+    // it (PortalDecisionService#isExpired, ETP-6209 QA), so it shows under "all" only.
+    quotation.put("awaiting", new Group(List.of("UE", "CO"), NOT_EXPIRED));
     // ETGO_AC: accepted by the customer from the portal, not yet converted (Part C, PO Q1).
     quotation.put("accepted", new Group(List.of("ETGO_AC", "CA", "ETGO_CI"), null));
     quotation.put("rejected", new Group(List.of("CJ"), null));
@@ -112,8 +119,10 @@ final class PortalDocumentQuery {
 
     Map<String, Group> invoice = new LinkedHashMap<>();
     // "Pendientes" is everything still owed, overdue included ("Ver facturas pendientes" of the
-    // home opens it); "Vencidas" is the overdue part of it.
-    invoice.put("pending", new Group(List.of("CO", "CL"), "e.outstandingAmount <> 0"));
+    // home opens it); "Vencidas" is the overdue part of it. Owed means a positive outstanding
+    // amount, the home's balance rule (outstandingByCurrency): a credit note in the customer's
+    // favour (negative outstanding) is not pending and shows under "all" only (ETP-6209 QA).
+    invoice.put("pending", new Group(List.of("CO", "CL"), "e.outstandingAmount > 0"));
     invoice.put("overdue", new Group(List.of("CO", "CL"), HAS_OVERDUE_INSTALMENT));
     invoice.put("paid", new Group(List.of("CO", "CL"), "e.outstandingAmount = 0"));
     GROUPS.put(PortalDocumentKind.INVOICE, invoice);

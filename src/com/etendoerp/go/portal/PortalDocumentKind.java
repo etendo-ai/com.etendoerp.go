@@ -139,7 +139,7 @@ public enum PortalDocumentKind {
    * @param document any portal document
    * @return {@code true} only for a rectificative invoice
    */
-  static boolean isCreditNote(BaseOBObject document) {
+  public static boolean isCreditNote(BaseOBObject document) {
     if (!(document instanceof Invoice)) {
       return false;
     }

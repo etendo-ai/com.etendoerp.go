@@ -166,8 +166,13 @@ public class PortalLinkRenewalEmailContractTest {
         recipients.getRecipientSet().getCc());
   }
 
+  /**
+   * The renewal is a card like the other customer emails (ETP-6209 QA): its own title, the copy
+   * naming the document by its kind, and no "Equipo de Etendo" signature — it is sent on behalf of
+   * our customer.
+   */
   @Test
-  public void theCopyNamesTheDocumentByItsKind() throws Exception {
+  public void theCardNamesTheDocumentByItsKindWithoutTheEtendoSignature() throws Exception {
     PortalLinkService.MintedLink minted = mock(PortalLinkService.MintedLink.class);
     when(minted.getId()).thenReturn(NEW_ID);
     when(minted.getUrl()).thenReturn(NEW_URL);
@@ -187,6 +192,8 @@ public class PortalLinkRenewalEmailContractTest {
       assertTrue(c[0] + ": " + body, body.contains((String) c[1]));
       assertFalse(c[0] + ": " + body, body.contains("rectificativa"));
       assertTrue(body.contains(NEW_URL));
+      assertTrue(body, body.contains("Tu nuevo enlace al portal de cliente</h1>"));
+      assertFalse(body, body.contains("Equipo de Etendo"));
       assertTrue("the renewal closes with the etendo.ai footer: " + body,
           body.contains("Creado con&nbsp;<a ") && body.contains("utm_content=mail_reenvio_enlace"));
       assertEquals("onDelivered confirms the new link, not the expired one", NEW_ID,
@@ -241,7 +248,8 @@ public class PortalLinkRenewalEmailContractTest {
   // ── fixtures ────────────────────────────────────────────────────────────────
 
   private PortalLinkRenewalEmailContract contract() {
-    return new PortalLinkRenewalEmailContract(linkService, () -> true);
+    return new PortalLinkRenewalEmailContract(linkService, () -> true,
+        (clientId, orgId) -> Optional.empty());
   }
 
   private EmailProviderRequest resolve() throws Exception {

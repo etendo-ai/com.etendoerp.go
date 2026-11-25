@@ -374,7 +374,7 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
 
   private String buildDefaultMessage(EmailDocumentRecord document, String language) {
     String body = EmailMessages.get(DocumentSendCopy.bodyKey(name, language), language,
-        documentTypeLabel(language),
+        documentTypeLabel(document, language),
         document.getDocumentNumber());
     String recipientName = StringUtils.trimToNull(document.getRecipientName());
     return recipientName == null ? body
@@ -670,7 +670,8 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
     PortalLinkService.MintedLink portalLink = cta.getPortalLink();
     EmailContent.Builder content = portalLink == null ? EmailContent.builder()
         : DocumentSendPortalLink.cardBuilder(portalLink, EmailMessages.get("document.card.title",
-            language, documentTypeLabel(language), document.getDocumentNumber()), language);
+            language, documentTypeLabel(document, language), document.getDocumentNumber()),
+            language);
     // toHtmlBody() has already escaped the operator's text and turned newlines into <br>.
     String override = messageEdits.map(EmailMessageEdits::toHtmlBody).orElse(null);
     if (override != null) {
@@ -689,7 +690,7 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
       }
       content.paragraphHtml(EmailEscape.applyBold(EmailMessages.get(
           DocumentSendCopy.bodyKey(name, language), language,
-          EmailEscape.escapeHtml(documentTypeLabel(language)),
+          EmailEscape.escapeHtml(documentTypeLabel(document, language)),
           EmailEscape.escapeHtml(document.getDocumentNumber()))));
     }
     // After the body, before the summary block: the extra copy is context about the document, so it
@@ -738,7 +739,7 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
     if (details.isEmpty()) {
       return;
     }
-    content.detail(documentTypeLabel(language), document.getDocumentNumber());
+    content.detail(documentTypeLabel(document, language), document.getDocumentNumber());
     for (EmailDocumentDetail detail : details) {
       content.detail(EmailMessages.get(detail.getLabelKey(), language),
           detail.isDate() ? EmailDates.format(detail.getDate(), language) : detail.getText());
@@ -759,10 +760,22 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
    * the send modal displays and the subject actually delivered came to disagree under
    * {@code en_US}.</p>
    *
+   * <p>A document whose resolver reports a type variant reads {@code <contract>.documentType.
+   * <variant>} first (a credit note sent through the sales invoice contract is a "Factura
+   * rectificativa", ETP-6209 QA): declared by the resolver and the catalog, never branched on
+   * here.</p>
+   *
+   * @param document the resolved document, for its type variant; may be {@code null}
    * @param language the recipient language
    * @return the localized document type label
    */
-  protected String documentTypeLabel(String language) {
+  protected String documentTypeLabel(EmailDocumentRecord document, String language) {
+    String variant = document == null ? null : document.getDocumentTypeVariant();
+    String own = variant == null ? null
+        : EmailMessages.getOptional(name + ".documentType." + variant, language);
+    if (own != null) {
+      return own;
+    }
     // Falls back to the type the contract was constructed with rather than emitting the raw key:
     // a contract added without its catalog entry would otherwise put "foo-send.documentType" in
     // the subject line of a customer's email.
@@ -776,7 +789,7 @@ public class DefaultDocumentSendEmailContract implements EmailContract {
    * subject back as the override, so the two must agree.
    */
   private String buildSubject(EmailDocumentRecord document, String language) {
-    String label = documentTypeLabel(language);
+    String label = documentTypeLabel(document, language);
     String recipientName = StringUtils.trimToNull(document.getRecipientName());
     return recipientName == null
         ? EmailMessages.get("document.subject", language, label, document.getDocumentNumber())

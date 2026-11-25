@@ -29,10 +29,15 @@ import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.common.businesspartner.BusinessPartner;
 import org.openbravo.model.common.invoice.Invoice;
 
+import com.etendoerp.go.portal.PortalDocumentKind;
+
 /**
  * Resolves trusted sales invoice records for document email contracts.
  */
 final class DalInvoiceEmailDocumentResolver implements EmailDocumentRecordResolver {
+
+  /** Document type variant of a credit note: {@code sales-invoice-send.documentType.creditNote}. */
+  static final String CREDIT_NOTE = "creditNote";
 
   DalInvoiceEmailDocumentResolver() {
   }
@@ -69,6 +74,9 @@ final class DalInvoiceEmailDocumentResolver implements EmailDocumentRecordResolv
             EmailDocumentDetail.text("document.detail.total",
                 DalEmailContractDataResolver.formatDisplayAmount(invoice.getGrandTotalAmount(),
                     invoice.getCurrency()))))
-        .withDocumentStatus(invoice.getDocumentStatus()));
+        .withDocumentStatus(invoice.getDocumentStatus())
+        // A credit note reads "Factura rectificativa" in its email, not the contract's "Factura de
+        // Venta" (ETP-6209 QA): the portal's own credit-note rule, by the document type.
+        .withDocumentTypeVariant(PortalDocumentKind.isCreditNote(invoice) ? CREDIT_NOTE : null));
   }
 }

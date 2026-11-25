@@ -89,7 +89,7 @@ is visible) plus, where the status alone cannot say it, a condition on the docum
 
 | Kind | Group | Statuses | Condition |
 |---|---|---|---|
-| Quotation | `awaiting` | `UE`, `CO` | — |
+| Quotation | `awaiting` | `UE`, `CO` | not expired: no `validUntil`, or one not before today (server day) — an expired one shows under "all" only |
 | | `accepted` | `CA`, `ETGO_CI` | — |
 | | `rejected` | `CJ` | — |
 | Order | `inProgress` | `CO` | a line with `orderedQuantity ≠ deliveredQuantity` or `≠ invoicedQuantity` |
@@ -97,12 +97,17 @@ is visible) plus, where the status alone cannot say it, a condition on the docum
 | | `voided` | `VO` | — |
 | Shipment | `delivered` | `CO`, `CL` | — |
 | | `voided` | `VO` | — |
-| Invoice | `pending` | `CO`, `CL` | `outstandingAmount ≠ 0` |
+| Invoice | `pending` | `CO`, `CL` | `outstandingAmount > 0` — a credit note in the customer's favour (negative) shows under "all" only, as the home's balance and count already excluded it |
 | | `overdue` | `CO`, `CL` | an instalment past due (server day) with money owed |
 | | `paid` | `CO`, `CL` | `outstandingAmount = 0` |
 
 No group (or an unknown one) is every visible status. The home's tiles count the same sets
 (`awaiting`, `overdue`, `inProgress`), so a tile and its tab always agree.
+**Expired quotations are left out on purpose.** The quotations «Bajo evaluación» tab (`awaiting`)
+and the Home «Por responder» count exclude pending quotations whose `validUntil` is before today
+(server day); they stay visible under «Todos». So these counts can be lower than the app's
+pending-quotation count: that gap is by design (the portal offers no decision on an expired
+quotation), not a bug.
 
 ### The public logo — `GET /public-logo/{reference}` (ETP-6209)
 
@@ -455,4 +460,15 @@ the functional repo's `flags-registry.json` (`bp-self-service-portal`).
   value still travels to the gateway as `amount`.
 - **Customer email footer.** «Creado con etendo.ai», a plain link to the etendo.ai home page with
   a per-email UTM; see `transactional-email-contracts.md` → *Portal email design*.
+- **Document type in the emails (QA pass 2).** A credit note sent through `sales-invoice-send` is
+  named «Factura rectificativa» / «Credit Note» (subject, card title, body): the invoice resolver
+  sets the document type variant `creditNote` (`EmailDocumentRecord#withDocumentTypeVariant`, by
+  `PortalDocumentKind#isCreditNote`) and the contract reads
+  `sales-invoice-send.documentType.creditNote`. The quotation is «Presupuesto de Venta», the app's
+  name (catalog `sales-quotation-send.documentType`), on every channel (app and MCP).
+- **Link renewal email (QA pass 2).** Same card as the other customer emails: the company's logo or
+  initials, title `portal-link-renewal.title`, the message, «Acceder a mi portal», the link
+  fallback, the validity note and the «Creado con etendo.ai» footer (`mail_reenvio_enlace`). No
+  «Saludos, Equipo de Etendo»: it is sent on behalf of our customer. Recipients unchanged (the
+  expired link's To and CC).
 

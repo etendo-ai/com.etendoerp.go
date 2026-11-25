@@ -285,15 +285,18 @@ public class PortalDocumentQueryTest {
     Date today = new Date(86_400_000L);
     // Columns: kind, group, statuses bound, a fragment of its condition (null: none), binds :today.
     Object[][] cases = {
-        { PortalDocumentKind.QUOTATION, "awaiting", Arrays.asList("UE", "CO"), null, false },
+        // An expired quotation awaits nothing (ETP-6209 QA).
+        { PortalDocumentKind.QUOTATION, "awaiting", Arrays.asList("UE", "CO"),
+            "e.validUntil >= :today", true },
         { PortalDocumentKind.QUOTATION, "accepted", Arrays.asList("ETGO_AC", "CA", "ETGO_CI"),
             null, false },
         { PortalDocumentKind.QUOTATION, "rejected", Arrays.asList("CJ"), null, false },
         { PortalDocumentKind.ORDER, "inProgress", Arrays.asList("CO"), "from OrderLine l", false },
         { PortalDocumentKind.ORDER, "voided", Arrays.asList("VO"), null, false },
         { PortalDocumentKind.SHIPMENT, "delivered", Arrays.asList("CO", "CL"), null, false },
+        // Owed only: a credit note in the customer's favour is not pending (ETP-6209 QA).
         { PortalDocumentKind.INVOICE, "pending", Arrays.asList("CO", "CL"),
-            "e.outstandingAmount <> 0", false },
+            "e.outstandingAmount > 0", false },
         { PortalDocumentKind.INVOICE, "overdue", Arrays.asList("CO", "CL"),
             "ps.dueDate < :today", true },
         { PortalDocumentKind.INVOICE, "paid", Arrays.asList("CO", "CL"),
