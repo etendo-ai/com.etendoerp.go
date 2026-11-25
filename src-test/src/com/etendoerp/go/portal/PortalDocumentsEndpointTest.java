@@ -478,8 +478,8 @@ public class PortalDocumentsEndpointTest {
     Order quotation = order("Q-1", "OB");
     query.when(() -> PortalDocumentQuery.findInScope(SESSION, PortalDocumentKind.QUOTATION,
         "Q-1")).thenReturn(quotation);
-    // QA CP-45: the quotation's original send, which reached the session's email (in CC here);
-    // its invalid address is dropped.
+    // QA CP-45: the original send of the quotation reached the session email (in CC here)
+    // and the invalid address in that list is dropped
     NativeQuery sends = mock(NativeQuery.class);
     when(sends.setParameter(anyString(), any())).thenReturn(sends);
     when(sends.list()).thenReturn(Collections.singletonList(new Object[] { "LOG-1",

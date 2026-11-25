@@ -255,12 +255,12 @@ public class SalesDocumentEmailContractsTest {
       try (MockedStatic<OBDal> dal = mockStatic(OBDal.class)) {
         dal.when(OBDal::getInstance).thenReturn(obDal);
 
-        EmailDocumentRecord record = new DalInvoiceEmailDocumentResolver().resolve("inv-1")
+        EmailDocumentRecord resolved = new DalInvoiceEmailDocumentResolver().resolve("inv-1")
             .orElseThrow(() -> new AssertionError(Arrays.toString(c)));
 
-        assertEquals(Arrays.toString(c), c[4], record.getDocumentTypeVariant());
-        assertEquals("CO", record.getDocumentStatus());
-        assertEquals("INV-001", record.getDocumentNumber());
+        assertEquals(Arrays.toString(c), c[4], resolved.getDocumentTypeVariant());
+        assertEquals("CO", resolved.getDocumentStatus());
+        assertEquals("INV-001", resolved.getDocumentNumber());
       }
     }
   }
