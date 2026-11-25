@@ -22,6 +22,7 @@ import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 
 import com.etendoerp.go.schemaforge.NeoResponse;
+import com.etendoerp.go.schemaforge.email.DocumentSendPortalLink;
 import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
 
 /**
@@ -78,7 +79,10 @@ final class McpDocumentEmailOutcome {
           "Check the document's email history in the application before trying again.");
     }
     if (TransactionalEmailService.STATUS_SENT.equals(status)) {
-      return sent(request, spec);
+      // What the email actually carried (ETP-6209 QA, MCP parity): the contract reports whether a
+      // portal link was minted for this very send; with one, the email has no PDF link.
+      return sent(request, spec,
+          data.optBoolean(DocumentSendPortalLink.FACT_PORTAL_LINK, false));
     }
     return notSent(status, response.getHttpStatus(), data);
   }
@@ -89,8 +93,8 @@ final class McpDocumentEmailOutcome {
     return wrapper == null ? null : wrapper.optJSONObject("data");
   }
 
-  private static JSONObject sent(McpDocumentEmailRequest request, String spec)
-      throws JSONException {
+  private static JSONObject sent(McpDocumentEmailRequest request, String spec,
+      boolean portalLink) throws JSONException {
     JSONObject body = new JSONObject();
     body.put(KEY_SENT, true);
     body.put("status", TransactionalEmailService.STATUS_SENT);
@@ -98,8 +102,10 @@ final class McpDocumentEmailOutcome {
     body.put(McpConstants.PARAM_ID, request.getId());
     body.put(McpDocumentEmailRequest.PARAM_TO, new JSONArray(request.getTo()));
     body.put(McpDocumentEmailRequest.PARAM_CC, new JSONArray(request.getCc()));
-    body.put(McpConstants.KEY_DETAIL, "The email was accepted for delivery. It carries a link to "
-        + "the document's PDF.");
+    body.put(McpConstants.KEY_DETAIL, portalLink
+        ? "The email was accepted for delivery. It carries a link to the customer portal, where "
+            + "the recipient can view the document and download its PDF; it has no direct PDF link."
+        : "The email was accepted for delivery. It carries a link to the document's PDF.");
     body.put(KEY_REMOVED, new JSONArray(request.getRemovedDuplicates()));
     body.put(McpConstants.KEY_HINT, "Tell the user it was sent to the addresses above"
         + (request.getRemovedDuplicates().isEmpty() ? "" : ", and that these addresses were left "

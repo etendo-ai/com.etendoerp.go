@@ -92,12 +92,40 @@ public final class PortalLinkPolicy {
    * to build — the request that would need one has no {@code HttpServletRequest} to derive it from,
    * since it originates in the invoice-send path rather than in a browser navigation.
    *
+   * <p><b>Shape: {@code /portal/{AD_Client_ID}/{token}}</b> (ETP-6209 QA CP-43). The tenant id is
+   * in the path so the SPA can replace the browser URL with {@code /portal/{AD_Client_ID}} (no
+   * token) before any third-party tag (GTM, Google Analytics, HubSpot) reads it: the token is the
+   * credential and must never leave the page. The tenant id is not a secret and grants nothing on
+   * its own; the server only checks it against the token's own client
+   * ({@link PortalLinkService#validate(String, String)}). Links sent in the MVP shape
+   * {@code /portal/{token}} keep working: the client is then simply not presented.
+   *
+   * @param clientId the tenant the link belongs to ({@code AD_Client_ID})
    * @param token the opaque token
-   * @return the absolute link, or empty when the token or the configured app base URL is missing
+   * @return the absolute link, or empty when the client, the token or the configured app base URL
+   *     is missing
    */
-  public static Optional<String> buildLink(String token) {
+  public static Optional<String> buildLink(String clientId, String token) {
+    return buildPath(clientId, null, token);
+  }
+
+  /**
+   * Builds a customer-facing URL under the tenant's portal route:
+   * {@code /portal/{AD_Client_ID}[/{segment}]/{token}}. The decision confirmation link uses it with
+   * the {@code decision} segment ({@code /portal/{AD_Client_ID}/decision/{token}}), so every
+   * portal URL a customer receives shares the {@code /portal/{AD_Client_ID}} prefix the SPA strips
+   * the credential after.
+   *
+   * @param clientId the tenant ({@code AD_Client_ID})
+   * @param segment an optional route segment between the tenant and the token, or {@code null}
+   * @param token the opaque token
+   * @return the absolute link, or empty when the client, the token or the configured app base URL
+   *     is missing
+   */
+  static Optional<String> buildPath(String clientId, String segment, String token) {
     String normalizedToken = StringUtils.trimToNull(token);
-    if (normalizedToken == null) {
+    String normalizedClient = StringUtils.trimToNull(clientId);
+    if (normalizedToken == null || normalizedClient == null) {
       return Optional.empty();
     }
     String baseUrl = PublicUrlResolver.resolveConfiguredAppBaseUrl();
@@ -106,7 +134,23 @@ public final class PortalLinkPolicy {
           PublicUrlResolver.APP_BASE_URL_PROPERTY);
       return Optional.empty();
     }
-    return Optional.ofNullable(
-        PublicUrlResolver.appendPath(baseUrl, PORTAL_ROUTE + "/" + normalizedToken));
+    String middle = StringUtils.isBlank(segment) ? "" : segment.trim() + "/";
+    return Optional.ofNullable(PublicUrlResolver.appendPath(baseUrl,
+        PORTAL_ROUTE + "/" + normalizedClient + "/" + middle + normalizedToken));
+  }
+
+  /**
+   * Whether a client id presented next to a token (the {@code /portal/{AD_Client_ID}} part of the
+   * URL) is compatible with the token's own client: absent (a link in the MVP shape) or equal.
+   * A mismatch makes the token invalid — the same answer as an unknown token, so the check is no
+   * oracle for which tenant a token belongs to.
+   *
+   * @param presentedClientId the client id the caller presented, or {@code null}
+   * @param linkClientId the client of the link the token resolved to
+   * @return {@code true} when the presented client is absent or matches
+   */
+  static boolean clientMatches(String presentedClientId, String linkClientId) {
+    String presented = StringUtils.trimToNull(presentedClientId);
+    return presented == null || presented.equals(linkClientId);
   }
 }

@@ -188,7 +188,7 @@ public class PortalContactShare {
         return Outcome.of(State.NO_DOCUMENTS);
       }
       String token = PortalTokens.newToken();
-      Optional<String> url = PortalLinkPolicy.buildLink(token);
+      Optional<String> url = PortalLinkPolicy.buildLink(clientId, token);
       if (!url.isPresent()) {
         return Outcome.of(State.NOT_CONFIGURED);
       }

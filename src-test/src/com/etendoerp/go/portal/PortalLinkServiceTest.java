@@ -64,6 +64,7 @@ import org.openbravo.model.common.enterprise.Organization;
 import org.openbravo.model.common.invoice.Invoice;
 
 import com.etendoerp.go.common.ConfigPropertyReader;
+import com.etendoerp.go.common.PublicUrlResolver;
 import com.etendoerp.go.payment.EnvironmentAccessGuard;
 import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
 
@@ -78,6 +79,7 @@ import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
  * @covers com.etendoerp.go.portal.PortalLinkService
  * @covers com.etendoerp.go.portal.PortalAccessChecks
  * @covers com.etendoerp.go.portal.PortalLinkConfig
+ * @covers com.etendoerp.go.portal.PortalLinkPolicy
  */
 public class PortalLinkServiceTest {
 
@@ -195,6 +197,65 @@ public class PortalLinkServiceTest {
     dal.verify(() -> PortalLinkDal.touchUsed(any(), any()), never());
   }
 
+  /**
+   * QA CP-43: a tenant id presented with the token (the {@code /portal/{AD_Client_ID}} part of the
+   * URL) must be the token's own; another one is answered exactly as an unknown token on every
+   * entry point — no oracle for which tenant a token belongs to — and no tenant (a link in the MVP
+   * shape) validates the token alone.
+   */
+  @Test
+  public void aPresentedTenantMustBeTheTokensOwnElseItIsAnUnknownToken() {
+    present(sentLink(NOW.plus(Duration.ofHours(1)), true));
+
+    PortalLinkService.Validation mismatched = service().validate(TOKEN, "CLIENT-2");
+    assertEquals(PortalLinkService.State.INVALID, mismatched.getState());
+    assertFalse(mismatched.getLink().isPresent());
+    assertFalse(service().findSentLink(TOKEN, "CLIENT-2").isPresent());
+    assertEquals(PortalLinkService.RenewalOutcome.INVALID, service().renew(TOKEN, "CLIENT-2"));
+    dal.verify(() -> PortalLinkDal.touchUsed(any(), any()), never());
+    assertTrue(renewalEmails.isEmpty());
+
+    // Its own tenant, or none, goes on as before: valid, found, and not expired for a renewal.
+    for (String tenant : Arrays.asList(CLIENT_ID, " " + CLIENT_ID + " ", null)) {
+      assertEquals(tenant, PortalLinkService.State.VALID,
+          service().validate(TOKEN, tenant).getState());
+      assertTrue(tenant, service().findSentLink(TOKEN, tenant).isPresent());
+      assertEquals(tenant, PortalLinkService.RenewalOutcome.NOT_EXPIRED,
+          service().renew(TOKEN, tenant));
+    }
+  }
+
+  /**
+   * QA CP-43: every customer-facing portal URL is {@code /portal/{AD_Client_ID}[/{segment}]/{token}},
+   * so the SPA can strip the token behind one tenant prefix; without a tenant, a token or the app's
+   * base URL there is no link at all.
+   */
+  @Test
+  public void portalUrlsCarryTheTenantBeforeTheTokenAndNeedAllThreeParts() {
+    try (MockedStatic<PublicUrlResolver> urls = mockStatic(PublicUrlResolver.class)) {
+      urls.when(() -> PublicUrlResolver.appendPath(anyString(), anyString()))
+          .thenAnswer(inv -> inv.<String>getArgument(0) + inv.<String>getArgument(1));
+      urls.when(PublicUrlResolver::resolveConfiguredAppBaseUrl).thenReturn("https://app.test/");
+
+      assertEquals(Optional.of("https://app.test/portal/CLIENT-1/tok"),
+          PortalLinkPolicy.buildLink(" CLIENT-1 ", " tok "));
+      assertEquals(Optional.of("https://app.test/portal/CLIENT-1/decision/tok"),
+          PortalLinkPolicy.buildPath("CLIENT-1", "decision", "tok"));
+      assertEquals(Optional.empty(), PortalLinkPolicy.buildLink(null, "tok"));
+      assertEquals(Optional.empty(), PortalLinkPolicy.buildLink("CLIENT-1", " "));
+
+      urls.when(PublicUrlResolver::resolveConfiguredAppBaseUrl).thenReturn(" ");
+      assertEquals(Optional.empty(), PortalLinkPolicy.buildLink("CLIENT-1", "tok"));
+    }
+    // Columns: presented tenant, the link's tenant, compatible.
+    Object[][] cases = { { null, "C-1", true }, { "  ", "C-1", true }, { "C-1", "C-1", true },
+        { " C-1 ", "C-1", true }, { "C-2", "C-1", false }, { "c-1", "C-1", false } };
+    for (Object[] c : cases) {
+      assertEquals(c[0] + " vs " + c[1], c[2],
+          PortalLinkPolicy.clientMatches((String) c[0], (String) c[1]));
+    }
+  }
+
   @Test
   public void validateAnswersUnavailableForABlockedInactiveOrPlanExpiredCustomer() {
     for (Closure closure : Closure.values()) {
@@ -255,8 +316,8 @@ public class PortalLinkServiceTest {
     try (MockedStatic<PortalLinkPolicy> policy = mockStatic(PortalLinkPolicy.class);
         MockedStatic<SequenceIdData> ids = mockStatic(SequenceIdData.class)) {
       policy.when(PortalLinkPolicy::isLinkEnabled).thenReturn(true);
-      policy.when(() -> PortalLinkPolicy.buildLink(anyString()))
-          .thenAnswer(inv -> Optional.of(URL_PREFIX + inv.getArgument(0)));
+      policy.when(() -> PortalLinkPolicy.buildLink(any(), anyString()))
+          .thenAnswer(inv -> Optional.of(URL_PREFIX + inv.getArgument(1)));
       ids.when(SequenceIdData::getUUID).thenReturn(LINK_ID);
 
       PortalLinkService.MintedLink minted = service().mintForSend(PortalDocumentKind.INVOICE,
@@ -296,8 +357,8 @@ public class PortalLinkServiceTest {
     try (MockedStatic<PortalLinkPolicy> policy = mockStatic(PortalLinkPolicy.class);
         MockedStatic<SequenceIdData> ids = mockStatic(SequenceIdData.class)) {
       policy.when(PortalLinkPolicy::isLinkEnabled).thenReturn(true);
-      policy.when(() -> PortalLinkPolicy.buildLink(anyString()))
-          .thenAnswer(inv -> Optional.of(URL_PREFIX + inv.getArgument(0)));
+      policy.when(() -> PortalLinkPolicy.buildLink(any(), anyString()))
+          .thenAnswer(inv -> Optional.of(URL_PREFIX + inv.getArgument(1)));
       ids.when(SequenceIdData::getUUID).thenReturn("LINK-A", "LINK-B");
 
       service().mintForSend(PortalDocumentKind.INVOICE, RECORD_ID, to,
@@ -532,8 +593,8 @@ public class PortalLinkServiceTest {
 
     try (MockedStatic<PortalLinkPolicy> policy = mockStatic(PortalLinkPolicy.class);
         MockedStatic<SequenceIdData> ids = mockStatic(SequenceIdData.class)) {
-      policy.when(() -> PortalLinkPolicy.buildLink(anyString()))
-          .thenAnswer(inv -> Optional.of(URL_PREFIX + inv.getArgument(0)));
+      policy.when(() -> PortalLinkPolicy.buildLink(any(), anyString()))
+          .thenAnswer(inv -> Optional.of(URL_PREFIX + inv.getArgument(1)));
       ids.when(SequenceIdData::getUUID).thenReturn("LINK-2");
 
       assertEquals("LINK-2", service().mintRenewal(LINK_ID).get().getId());
