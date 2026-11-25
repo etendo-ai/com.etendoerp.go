@@ -262,6 +262,52 @@ class NeoTelemetryServiceTest {
   }
 
   /**
+   * ETP-6359: the four AI facts of a bounce-pair decision pass the allowlist. The three booleans
+   * only as real booleans, the probability as a 0-100 percentage; anything else is dropped
+   * silently, which is why the keys are pinned here.
+   */
+  @Test
+  void emitKeepsTheBounceAiFactsWithTheirTypesAndBounds() {
+    RecordingSink sink = new RecordingSink();
+    NeoTelemetryService service = service(sink, 0L);
+
+    service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED, mapOf(
+        "decision", "discarded", "ai_assessed", true, "ai_probability", 87,
+        "ai_recommended", true, "ai_recommendation_accepted", false));
+    Map<String, Object> kept = sink.last().getProperties();
+    assertEquals(5, kept.size(), kept.toString());
+    assertEquals(Boolean.TRUE, kept.get("ai_assessed"));
+    assertEquals(87, kept.get("ai_probability"));
+    assertEquals(Boolean.TRUE, kept.get("ai_recommended"));
+    assertEquals(Boolean.FALSE, kept.get("ai_recommendation_accepted"));
+
+    for (int edge : new int[] { 0, 100 }) {
+      service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED,
+          mapOf("ai_probability", edge));
+      assertEquals(edge, sink.last().getProperties().get("ai_probability"));
+    }
+    for (int outside : new int[] { 101, -1, Integer.MAX_VALUE }) {
+      service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED,
+          mapOf("decision", "discarded", "ai_probability", outside));
+      assertFalse(sink.last().getProperties().containsKey("ai_probability"),
+          "ai_probability=" + outside);
+      assertEquals("discarded", sink.last().getProperties().get("decision"));
+    }
+  }
+
+  /** ETP-6359: a mistyped AI boolean is dropped, not coerced. */
+  @Test
+  void emitDropsNonBooleanBounceAiFlags() {
+    RecordingSink sink = new RecordingSink();
+    NeoTelemetryService service = service(sink, 0L);
+
+    service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED, mapOf(
+        "ai_assessed", "true", "ai_recommended", 1, "ai_recommendation_accepted", "Y"));
+
+    assertTrue(sink.last().getProperties().isEmpty(), sink.last().getProperties().toString());
+  }
+
+  /**
    * ETP-6247: backend_remittance_file_generated keeps its properties with their types: role_groups
    * a sorted, deduplicated list of known groups, direction AR or AP, invoice_count a bounded
    * number, is_regeneration a real boolean.

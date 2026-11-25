@@ -1182,6 +1182,9 @@ public class ReconciliationHandler implements NeoHandler {
     data.put("account", accountId);
     data.put("kpis", kpis);
     data.put(KEY_GROUPS, groups);
+    // ETP-6359: the AI second layer; adds bounceAiAssessments or leaves data as it is. May release
+    // the DAL connection, so nothing below uses it.
+    BankBounceAi.annotate(bounces, data);
     ReconciliationKpiTelemetry.emitBankMatchAttempted(
         pendingLines.size(), transactionGroups, opsToLink);
     return envelope(data);

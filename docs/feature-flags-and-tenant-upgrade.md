@@ -1034,6 +1034,15 @@ same shape as `bp-portal-link`. No account, no email or a failed lookup means **
 Write Datadog rules on the lowercase `email` attribute against lowercase values. Evaluate per request
 and never cache the answer in a `static final`.
 
+**AI second layer (ETP-6359) is gated by this same flag.** There is no flag of its own: with
+`bank-bounce-suggestions` on for the account, `autoMatch` also asks the Decisions API about the
+`review` pairs (`BankBounceAi`) and answers `bounceAiAssessments`; `discardPair` honours
+`choiceSource:"ai"` with a server-side check (409 `BOUNCE_AI_SUGGESTION_STALE`); and the decision
+KPI carries the `ai_*` properties. With the flag off none of it runs and Etendo is as before
+ETP-5581. The other off-ramps stay: no Copilot key, a running back-off, no concurrency slot, the
+daily cap, the MCP channel and batches (never annotated) and any failure each leave the answer
+without the field. Contract: `neo-headless.md` §4.12.1.1, *AI second layer*.
+
 **Turning it on locally:** `etendo.go.flags.bank-bounce-suggestions=true` in `Openbravo.properties`
 (or `ETGO_FLAG_BANK_BOUNCE_SUGGESTIONS=true` in Tomcat's environment), with no Datadog/ConfigCat arm
 selected, then restart Tomcat.

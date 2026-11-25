@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyMap;
@@ -40,7 +41,12 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Field;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
@@ -90,6 +96,10 @@ import org.openbravo.model.financialmgmt.payment.FIN_FinaccTransaction;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 
+import com.etendoerp.go.llm.DecisionInput;
+import com.etendoerp.go.llm.DecisionQuestion;
+import com.etendoerp.go.llm.DecisionResult;
+import com.etendoerp.go.schemaforge.BankBouncePairService.Detection;
 import com.etendoerp.go.schemaforge.BankBounceDetector.Candidate;
 import com.etendoerp.go.schemaforge.BankBounceDetector.Pair;
 import com.etendoerp.go.schemaforge.BankBounceDetector.StatementLine;
@@ -97,6 +107,7 @@ import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryEvent;
 import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryEvents;
 import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryService;
 import com.etendoerp.psd2.bank.integration.data.PisPayment;
+import com.google.common.base.Ticker;
 
 /**
  * {@code discardPair} and {@code restorePair} of the bounce pairs (ETP-5581): the validation order
@@ -114,6 +125,7 @@ import com.etendoerp.psd2.bank.integration.data.PisPayment;
  * @covers com.etendoerp.go.schemaforge.StatementLineDiscard
  * @covers com.etendoerp.go.schemaforge.BankBounceErrors
  * @covers com.etendoerp.go.schemaforge.BankBounceKpiTelemetry
+ * @covers com.etendoerp.go.schemaforge.BankBounceAi
  * @covers com.etendoerp.go.schemaforge.ReconciliationHandlerSupport
  * @covers com.etendoerp.go.schemaforge.telemetry.NeoTelemetryService
  */
@@ -147,6 +159,8 @@ class BankBouncePairServiceTest {
   private final List<String> scheduleDetailPaymentIds = new ArrayList<>();
   private final Set<FIN_BankStatementLine> saved = new HashSet<>();
   private NeoTelemetryService telemetry;
+  /** The model seam of the AI second layer: no gateway, no runtime configuration (ETP-6359). */
+  private BankBounceAiTest.FakeDecider aiDecider;
 
   /**
    * Simulates the running model column by column, the DAL with the detection queries and a
@@ -208,12 +222,15 @@ class BankBouncePairServiceTest {
     // The bounce-pair KPI events of every test go to this mock, never to a runtime sink.
     telemetry = mock(NeoTelemetryService.class);
     BankBounceKpiTelemetry.setTelemetryService(telemetry);
+    aiDecider = new BankBounceAiTest.FakeDecider();
+    BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
   }
 
   /** Closes every static mock and restores the runtime telemetry service. */
   @AfterEach
   void tearDown() {
     BankBounceKpiTelemetry.setTelemetryService(null);
+    BankBounceAi.reset();
     filter.close();
     flag.close();
     messages.close();
@@ -2067,10 +2084,572 @@ class BankBouncePairServiceTest {
   // KPI helpers
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // AI second layer (ETP-6359): the choiceSource control and the KPI facts
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Asks the fake model about the current detection, as an {@code autoMatch} would, so that the
+   * cache holds an assessment of every review pair of the fixture. The probabilities are those of
+   * one question, in option order (the candidates in chronological order, then {@code none}).
+   *
+   * @param probabilities the answer of every question
+   * @throws Exception when the detection cannot be read
+   */
+  private void aiAssess(double... probabilities) throws Exception {
+    Detection detection = new Detection(handler, account, true);
+    BankBounceSuggestions.Plan plan =
+        new BankBounceSuggestions.Plan(detection.pairs(), Map.of(), true);
+    JSONArray groups = new JSONArray();
+    JSONObject kpis = new JSONObject();
+    BankBounceSuggestions.appendGroups(plan, groups, kpis);
+    JSONObject data = new JSONObject().put("groups", groups).put("kpis", kpis);
+    aiDecider.script = qs -> BankBounceAiTest.FakeDecider.exactly(qs, probabilities);
+    BankBounceAi.annotate(plan, data);
+    assertTrue(data.has(BankBounceAi.KEY_ASSESSMENTS), "the fixture must be assessed: " + data);
+  }
+
+  /** A body with {@code choiceSource}. */
+  private static JSONObject aiBody(String lineId, String counterpartId, String source)
+      throws Exception {
+    JSONObject body = body(lineId, counterpartId);
+    if (source != null) {
+      body.put("choiceSource", source);
+    }
+    return body;
+  }
+
+  @Nested
+  @DisplayName("discardPair — choiceSource ai: the outflow must still be the AI recommendation")
+  class AiChoiceSource {
+
+    /** The ambiguous fixture: two equal outflows, the return between them. */
+    private Line[] ambiguousPair() {
+      Line o1 = pendingLine("L-O1", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line o2 = pendingLine("L-O2", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line bounce = pendingLine("L-IN", "50.00", DAY, "", "DEVOLUCION TRANSFERENCIA");
+      return new Line[] { o1, o2, bounce };
+    }
+
+    @Test
+    @DisplayName("the outflow the cache recommends is discarded as always")
+    void validChoiceIsDiscarded() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+
+      NeoResponse response = BankBouncePairService.discardPair(handler,
+          aiBody("L-O1", "L-IN", "ai"));
+
+      assertEquals(200, response.getHttpStatus());
+      assertTrue(data(response).getBoolean("discarded"));
+      assertEquals(Boolean.TRUE, f[0].value(StatementLineDiscard.COL_IS_DISCARDED));
+      assertEquals(Boolean.TRUE, f[2].value(StatementLineDiscard.COL_IS_DISCARDED));
+      assertNull(f[1].value(StatementLineDiscard.COL_IS_DISCARDED));
+      assertEquals(1, aiDecider.calls.get(), "the control reads the cache, it never asks the model");
+    }
+
+    @Test
+    @DisplayName("the cache recommends another outflow: 409 BOUNCE_AI_SUGGESTION_STALE, nothing written")
+    void anotherRecommendationIsStale() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.05, 0.90, 0.05);
+
+      NeoResponse response = BankBouncePairService.discardPair(handler,
+          aiBody("L-O1", "L-IN", "ai"));
+
+      assertCoded(response, 409, BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      assertNothingWritten(f);
+    }
+
+    @Test
+    @DisplayName("the cache holds no recommendation (assessed without a clear best): stale")
+    void noRecommendationIsStale() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.55, 0.05, 0.40);
+
+      assertCoded(BankBouncePairService.discardPair(handler, aiBody("L-O1", "L-IN", "ai")), 409,
+          BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      assertNothingWritten(f);
+    }
+
+    @Test
+    @DisplayName("nothing cached (never asked, expired or changed): stale")
+    void emptyCacheIsStale() throws Exception {
+      Line[] f = ambiguousPair();
+
+      assertCoded(BankBouncePairService.discardPair(handler, aiBody("L-O1", "L-IN", "ai")), 409,
+          BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      assertNothingWritten(f);
+    }
+
+    @Test
+    @DisplayName("a line changed since the assessment: the key no longer matches and the choice is stale")
+    void changedMovementsAreStale() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+      when(f[1].mock.getDescription()).thenReturn("TRANSFERENCIA CORREGIDA");
+
+      assertCoded(BankBouncePairService.discardPair(handler, aiBody("L-O1", "L-IN", "ai")), 409,
+          BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      assertNothingWritten(f);
+    }
+
+    @Test
+    @DisplayName("a valid pair that detection does not propose (not a detected candidate): stale")
+    void pairNoLongerDetectedIsStale() throws Exception {
+      Line elsewhere = pendingLine("L-O2", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line neighbour = pendingLine("L-O1", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line bounce = pendingLine("L-IN", "50.00", DAY, "", "DEVOLUCION TRANSFERENCIA");
+      onStatement("ST-1", neighbour, bounce);
+      onStatement("ST-2", elsewhere);
+      // The request pair (the other outflow and the return) is valid, see
+      // unproposedPairIsStoredReview, but detection did not propose it: an AI choice is stale.
+      assertNull(BankBouncePairService.validate(handler, account, "L-O2", "L-IN",
+          new Detection(handler, account, true)).error(), "valid, though not a detected pair");
+
+      NeoResponse response = BankBouncePairService.discardPair(handler,
+          aiBody(elsewhere.id, bounce.id, "ai"));
+
+      assertCoded(response, 409, BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      assertNothingWritten(elsewhere, bounce);
+    }
+
+    @Test
+    @DisplayName("reading the cache fails: an internal error, never a stale 409 and never a valid choice")
+    void failureReadingTheCacheIsStale() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+      BankBounceAi.setSeams(new BankBounceAi.Decider() {
+        @Override
+        public boolean configured() {
+          return true;
+        }
+
+        @Override
+        public String model() {
+          throw new IllegalStateException("configuration unreadable");
+        }
+
+        @Override
+        public DecisionResult decide(DecisionInput input, List<DecisionQuestion> questions) {
+          throw new AssertionError("the control never asks the model");
+        }
+      }, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+
+      assertThrows(IllegalStateException.class,
+          () -> BankBouncePairService.discardPair(handler, aiBody("L-O1", "L-IN", "ai")));
+      assertNothingWritten(f);
+    }
+
+    @Test
+    @DisplayName("choiceSource user, another value or none: nothing is checked, as before")
+    void otherChoiceSourcesAreNotChecked() throws Exception {
+      // No assessment at all: an "ai" choice would be stale, the others are accepted.
+      for (String source : new String[] { "user", "UI", "", null }) {
+        BankBounceAi.reset();
+        BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+        pending.clear();
+        Line[] f = ambiguousPair();
+
+        NeoResponse response = BankBouncePairService.discardPair(handler,
+            aiBody("L-O1", "L-IN", source));
+
+        assertEquals(200, response.getHttpStatus(), "choiceSource=" + source);
+        assertEquals(Boolean.TRUE, f[0].value(StatementLineDiscard.COL_IS_DISCARDED));
+      }
+      assertEquals(0, aiDecider.calls.get());
+    }
+
+    @Test
+    @DisplayName("the 409 carries the code and the message key of the AD_MESSAGE, and it is the usual failed KPI")
+    void staleRefusalShapeAndKpi() throws Exception {
+      ambiguousPair();
+
+      NeoResponse response = BankBouncePairService.discardPair(handler,
+          aiBody("L-O1", "L-IN", "ai"));
+
+      assertCoded(response, 409, "BOUNCE_AI_SUGGESTION_STALE");
+      JSONObject error = response.getBody().getJSONObject("error");
+      assertEquals("ETGO_BounceAiSuggestionStale",
+          error.getJSONArray("messageKeys").getString(0));
+      assertEquals("ETGO_BounceAiSuggestionStale", response.getBody().getString("message"),
+          "no AD_MESSAGE text in a unit test: the key is the fallback");
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(BankBounceKpiTelemetry.DECISION_FAILED, props.get("decision"));
+      assertEquals(BankBounceKpiTelemetry.SURFACE_PANEL, props.get("surface"));
+      assertEquals("ui", props.get("channel"));
+      assertEquals(BankBounceDetector.CONFIDENCE_REVIEW, props.get("confidence"));
+      assertEquals(Boolean.TRUE, props.get("ambiguous"));
+    }
+
+    @Test
+    @DisplayName("the message the 409 points to ships in the module's AD_MESSAGE sourcedata")
+    void staleMessageShips() throws Exception {
+      Path dir = Paths.get("").toAbsolutePath();
+      Path xml = null;
+      for (Path d = dir; d != null && xml == null; d = d.getParent()) {
+        for (String rel : new String[] { "src-db/database/sourcedata/AD_MESSAGE.xml",
+            "modules/com.etendoerp.go/src-db/database/sourcedata/AD_MESSAGE.xml" }) {
+          if (Files.exists(d.resolve(rel))) {
+            xml = d.resolve(rel);
+            break;
+          }
+        }
+      }
+      assertNotNull(xml, "AD_MESSAGE.xml not found from " + dir);
+      String text = new String(Files.readAllBytes(xml), StandardCharsets.UTF_8);
+
+      assertTrue(text.contains("<VALUE><![CDATA["
+          + BankBounceErrors.messageKey(BankBounceErrors.CODE_AI_SUGGESTION_STALE) + "]]></VALUE>"));
+    }
+  }
+
+  @Nested
+  @DisplayName("POST ?action=discardPair choiceSource ai — a failed lookup is a server error, a lookup that disagrees is a 409")
+  class AiChoiceRoute {
+
+    private MockedStatic<OBContext> obContext;
+
+    @BeforeEach
+    void mockContext() {
+      obContext = mockStatic(OBContext.class);
+    }
+
+    @AfterEach
+    void closeContext() {
+      obContext.close();
+    }
+
+    private Line[] ambiguousPair() {
+      Line o1 = pendingLine("L-O1", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line o2 = pendingLine("L-O2", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line bounce = pendingLine("L-IN", "50.00", DAY, "", "DEVOLUCION TRANSFERENCIA");
+      return new Line[] { o1, o2, bounce };
+    }
+
+    private NeoResponse route(JSONObject body) {
+      return BankBouncePairService.handleDiscardPair(handler, NeoContext.builder()
+          .httpMethod("POST").requestBody(body)
+          .queryParams(Map.of("action", BankBouncePairService.ACTION_DISCARD_PAIR)).build());
+    }
+
+    @Test
+    @DisplayName("an internal failure reading the cache answers 500 through the envelope: rolled back, no 409, nothing written")
+    void internalFailureIsAServerError() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+      BankBounceAi.setSeams(new BankBounceAi.Decider() {
+        @Override
+        public boolean configured() {
+          return true;
+        }
+
+        @Override
+        public String model() {
+          throw new IllegalStateException("configuration unreadable");
+        }
+
+        @Override
+        public DecisionResult decide(DecisionInput input, List<DecisionQuestion> questions) {
+          throw new AssertionError("the control never asks the model");
+        }
+      }, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+
+      NeoResponse response = route(aiBody("L-O1", "L-IN", "ai"));
+
+      assertEquals(500, response.getHttpStatus());
+      assertFalse(response.getBody().toString().contains(BankBounceErrors.CODE_AI_SUGGESTION_STALE),
+          "the user is not told the suggestion is stale: it is our failure");
+      verify(handler).doRollbackAndClose();
+      assertNothingWritten(f);
+    }
+
+    @Test
+    @DisplayName("a lookup that completed and disagrees answers 409 BOUNCE_AI_SUGGESTION_STALE through the envelope: rolled back")
+    void disagreeingLookupIsA409() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.05, 0.90, 0.05);
+
+      NeoResponse response = route(aiBody("L-O1", "L-IN", "ai"));
+
+      assertCoded(response, 409, BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      verify(handler).doRollbackAndClose();
+      assertNothingWritten(f);
+    }
+
+    @Test
+    @DisplayName("the lookup that agrees discards through the envelope with a 200 and no rollback")
+    void agreeingLookupDiscards() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+
+      NeoResponse response = route(aiBody("L-O1", "L-IN", "ai"));
+
+      assertEquals(200, response.getHttpStatus());
+      verify(handler, never()).doRollbackAndClose();
+      assertEquals(Boolean.TRUE, f[0].value(StatementLineDiscard.COL_IS_DISCARDED));
+    }
+  }
+
+  @Nested
+  @DisplayName("discardPair choiceSource ai — the assessment is per rejection, with the detection of the day")
+  class AiSiblings {
+
+    /**
+     * Two ambiguous rejections the 60-day window keeps apart: R1 over O1 and O2, R2 over O3 and
+     * O4 (O2 is too old for R2).
+     */
+    private Line[] apart() {
+      Line o1 = pendingLine("L-O1", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line o2 = pendingLine("L-O2", "-50.00", DAY.plusDays(5), "", "TRANSFERENCIA");
+      Line r1 = pendingLine("L-R1", "50.00", DAY.plusDays(10), "", "DEVOLUCION TRANSFERENCIA");
+      Line o3 = pendingLine("L-O3", "-50.00", DAY.plusDays(60), "", "TRANSFERENCIA");
+      Line o4 = pendingLine("L-O4", "-50.00", DAY.plusDays(61), "", "TRANSFERENCIA");
+      Line r2 = pendingLine("L-R2", "50.00", DAY.plusDays(75), "", "DEVOLUCION TRANSFERENCIA");
+      return new Line[] { o1, o2, r1, o3, o4, r2 };
+    }
+
+    /** Like {@link #apart} but O2 is still inside the window of R2: R1 and R2 both see it. */
+    private Line[] overlapping() {
+      Line o1 = pendingLine("L-O1", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line o2 = pendingLine("L-O2", "-50.00", DAY.plusDays(50), "", "TRANSFERENCIA");
+      Line r1 = pendingLine("L-R1", "50.00", DAY.plusDays(55), "", "DEVOLUCION TRANSFERENCIA");
+      Line o3 = pendingLine("L-O3", "-50.00", DAY.plusDays(60), "", "TRANSFERENCIA");
+      Line o4 = pendingLine("L-O4", "-50.00", DAY.plusDays(61), "", "TRANSFERENCIA");
+      Line r2 = pendingLine("L-R2", "50.00", DAY.plusDays(70), "", "DEVOLUCION TRANSFERENCIA");
+      return new Line[] { o1, o2, r1, o3, o4, r2 };
+    }
+
+    /** The model's answer to the detected pairs, asked as an autoMatch does: R1 then R2. */
+    private void assess(int favoriteOfR1, int favoriteOfR2) throws Exception {
+      Detection detection = new Detection(handler, account, true);
+      assertEquals(2, detection.pairs().size(), "the fixture detects two rejections");
+      BankBounceSuggestions.Plan plan =
+          new BankBounceSuggestions.Plan(detection.pairs(), Map.of(), true);
+      JSONArray groups = new JSONArray();
+      JSONObject kpis = new JSONObject();
+      BankBounceSuggestions.appendGroups(plan, groups, kpis);
+      JSONObject data = new JSONObject().put("groups", groups).put("kpis", kpis);
+      aiDecider.script = qs -> BankBounceAiTest.FakeDecider.perQuestion(qs, 0.9, favoriteOfR1,
+          favoriteOfR2);
+      BankBounceAi.annotate(plan, data);
+      assertEquals(2, data.getJSONObject(BankBounceAi.KEY_ASSESSMENTS).length());
+      assertEquals(1, aiDecider.calls.get(), "one call for the batch");
+    }
+
+    /** What the database does after a discard: the two lines are no longer pending. */
+    private void gone(Line... lines) {
+      for (Line l : lines) {
+        pending.remove(l.mock);
+      }
+    }
+
+    @Test
+    @DisplayName("R1 is discarded with its recommendation, then R2's AI choice is valid: no 409, no new model call")
+    void secondChoiceSurvivesTheFirstDiscard() throws Exception {
+      Line[] f = apart();
+      assess(0, 1); // R1 -> O1, R2 -> O4
+
+      assertEquals(200, BankBouncePairService.discardPair(handler,
+          aiBody("L-O1", "L-R1", "ai")).getHttpStatus());
+      gone(f[0], f[2]);
+      NeoResponse second = BankBouncePairService.discardPair(handler,
+          aiBody("L-O4", "L-R2", "ai"));
+
+      assertEquals(200, second.getHttpStatus(), "R2's own question did not change: not stale");
+      assertEquals(Boolean.TRUE, f[4].value(StatementLineDiscard.COL_IS_DISCARDED));
+      assertEquals(1, aiDecider.calls.get(), "the cache of R2 served the check");
+    }
+
+    @Test
+    @DisplayName("a change to R2's own candidates after the assessment makes its AI choice stale")
+    void ownChangeStillStales() throws Exception {
+      Line[] f = apart();
+      assess(0, 1);
+      when(f[4].mock.getDescription()).thenReturn("TRANSFERENCIA CORREGIDA");
+
+      assertCoded(BankBouncePairService.discardPair(handler, aiBody("L-O4", "L-R2", "ai")), 409,
+          BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      assertNothingWritten(f[4], f[5]);
+    }
+
+    @Test
+    @DisplayName("when the detector gives R2 a new candidate because R1 left (an outflow they shared), R2's old assessment no longer covers it: stale")
+    void aCandidateFreedByTheSiblingStalesTheOther() throws Exception {
+      Line[] f = overlapping();
+      assess(0, 1); // R1 -> O1, R2 -> O4 (over O3 and O4 only: O2 was held by R1)
+
+      assertEquals(200, BankBouncePairService.discardPair(handler,
+          aiBody("L-O1", "L-R1", "ai")).getHttpStatus());
+      gone(f[0], f[2]);
+
+      assertCoded(BankBouncePairService.discardPair(handler, aiBody("L-O4", "L-R2", "ai")), 409,
+          BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      assertEquals(1, aiDecider.calls.get(), "the control never asks the model");
+      assertNothingWritten(f[4], f[5]);
+    }
+  }
+
+  @Nested
+  @DisplayName("bounce-pair KPI — the ai_* facts of a UI decision (ETP-6359)")
+  class AiKpiFacts {
+
+    private Line[] ambiguousPair() {
+      Line o1 = pendingLine("L-O1", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line o2 = pendingLine("L-O2", "-50.00", DAY, "", "TRANSFERENCIA");
+      Line bounce = pendingLine("L-IN", "50.00", DAY, "", "DEVOLUCION TRANSFERENCIA");
+      return new Line[] { o1, o2, bounce };
+    }
+
+    @Test
+    @DisplayName("the recommended outflow discarded from the AI choice: assessed, percentage, recommended, accepted")
+    void recommendationAccepted() throws Exception {
+      ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+
+      BankBouncePairService.discardPair(handler, aiBody("L-O1", "L-IN", "ai"));
+
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(BankBounceKpiTelemetry.DECISION_DISCARDED, props.get("decision"));
+      assertEquals(Boolean.TRUE, props.get("ai_assessed"));
+      assertEquals(90, props.get("ai_probability"));
+      assertEquals(Boolean.TRUE, props.get("ai_recommended"));
+      assertEquals(Boolean.TRUE, props.get("ai_recommendation_accepted"));
+      assertNoRecordData(props);
+    }
+
+    @Test
+    @DisplayName("the user discards another outflow: recommended, not accepted, with the percentage of the chosen one")
+    void anotherOutflowIsNotAcceptance() throws Exception {
+      ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+
+      BankBouncePairService.discardPair(handler, aiBody("L-O2", "L-IN", "user"));
+
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(Boolean.TRUE, props.get("ai_assessed"));
+      assertEquals(5, props.get("ai_probability"));
+      assertEquals(Boolean.TRUE, props.get("ai_recommended"));
+      assertEquals(Boolean.FALSE, props.get("ai_recommendation_accepted"));
+    }
+
+    @Test
+    @DisplayName("an assessment without a recommendation: recommended false and no accepted key")
+    void assessedWithoutRecommendation() throws Exception {
+      ambiguousPair();
+      aiAssess(0.55, 0.05, 0.40);
+
+      BankBouncePairService.discardPair(handler, body("L-O1", "L-IN"));
+
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(Boolean.TRUE, props.get("ai_assessed"));
+      assertEquals(55, props.get("ai_probability"));
+      assertEquals(Boolean.FALSE, props.get("ai_recommended"));
+      assertFalse(props.containsKey("ai_recommendation_accepted"));
+    }
+
+    @Test
+    @DisplayName("a dismissal chose no outflow: no probability, the recommendation was not accepted")
+    void dismissalChoseNothing() throws Exception {
+      Line[] f = ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+
+      assertEquals(200, BankBouncePairService.dismissPair(handler,
+          new JSONObject().put("financialAccountId", ACCOUNT_ID)
+              .put("statementLineId", f[2].id)).getHttpStatus());
+
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(BankBounceKpiTelemetry.DECISION_UNCHECKED, props.get("decision"));
+      assertEquals(Boolean.TRUE, props.get("ai_assessed"));
+      assertFalse(props.containsKey("ai_probability"));
+      assertEquals(Boolean.TRUE, props.get("ai_recommended"));
+      assertEquals(Boolean.FALSE, props.get("ai_recommendation_accepted"));
+    }
+
+    /** No assessment (no key, expired, not asked): the event is exactly the ETP-5581 one. */
+    @Test
+    @DisplayName("never assessed (no key, expired, not asked): no ai_* property, the event is the ETP-5581 one")
+    void neverAssessedIsTheOldEvent() throws Exception {
+      ambiguousPair();
+
+      BankBouncePairService.discardPair(handler, body("L-O1", "L-IN"));
+
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(DECIDED_KEYS, props.keySet());
+      assertEquals(0, aiDecider.calls.get());
+    }
+
+    @Test
+    @DisplayName("on the MCP channel no ai_* property is emitted, whatever the cache holds")
+    void mcpChannelHasNoAiFacts() throws Exception {
+      ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+
+      String previous = NeoWriteChannel.enter(NeoWriteChannel.MCP);
+      try {
+        assertEquals(200, BankBouncePairService.discardPair(handler,
+            body("L-O1", "L-IN")).getHttpStatus());
+      } finally {
+        NeoWriteChannel.restore(previous);
+      }
+
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals("mcp", props.get("channel"));
+      assertEquals(DECIDED_KEYS, props.keySet());
+    }
+
+    @Test
+    @DisplayName("through the real telemetry service the four ai_* properties survive its allowlist and bounds")
+    void aiPropertiesSurviveTheRealService() throws Exception {
+      NeoTelemetryService service = realTelemetry();
+      ambiguousPair();
+      aiAssess(0.90, 0.05, 0.05);
+
+      BankBouncePairService.discardPair(handler, aiBody("L-O1", "L-IN", "ai"));
+
+      List<NeoTelemetryEvent> events = awaitSent(1);
+      assertShape(events.get(0), rawProperties(service).get(0), DECIDED_AI_KEYS);
+      Map<String, Object> props = events.get(0).getProperties();
+      assertEquals(Boolean.TRUE, props.get("ai_assessed"));
+      assertEquals(90, props.get("ai_probability"));
+      assertEquals(Boolean.TRUE, props.get("ai_recommended"));
+      assertEquals(Boolean.TRUE, props.get("ai_recommendation_accepted"));
+    }
+
+    @Test
+    @DisplayName("decidedProperties: no facts is the ETP-5581 event; facts add only what they carry")
+    void decidedPropertiesWithFacts() {
+      Map<String, Object> plain = BankBounceKpiTelemetry.decidedProperties(null, "discarded",
+          "panel", "ACC", "ui");
+      assertEquals(plain, BankBounceKpiTelemetry.decidedProperties(null, "discarded", "panel",
+          "ACC", "ui", null));
+      assertFalse(plain.keySet().stream().anyMatch(k -> k.startsWith("ai_")));
+
+      Map<String, Object> full = BankBounceKpiTelemetry.decidedProperties(null, "discarded",
+          "panel", "ACC", "ui", new BankBounceAi.Facts(true, 88, true, true));
+      assertEquals(88, full.get("ai_probability"));
+      assertEquals(Boolean.TRUE, full.get("ai_assessed"));
+      assertEquals(Boolean.TRUE, full.get("ai_recommended"));
+      assertEquals(Boolean.TRUE, full.get("ai_recommendation_accepted"));
+
+      Map<String, Object> none = BankBounceKpiTelemetry.decidedProperties(null, "unchecked",
+          "modal", "ACC", "ui", new BankBounceAi.Facts(false, null, false, false));
+      assertEquals(Boolean.FALSE, none.get("ai_assessed"));
+      assertEquals(Boolean.FALSE, none.get("ai_recommended"));
+      assertFalse(none.containsKey("ai_probability"));
+      assertFalse(none.containsKey("ai_recommendation_accepted"));
+    }
+  }
+
   /** The properties of a decision whose proposal detection gave. */
   private static final Set<String> DECIDED_KEYS = Set.of("account_id", "channel", "flag_enabled",
       "detection_signal", "signals_count", "confidence", "ambiguous", "adjacent", "preselected",
       "chosen_among_alternatives", "decision", "surface");
+  /** {@link #DECIDED_KEYS} with the four AI facts of a recommended and assessed decision. */
+  private static final Set<String> DECIDED_AI_KEYS = Set.of("account_id", "channel",
+      "flag_enabled", "detection_signal", "signals_count", "confidence", "ambiguous", "adjacent",
+      "preselected", "chosen_among_alternatives", "decision", "surface", "ai_assessed",
+      "ai_recommended", "ai_probability", "ai_recommendation_accepted");
   /** The properties of a {@code failed} decision on a group detection does not see. */
   private static final Set<String> DECIDED_UNKNOWN_PROPOSAL_KEYS = Set.of("account_id", "channel",
       "flag_enabled", "decision", "surface");

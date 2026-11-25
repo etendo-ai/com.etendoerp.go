@@ -7,6 +7,8 @@
 com.etendoerp.go.schemaforge.AddPaymentServiceTest
 com.etendoerp.go.schemaforge.AutoMatchSupportRuleDimensionsTest
 com.etendoerp.go.schemaforge.AutoMatchSupportTest
+com.etendoerp.go.schemaforge.BankBounceAiQuestionsTest
+com.etendoerp.go.schemaforge.BankBounceAiTest
 com.etendoerp.go.schemaforge.BankBounceDetectorTest
 com.etendoerp.go.schemaforge.BankBounceKpiTelemetryIdentityTest
 com.etendoerp.go.schemaforge.BankBounceLineTextTest

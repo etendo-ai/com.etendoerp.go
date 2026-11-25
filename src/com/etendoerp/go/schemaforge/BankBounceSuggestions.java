@@ -127,6 +127,25 @@ final class BankBounceSuggestions {
     }
 
     /**
+     * The detected pairs, in detection order (nominal: nothing taken by other groups).
+     *
+     * @return the pairs; do not modify
+     */
+    List<Pair> pairs() {
+      return pairs;
+    }
+
+    /**
+     * The auto-match candidate line behind a line id.
+     *
+     * @param lineId the line id
+     * @return the DAL line, or {@code null} when it is not among the candidates
+     */
+    FIN_BankStatementLine line(String lineId) {
+      return linesById.get(lineId);
+    }
+
+    /**
      * Whether the flag is on for this request, i.e. whether the answers carry bounce data.
      *
      * @return {@code true} when bounce data is added

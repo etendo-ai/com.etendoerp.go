@@ -4456,10 +4456,16 @@ share 140.
   unknown key or decision, a repeated key and the key of a pair applied in the same call are
   ignored. It changes nothing in the answer and writes nothing. A call still needs at least one
   group (400 otherwise, as before).
-- **`discardPair {financialAccountId, statementLineId, counterpartLineId}`** (flag required, 403
-  `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's discard, also for an ambiguous pair once its
-  original is chosen. Same validation as the `applySuggestions` groups. Answers 200
-  `{discarded:true, statementLineId, counterpartLineId, signal, confidence}`.
+- **`discardPair {financialAccountId, statementLineId, counterpartLineId, choiceSource?}`** (flag
+  required, 403 `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's discard, also for an ambiguous pair
+  once its original is chosen. Same validation as the `applySuggestions` groups. Answers 200
+  `{discarded:true, statementLineId, counterpartLineId, signal, confidence}`. `choiceSource`
+  (ETP-6359, optional): `"ai"` says the outflow was taken from the AI recommendation (see *AI
+  second layer*), `"user"` or absent is a manual choice. With `"ai"` the server checks, before
+  writing, that the pair is still detected and that the cached assessment, rebuilt from the
+  current detection, still recommends that outflow; otherwise it answers 409
+  `BOUNCE_AI_SUGGESTION_STALE` and writes nothing. The 409 means the lookup completed and disagreed; an internal failure of the
+  lookup is logged (class only) and answers the generic server error. It never calls the model.
 - **`dismissPair {financialAccountId, statementLineId, counterpartLineId?}`** (flag required, 403
   `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's *No es un rebote*. **Writes nothing**: the
   rejection is not stored, so detection proposes the pair again on the next `autoMatch` /
@@ -4539,9 +4545,73 @@ identifiers keep `bounce` (message keys, codes such as `BOUNCE_SUGGESTIONS_OFF`,
 | `AMOUNT_MISMATCH` | 409 | `ETGO_BounceAmountMismatch` | the amounts differ |
 | `HAS_PAYMENT` | 409 | `ETGO_BounceHasPayment` | a line is the bank movement of a real ERP payment |
 | `BOUNCE_SUGGESTIONS_OFF` | 403 | `ETGO_BounceSuggestionsOff` | the flag is off for the account |
+| `BOUNCE_AI_SUGGESTION_STALE` | 409 | `ETGO_BounceAiSuggestionStale` | `discardPair` came with `choiceSource:"ai"` and the AI recommendation no longer holds (ETP-6359) |
 
 A pair the detection did not propose (no signal) is accepted when it passes all of the above: the
 user chose it, and its signal is stored as null.
+
+**AI second layer (ETP-6359).** After the deterministic detection, `autoMatch` asks the Decisions
+API (`LlmDecider`, target `bank-bounce-suggestions`) how likely each candidate outflow is the one a
+`review` rejection reverses. **No flag of its own**: it is part of `bank-bounce-suggestions`, so it
+runs whenever that flag is on for the account, on the REST channel outside a batch, with a Copilot
+key configured and at least one offered `review` pair. A `high` pair is never sent. The AI never
+adds a pair, never discards on its own and never changes a pair, its `groupKey`, its confidence or
+the order of `candidates[]`; `pendingLines` is not touched.
+
+When at least one rejection was assessed the `autoMatch` `data` gains a top-level field; otherwise
+it is **absent** and the answer is byte for byte the one without the AI (also when the call
+failed, timed out, was backed off, over the cap or the channel is MCP):
+
+```json
+"bounceAiAssessments": {
+  "<bounceLineId>": {
+    "probabilities": { "<outflowLineId>": 85, "<outflowLineId2>": 10 },
+    "none": 5,
+    "recommendedLineId": "<outflowLineId>" | null
+  }
+}
+```
+
+The percentages are integers (round half up), raw (never renormalized) and only of the candidates
+the offered pair carries; `none` is "none of these outflows is the one". `recommendedLineId` is set
+only for a pair offered as ambiguous, when the best option is an outflow, reaches 80 % and leads
+the second option (`none` counts as an option) by 30 points, judged on the rounded integers; an
+outflow recommended to two or more rejections is cleared for all of them, with no fallback to a
+second option. A pair with a single outflow gets the percentage and never a recommendation.
+
+How a call is made (all in `BankBounceAi` / `BankBounceAiQuestions`):
+
+- One `choice` question per rejection, over the components of rejections that share a candidate
+  outflow; a component with a question of more than 8 candidates, or with more than 20 questions,
+  is not asked. The prompt names rejections `r1..rk` and outflows `o1..om` in chronological order,
+  never a database id; description, date, amount, reference and counterparty travel as the bank
+  printed them (sanitized of control, zero-width and bidi characters, whitespace collapsed, 500
+  characters per field as a cost cap), under a guidance that says those fields are untrusted data.
+- The answer is valid only if it is not refused, its options are exactly the asked ones, every
+  value is finite in [0, 1] and they add up to 1 +/- 0.02; otherwise the component has "no
+  assessment" (cached as such for 1 hour).
+- Cache: in memory per JVM, **one entry per rejection**, key SHA-256 of prompt version, model,
+  tenant and every field the prompt carries about that rejection and its own candidates (never a
+  serialized JSON, never a sibling). The prompt is still one call per component; the answer is stored
+  per rejection as raw percentages. The recommendation (80/30 rule) and the conflict check are
+  computed on every read over the component the current detection builds, so discarding or taking a
+  sibling does not make an untouched rejection stale, and a rejection whose recommendation was
+  cleared by a conflict may legitimately become recommended once the sibling is gone. A component is
+  a cache hit only when all its rejections are present. At most 5000 entries, 24 hours, single flight
+  per component (a lost race re-checks the cache before calling); an unexpected failure of our own
+  side is remembered as "no assessment" for 5 minutes. A
+  restart or a second node costs one more call.
+- Guardrails: timeout 8 s (`LlmConfig.withTimeout`); at most 4 calls in flight JVM-wide (no slot,
+  no AI this time); one call of at most 20 questions per request; at most 200 calls per tenant per
+  day; a retryable failure (408, 429, 5xx, network) pauses every call for 5 minutes, any other
+  failure for 30. Any exception only logs its class and whether it was retryable, never a message,
+  an id or the prompt.
+- The call runs in the request thread (so `ETGO_USAGE_EVENT` carries the right `OBContext`, target
+  `bank-bounce-suggestions`, `COST_USD`), but **the DAL connection is released first**
+  (`flush` + `commitAndClose`, as `Fiscal349BoxesHandler.releaseDalConnection`), and the answer is
+  annotated with no DAL access. Because of that the call is skipped inside a batch (REST or MCP).
+- The panel does not call the AI: it reuses what the `autoMatch` brought. The KPI keys are in
+  `docs/backend-observability.md`.
 
 **Editing a statement keeps the discard (`bank-statements?action=update`).** The update deletes and
 recreates the unmatched lines; a body line that carries the `id` of the line it replaces keeps the
@@ -6885,6 +6955,16 @@ not have; the MCP refuses them with the contract's 422 (unknown action / undecla
 place of `bounceDecisions`, an agent's `applySuggestions` that applied at least one `bouncePair`
 group reports the preselected pairs it left out as `unchecked` (inferred by the backend), and one
 with no `bouncePair` group reports nothing for bounces.
+
+##### REST and MCP on the AI second layer of the bounce pairs (ETP-6359, declared exception)
+
+The AI second layer of `autoMatch` (see *AI second layer* in §4.12.1.1) is **REST-only**. On the MCP
+channel, and inside any batch, `autoMatch` never calls the model, never adds `bounceAiAssessments`
+and the decision events carry no `ai_*` property (nor do they on the UI channel for a rejection the AI did not assess): an agent's `autoMatch` is byte for byte the one
+without the AI. `discardPair` accepts `choiceSource` on both channels, but only the SPA sends it
+(it is not declared in the agent contract); absent, the behaviour is the pre-ETP-6359 one. The
+reason is mechanical, not a policy: the call releases the DAL connection, which a batch cannot
+allow, and an agent already sees the signals and the candidates and decides on them.
 
 ##### REST and MCP on statement deletion with `psd2-statement-import-settings` off (ETP-6151, declared exception)
 

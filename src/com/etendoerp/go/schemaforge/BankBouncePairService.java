@@ -200,14 +200,18 @@ final class BankBouncePairService {
   // ---------------------------------------------------------------------------
 
   /**
-   * {@code POST discardPair {financialAccountId, statementLineId, counterpartLineId}}: discards a
-   * pair from the reconciliation panel, also once the user picked the original of an ambiguous
-   * pair. Requires the flag.
+   * {@code POST discardPair {financialAccountId, statementLineId, counterpartLineId,
+   * choiceSource?}}: discards a pair from the reconciliation panel, also once the user picked the
+   * original of an ambiguous pair. Requires the flag. {@code choiceSource: "ai"} (ETP-6359) says
+   * the outflow was taken from the AI recommendation: the server then checks that the pair is
+   * still detected and that the cached assessment still recommends that outflow, and answers 409
+   * {@code BOUNCE_AI_SUGGESTION_STALE} otherwise. Absent (the MCP, a manual choice) or
+   * {@code "user"}, nothing is checked.
    *
    * @param handler the reconciliation handler, for its DAL seams
    * @param body    the request body
    * @return 200 with {@code {discarded:true, statementLineId, counterpartLineId, signal,
-   *         confidence}}, or the refusal
+   *         confidence}}, or the refusal (409 {@code BOUNCE_AI_SUGGESTION_STALE} included)
    * @throws Exception when the account data cannot be read
    */
   static NeoResponse discardPair(ReconciliationHandler handler, JSONObject body) throws Exception {
@@ -233,6 +237,12 @@ final class BankBouncePairService {
       // ETP-5581 KPI: a 409 on a pair detection proposed is a failed decision. Best effort.
       BankBounceKpiTelemetry.panelFailed(detection, account, lineId, counterpartId, pair.error());
       return pair.error();
+    }
+    // ETP-6359: an outflow taken from the AI recommendation is accepted only while it still holds.
+    NeoResponse stale = BankBounceAi.checkAiChoice(body, detection, pair);
+    if (stale != null) {
+      BankBounceKpiTelemetry.panelFailed(detection, account, lineId, counterpartId, stale);
+      return stale;
     }
     discard(pair);
     BankBounceKpiTelemetry.panelDiscarded(detection, account, pair);
@@ -683,6 +693,8 @@ final class BankBouncePairService {
     private final boolean honoured;
     private AccountData data;
     private List<Pair> pairs;
+    private List<BankBounceAiQuestions.Component> aiComponents;
+    private boolean aiComponentsComputed;
 
     /**
      * The detection of one action, not read yet.
@@ -696,6 +708,36 @@ final class BankBouncePairService {
       this.handler = handler;
       this.account = account;
       this.honoured = honoured;
+    }
+
+    /**
+     * The AI components of this detection's nominal pairs, memoised by {@code BankBounceAi} so a
+     * call with many decisions builds them once.
+     *
+     * @return the memo, or {@code null} when not built yet
+     */
+    List<BankBounceAiQuestions.Component> aiComponents() {
+      return aiComponents;
+    }
+
+    /**
+     * Memoises the AI components of this detection.
+     *
+     * @param components the components
+     */
+    void aiComponents(List<BankBounceAiQuestions.Component> components) {
+      this.aiComponents = components;
+      this.aiComponentsComputed = true;
+    }
+
+    /**
+     * Whether the AI components were already computed, so an empty memo ("computed, none") is told
+     * apart from "not computed yet".
+     *
+     * @return {@code true} once {@link #aiComponents(List)} was called
+     */
+    boolean aiComponentsComputed() {
+      return aiComponentsComputed;
     }
 
     /**

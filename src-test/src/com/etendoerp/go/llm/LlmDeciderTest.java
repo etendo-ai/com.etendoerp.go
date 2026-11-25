@@ -86,12 +86,21 @@ class LlmDeciderTest {
   private int status = 200;
   private String answer = ANSWERS;
   private String cost = "0.0000401";
+  /** How long the server holds an answer back, to exercise the request timeout. */
+  private volatile long delayMs;
 
   @BeforeEach
   void start() throws Exception {
     server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
     server.createContext("/", exchange -> {
       calls.incrementAndGet();
+      if (delayMs > 0) {
+        try {
+          Thread.sleep(delayMs);
+        } catch (InterruptedException e) {
+          Thread.currentThread().interrupt();
+        }
+      }
       path.set(exchange.getRequestURI().getPath());
       authorization.set(exchange.getRequestHeaders().getFirst("Authorization"));
       try {
@@ -370,5 +379,49 @@ class LlmDeciderTest {
     assertEquals("jev", request.get().getString("model"));
     assertEquals("Bearer sk-test", authorization.get());
     assertFalse(config.toString().contains("sk-test"));
+  }
+
+  /** ETP-6359: another timeout keeps the gateway, the key and the model; not positive is the default. */
+  @Test
+  void anotherTimeoutKeepsEverythingElseAndNotPositiveMeansTheDefault() {
+    LlmConfig base = new LlmConfig(baseUrl(), "sk-test", "jev", 5000);
+
+    LlmConfig eight = base.withTimeout(8000);
+
+    assertEquals(8000, eight.getTimeoutMs());
+    assertEquals(5000, base.getTimeoutMs(), "the original is not modified");
+    assertEquals("jev", eight.getModel());
+    assertTrue(eight.isConfigured());
+    assertEquals(base.decisionsUrl(), eight.decisionsUrl());
+    assertEquals(base.getApiKey(), eight.getApiKey());
+    assertFalse(eight.toString().contains("sk-test"));
+    assertEquals(LlmConfig.DEFAULT_TIMEOUT_MS, base.withTimeout(0).getTimeoutMs());
+    assertEquals(LlmConfig.DEFAULT_TIMEOUT_MS, base.withTimeout(-5).getTimeoutMs());
+    assertEquals(1, base.withTimeout(1).getTimeoutMs());
+    assertFalse(new LlmConfig(baseUrl(), null, null, 5000).withTimeout(8000).isConfigured());
+    assertEquals("etendo-decisions", new LlmConfig(baseUrl(), "k", null, 5000)
+        .withTimeout(8000).getModel());
+  }
+
+  /** ETP-6359: the timeout of the copy is the one the request really gets. */
+  @Test
+  void theShorterTimeoutCutsASlowGatewayShortAndTheLongerOneWaits() {
+    delayMs = 1500;
+    LlmConfig slowLimit = new LlmConfig(baseUrl(), "sk-test", null, 30000).withTimeout(300);
+    long started = System.nanoTime();
+
+    LlmDecisionException e = assertThrows(LlmDecisionException.class,
+        () -> deciderFor(slowLimit).decide(ticket(), QUESTIONS));
+
+    assertTrue(e.isRetryable(), "a timeout is worth retrying later");
+    assertTrue((System.nanoTime() - started) / 1_000_000 < 1400, "cut at about 300 ms");
+    assertEquals(1, recorded.size());
+    assertFalse(recorded.get(0).ok());
+    assertEquals("unreachable", recorded.get(0).errorCode());
+
+    recorded.clear();
+    LlmConfig patient = new LlmConfig(baseUrl(), "sk-test", null, 300).withTimeout(5000);
+    assertEquals(3, deciderFor(patient).decide(ticket(), QUESTIONS).answers().size());
+    assertTrue(recorded.get(0).ok());
   }
 }
