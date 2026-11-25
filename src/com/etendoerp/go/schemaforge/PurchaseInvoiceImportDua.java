@@ -17,12 +17,18 @@
 
 package com.etendoerp.go.schemaforge;
 
+import java.util.Date;
+
 import javax.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONObject;
+import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.common.enterprise.Organization;
 import org.openbravo.model.common.invoice.Invoice;
+import org.openbravo.module.sii.data.AEATSIIConfig;
+import org.openbravo.module.sii.utils.SIIUtils;
 
 /**
  * ETP-6284 — the "Importación con DUA" check of a purchase invoice ({@code C_Invoice.EM_Etgo_Import_Dua},
@@ -36,7 +42,10 @@ import org.openbravo.model.common.invoice.Invoice;
  * <p>An SII invoice type F5 / LC counts as checked ({@link #isImportDua}), so a legacy or Classic
  * import without the check follows the same rules. Header rule ({@link #checkHeaderWrite}): on an
  * import and with Múltiple DUA off, the invoice needs DUA and Fecha DUA — the rule Classic
- * ({@code FacturasEventHandler.checkDUAFields}) applies to F5 / LC only. Turning the check on while the {@code sii-import-dua} flag is off is refused with
+ * ({@code FacturasEventHandler.checkDUAFields}) applies to F5 / LC only. That requirement holds
+ * only when the organization files SII for the invoice ({@link #orgFilesSii}); for any other
+ * organization DUA and Fecha DUA stay optional. Everything else of the feature is independent of
+ * SII. Turning the check on while the {@code sii-import-dua} flag is off is refused with
  * {@link SiiImportDuaFlag#featureDisabled()}. Called explicitly by
  * {@link PurchaseInvoiceHeaderHandler}, so it holds on REST single, batch and MCP alike.
  */
@@ -48,6 +57,9 @@ final class PurchaseInvoiceImportDua {
   static final String FIELD_DUA = Invoice.PROPERTY_AEATSIIDUA;
   static final String FIELD_DUA_DATE = Invoice.PROPERTY_AEATSIIFECHADUA;
   static final String FIELD_SII_TYPE = Invoice.PROPERTY_AEATSIICLAVETIPOFC;
+  static final String FIELD_ORG = Invoice.PROPERTY_ORGANIZATION;
+  static final String FIELD_ACCOUNTING_DATE = Invoice.PROPERTY_ACCOUNTINGDATE;
+  static final String FIELD_INVOICE_DATE = Invoice.PROPERTY_INVOICEDATE;
 
   static final String MSG_DUA_REQUIRED = "ETGO_PurchaseInvoiceImportDuaRequired";
 
@@ -81,8 +93,8 @@ final class PurchaseInvoiceImportDua {
 
   /**
    * Refuses a header create / update that would leave the check on without DUA and Fecha DUA
-   * (Múltiple DUA off), or that turns the check on while the feature is off. {@code null} lets the
-   * write go on.
+   * (Múltiple DUA off) on an invoice whose organization files SII, or that turns the check on while
+   * the feature is off. {@code null} lets the write go on.
    *
    * @param context the header request
    * @return the refusal, or {@code null}
@@ -106,9 +118,102 @@ final class PurchaseInvoiceImportDua {
       return null; // unknown or invisible: the default CRUD path answers it
     }
     HeaderState state = HeaderState.of(body, stored);
-    return state.missesDua()
+    // The SII lookup runs only when the DUA is actually missing.
+    return state.missesDua() && orgFilesSii(orgIdOf(body, stored), accountingDateOf(body, stored))
         ? NeoMessageText.error(HttpServletResponse.SC_BAD_REQUEST, MSG_DUA_REQUIRED)
         : null;
+  }
+
+  /**
+   * Whether the organization of the stored invoice files SII for it (see
+   * {@link #orgFilesSii(String, Date)}).
+   */
+  static boolean orgFilesSii(Invoice invoice) {
+    if (invoice == null || invoice.getOrganization() == null) {
+      return false;
+    }
+    Date date = invoice.getAccountingDate() != null ? invoice.getAccountingDate()
+        : invoice.getInvoiceDate();
+    return orgFilesSii(invoice.getOrganization().getId(), date);
+  }
+
+  /**
+   * Whether the organization files SII for an invoice of that accounting date — Classic's own
+   * criterion for a purchase invoice ({@code FacturasEventHandler.checkSIIValidations}): an SII
+   * configuration "Acogida al SII" ({@link SalesRectificativeFiscalDefaults#siiConfigActive}) whose
+   * adoption date ({@code AEATSIIConfig.fechaAcogidaSII}, read through
+   * {@link SIIUtils#getSiiConfigFromOrg}) is on or before the accounting date. An unknown date
+   * (a create that does not send one: GO defaults it to today) reads as adopted. Read in admin mode:
+   * the SII configuration is not part of the caller's purchase-invoice access. Never throws.
+   *
+   * @param orgId the invoice's organization
+   * @param accountingDate the invoice's accounting date (else its invoice date), or {@code null}
+   * @return {@code true} when DUA and Fecha DUA are required by SII for the invoice
+   */
+  static boolean orgFilesSii(String orgId, Date accountingDate) {
+    if (StringUtils.isBlank(orgId)) {
+      return false;
+    }
+    OBContext.setAdminMode(true);
+    try {
+      if (!SalesRectificativeFiscalDefaults.siiConfigActive(orgId)) {
+        return false;
+      }
+      Organization org = OBDal.getInstance().get(Organization.class, orgId);
+      AEATSIIConfig config = org == null ? null : SIIUtils.getSiiConfigFromOrg(org);
+      Date adoption = config == null ? null : config.getFechaAcogidaSII();
+      return adoption != null && (accountingDate == null || !accountingDate.before(adoption));
+    } catch (RuntimeException e) {
+      return false;
+    } finally {
+      OBContext.restorePreviousMode();
+    }
+  }
+
+  /** The organization once the write is applied: the body's, else the stored one, else the session's. */
+  private static String orgIdOf(JSONObject body, Invoice stored) {
+    String fromBody = idOf(body, FIELD_ORG);
+    if (fromBody != null) {
+      return fromBody;
+    }
+    if (stored != null && stored.getOrganization() != null) {
+      return stored.getOrganization().getId();
+    }
+    Organization current = OBContext.getOBContext().getCurrentOrganization();
+    return current == null ? null : current.getId();
+  }
+
+  /** A link the body names, as an id or as {@code {id}}; {@code null} when absent. */
+  private static String idOf(JSONObject body, String field) {
+    if (body == null || !body.has(field)) {
+      return null;
+    }
+    JSONObject asObject = body.optJSONObject(field);
+    String id = asObject != null ? asObject.optString("id", null) : body.optString(field, null);
+    return StringUtils.trimToNull(id);
+  }
+
+  /**
+   * The accounting date once the write is applied (Classic falls back to the invoice date): body
+   * accounting date, stored accounting date, body invoice date, stored invoice date.
+   */
+  private static Date accountingDateOf(JSONObject body, Invoice stored) {
+    Date accounting = dateOf(body, FIELD_ACCOUNTING_DATE);
+    if (accounting == null && stored != null) {
+      accounting = stored.getAccountingDate();
+    }
+    if (accounting != null) {
+      return accounting;
+    }
+    Date invoiceDate = dateOf(body, FIELD_INVOICE_DATE);
+    return invoiceDate != null || stored == null ? invoiceDate : stored.getInvoiceDate();
+  }
+
+  private static Date dateOf(JSONObject body, String field) {
+    if (body == null || !body.has(field)) {
+      return null;
+    }
+    return BankStatementsSupport.parseIsoDate(body.optString(field, null), null);
   }
 
   /**

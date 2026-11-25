@@ -42,7 +42,9 @@ import org.openbravo.model.common.invoice.InvoiceTax;
  *       sent to SII ({@code aeatsiiIssent}) — the backend form of the SPA's
  *       {@code siiFieldReadOnly} plus its draft check ({@code useSifFieldPatcher.js}).</li>
  *   <li><b>Múltiple DUA</b> = Y on an import ("Importación con DUA" checked, or invoice type F5 /
- *       LC): the row must carry DUA and Fecha DUA.
+ *       LC) of an organization that files SII for the invoice
+ *       ({@link PurchaseInvoiceImportDua#orgFilesSii(Invoice)}): the row must carry DUA and Fecha
+ *       DUA. For any other organization they are optional.
  *       Classic only fails at send time (its {@code InvoiceTaxEventHandler} check never throws);
  *       GO refuses the save instead.</li>
  * </ul>
@@ -174,12 +176,14 @@ public class PurchaseInvoiceTaxExtension implements NeoHandler {
   }
 
   /**
-   * Múltiple DUA on an import — the "Importación con DUA" check (independent of SII) or an SII
-   * import key (F5 / LC, Classic's rule): each tax line carries its own DUA.
+   * Múltiple DUA on an import — the "Importación con DUA" check or an SII import key (F5 / LC,
+   * Classic's rule) — of an organization that files SII for the invoice: each tax line carries its
+   * own DUA. The SII lookup runs last, only when the other conditions hold.
    */
   static boolean requiresLineDua(Invoice invoice) {
     return Boolean.TRUE.equals(invoice.isAeatsiiMultiDua())
-        && PurchaseInvoiceImportDua.isImportDua(invoice);
+        && PurchaseInvoiceImportDua.isImportDua(invoice)
+        && PurchaseInvoiceImportDua.orgFilesSii(invoice);
   }
 
   /**

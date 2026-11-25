@@ -950,7 +950,7 @@ MCP):
 - a header write turning the "Importación con DUA" check on (`etgoImportDua`,
   `PurchaseInvoiceImportDua`);
 - `SFWindowAccessMap`, which publishes `capabilities.siiImportDua` for the UI (the Lines-tab check
-  and its DUA and import-taxes cards, the deferred-VAT check, the SIF tab's F5 auto-switch, Confirm
+  and its import block — DUA data and import tax lines —, the deferred-VAT check, the SIF tab's F5 auto-switch, Confirm
   of an import invoice without lines). The SPA never evaluates the flag and has no key for it.
 
 **Not gated:** the reads of the tax entity, the header DUA fields (Classic columns), the DUA rule
