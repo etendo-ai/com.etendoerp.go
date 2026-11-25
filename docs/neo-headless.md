@@ -16017,7 +16017,9 @@ for a document type configured `F2`), with no SII motive and no TicketBAI code. 
   SPA's confirm modal (`ConfirmInOutModal` `validateInvoiceFirst`, set by the return-material-receipt
   window) sends it before `documentAction`. Only the JSON boolean `true` turns it on. The SIF
   fields and the rectification guard need the saved header and are not part of the dry run.
-  The return to vendor does not declare it (not in this ticket's scope).
+  Customer return only: the return to vendor does not declare it, and the shared body does not
+  read it there either (`ReturnInvoiceKind.acceptsValidateOnly`, false for the vendor return, the
+  same rule as `acceptsAllowDuplicate`), so a vendor-return call that sends it runs for real.
 - **Ordinary document types only for an ordinary invoice:** `CreateDraftInvoiceHandler.findARInvoiceDocType`
   and `CreatePurchaseInvoiceHandler.findAPInvoiceDocType` skip return (`IsReturn`) and rectificative
   types (`RectificativeSupport.isCorrective`); before, the org's default "Factura rectificativa" could

@@ -401,9 +401,13 @@ public final class NeoActionContract {
     if (value instanceof JSONObject) {
       return (JSONObject) value;
     }
-    if (value instanceof String && StringUtils.startsWith(((String) value).trim(), "{")) {
+    if (value instanceof String s) {
+      String trimmed = s.trim();
+      if (!trimmed.startsWith("{")) {
+        return null;
+      }
       try {
-        return new JSONObject(((String) value).trim());
+        return new JSONObject(trimmed);
       } catch (JSONException e) {
         return null;
       }

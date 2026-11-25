@@ -471,7 +471,7 @@ public class ReturnMaterialReceiptHeaderHandler extends AbstractReturnDocumentHe
         // had, the zero-amount refusal, then create, link and confirm — in that order, see the
         // shared body.
         return ReturnInvoiceSupport.createReturnInvoice(receipt, receiptId, lines, docType,
-            new ReturnInvoiceSupport.ReturnInvoiceKind(true, acceptsAllowDuplicate()), context,
+            new ReturnInvoiceSupport.ReturnInvoiceKind(true, acceptsAllowDuplicate(), true), context,
             createDraftInvoiceHandler);
 
       } finally {

@@ -252,8 +252,16 @@ final class ReturnInvoiceSupport {
    *     return to a vendor
    * @param acceptsAllowDuplicate whether {@code allowDuplicate:true} lets a second rectificativa
    *     through; {@code false} keeps the one-per-return rule unconditionally
+   * @param acceptsValidateOnly whether its contract declares {@link #PARAM_VALIDATE_ONLY} (ETP-6179
+   *     CP-12); when it does not, the key, if sent anyway, is not read and the real call runs
    */
-  record ReturnInvoiceKind(boolean isSales, boolean acceptsAllowDuplicate) {
+  record ReturnInvoiceKind(boolean isSales, boolean acceptsAllowDuplicate,
+      boolean acceptsValidateOnly) {
+
+    /** A kind whose contract does not declare {@code validateOnly}. */
+    ReturnInvoiceKind(boolean isSales, boolean acceptsAllowDuplicate) {
+      this(isSales, acceptsAllowDuplicate, false);
+    }
   }
 
   /**
@@ -289,8 +297,9 @@ final class ReturnInvoiceSupport {
       return refused;
     }
     // ETP-6179 CP-12: everything above only reads (the header is still transient), so a dry run
-    // stops here having judged exactly what the real call judges before its first save.
-    if (isValidateOnly(body)) {
+    // stops here having judged exactly what the real call judges before its first save. Only for
+    // a caller whose contract declares the key (the customer return): elsewhere it is not read.
+    if (kind.acceptsValidateOnly() && isValidateOnly(body)) {
       return ReturnShipmentUtils.wrapOkData(new JSONObject()
           .put(PARAM_VALIDATE_ONLY, true)
           .put("rectifiedInvoices", new JSONArray(rectifiedIds)));
