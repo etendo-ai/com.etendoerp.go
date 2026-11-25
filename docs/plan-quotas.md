@@ -592,7 +592,7 @@ Each was accepted during ETP-5051; none is a bug to fix silently.
   All of them are still counted and reported.
 - **The SPA's CSV/XLSX import shows a generic row error.** The import writes through
   `/sws/neo/batch`, so a capped entity **is** refused, but the row message is decided in core's
-  `importEngine.classifyImportError` (`@etendosoftware/app-shell-core`), which has no quota case
+  `importEngine.classifyImportError` (`@etendo-ai/app-shell-core`), which has no quota case
   yet; the user sees a generic row error, not "plan limit reached". The fix is owed to
   [ETP-5911](https://etendoproject.atlassian.net/browse/ETP-5911) (register §5.18).
 - **The last, partial day of a window is charged to the next window.** The window is
