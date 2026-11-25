@@ -23,7 +23,6 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
@@ -59,11 +58,11 @@ public class PurchaseInvoiceImportDuaTest {
   private MockedStatic<OBDal> obDal;
   private MockedStatic<SiiImportDuaFlag> flag;
   private MockedStatic<OBContext> obContext;
-  private MockedStatic<SalesRectificativeFiscalDefaults> fiscalDefaults;
   private MockedStatic<SIIUtils> siiUtils;
   private OBDal dal;
   private Invoice stored;
   private AEATSIIConfig siiConfig;
+  private Organization org;
 
   @Before
   public void setUp() {
@@ -76,7 +75,7 @@ public class PurchaseInvoiceImportDuaTest {
     when(dal.get(Invoice.class, INVOICE_ID)).thenReturn(stored);
     when(stored.isAeatsiiMultiDua()).thenReturn(false);
 
-    Organization org = mock(Organization.class);
+    org = mock(Organization.class);
     when(org.getId()).thenReturn(ORG_ID);
     when(stored.getOrganization()).thenReturn(org);
     when(stored.getAccountingDate()).thenReturn(new Date());
@@ -88,10 +87,8 @@ public class PurchaseInvoiceImportDuaTest {
     when(ctx.getCurrentOrganization()).thenReturn(org);
     obContext.when(OBContext::getOBContext).thenReturn(ctx);
     siiConfig = mock(AEATSIIConfig.class);
+    when(siiConfig.isAcogidaAlSII()).thenReturn(true);
     when(siiConfig.getFechaAcogidaSII()).thenReturn(new Date(0L));
-    fiscalDefaults = mockStatic(SalesRectificativeFiscalDefaults.class);
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
-        .thenReturn(true);
     siiUtils = mockStatic(SIIUtils.class);
     siiUtils.when(() -> SIIUtils.getSiiConfigFromOrg(any(Organization.class)))
         .thenReturn(siiConfig);
@@ -100,7 +97,6 @@ public class PurchaseInvoiceImportDuaTest {
   @After
   public void tearDown() {
     siiUtils.close();
-    fiscalDefaults.close();
     obContext.close();
     obDal.close();
     flag.close();
@@ -220,12 +216,35 @@ public class PurchaseInvoiceImportDuaTest {
     assertRefused(PurchaseInvoiceImportDua.checkHeaderWrite(crud("POST", null, body)), 403);
   }
 
+  @Test
+  public void turningTheCheckOnOverAStoredUncheckedInvoiceWhileTheFlagIsOffIs403()
+      throws Exception {
+    flag.when(SiiImportDuaFlag::isEnabled).thenReturn(false);
+    when(stored.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn("N");
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
+        .put(PurchaseInvoiceImportDua.FIELD_MULTI_DUA, true);
+
+    assertRefused(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)), 403);
+  }
+
+  @Test
+  public void resendingTheCheckOnAnAlreadyCheckedInvoiceWhileTheFlagIsOffIsNotRefused()
+      throws Exception {
+    flag.when(SiiImportDuaFlag::isEnabled).thenReturn(false);
+    when(stored.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn("Y");
+    when(stored.getAeatsiiDua()).thenReturn("26ES00281234567890");
+    when(stored.getAeatsiiFechaDua()).thenReturn(new Date());
+    JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
+        .put("description", "x");
+
+    assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
+  }
+
   // ── the requirement holds only where the organization files SII ─────────────────────────
 
   @Test
   public void aNonSiiOrgWithTheCheckOnAndNoDuaIsAccepted() throws Exception {
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
-        .thenReturn(false);
+    when(siiConfig.isAcogidaAlSII()).thenReturn(false);
     JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true);
 
     assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
@@ -256,8 +275,7 @@ public class PurchaseInvoiceImportDuaTest {
 
   @Test
   public void aNonSiiOrgCreatingAnImportWithoutDuaIsAccepted() throws Exception {
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
-        .thenReturn(false);
+    when(siiConfig.isAcogidaAlSII()).thenReturn(false);
     JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true);
 
     assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("POST", null, body)));
@@ -276,16 +294,17 @@ public class PurchaseInvoiceImportDuaTest {
   public void aBlankOrgDoesNotFileSii() {
     assertFalse(PurchaseInvoiceImportDua.orgFilesSii((String) null, new Date()));
     assertFalse(PurchaseInvoiceImportDua.orgFilesSii("  ", new Date()));
-    fiscalDefaults.verifyNoInteractions();
+    siiUtils.verifyNoInteractions();
   }
 
   @Test
   public void anOrgWithoutAnActiveSiiConfigDoesNotFileSii() {
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(ORG_ID))
-        .thenReturn(false);
+    when(siiConfig.isAcogidaAlSII()).thenReturn(false);
 
     assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date()));
-    siiUtils.verifyNoInteractions();
+    // one lookup: the adoption date is never read off a config that is not "Acogida al SII"
+    siiUtils.verify(() -> SIIUtils.getSiiConfigFromOrg(org));
+    Mockito.verify(siiConfig, Mockito.never()).getFechaAcogidaSII();
   }
 
   @Test
@@ -327,7 +346,7 @@ public class PurchaseInvoiceImportDuaTest {
 
   @Test
   public void aFailingLookupReadsAsNotFilingSiiAndRestoresTheMode() {
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
+    siiUtils.when(() -> SIIUtils.getSiiConfigFromOrg(any(Organization.class)))
         .thenThrow(new IllegalStateException("boom"));
 
     assertFalse(PurchaseInvoiceImportDua.orgFilesSii(ORG_ID, new Date()));
@@ -361,31 +380,30 @@ public class PurchaseInvoiceImportDuaTest {
 
     assertFalse(PurchaseInvoiceImportDua.orgFilesSii(stored));
     assertFalse(PurchaseInvoiceImportDua.orgFilesSii((Invoice) null));
-    fiscalDefaults.verifyNoInteractions();
+    siiUtils.verifyNoInteractions();
   }
 
   // ── the request merged over the stored invoice: organization and dates ───────────────────
 
   /** Only {@link #ORG_ID} files SII; {@link #PLAIN_ORG_ID} does not. */
   private Organization onlyTheSiiOrgFilesSii() {
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
-        .thenReturn(false);
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(ORG_ID))
-        .thenReturn(true);
     Organization plain = mock(Organization.class);
     when(plain.getId()).thenReturn(PLAIN_ORG_ID);
     when(dal.get(Organization.class, PLAIN_ORG_ID)).thenReturn(plain);
+    AEATSIIConfig plainConfig = mock(AEATSIIConfig.class);
+    when(plainConfig.isAcogidaAlSII()).thenReturn(false);
+    siiUtils.when(() -> SIIUtils.getSiiConfigFromOrg(plain)).thenReturn(plainConfig);
     return plain;
   }
 
   @Test
   public void aBodyOrgSentAsAnObjectOverridesTheStoredOne() throws Exception {
-    onlyTheSiiOrgFilesSii();
+    Organization plain = onlyTheSiiOrgFilesSii();
     JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true)
         .put(PurchaseInvoiceImportDua.FIELD_ORG, new JSONObject().put("id", PLAIN_ORG_ID));
 
     assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
-    fiscalDefaults.verify(() -> SalesRectificativeFiscalDefaults.siiConfigActive(PLAIN_ORG_ID));
+    siiUtils.verify(() -> SIIUtils.getSiiConfigFromOrg(plain));
   }
 
   @Test
@@ -405,9 +423,8 @@ public class PurchaseInvoiceImportDuaTest {
     JSONObject body = new JSONObject().put(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA, true);
 
     assertNull(PurchaseInvoiceImportDua.checkHeaderWrite(crud("PATCH", INVOICE_ID, body)));
-    fiscalDefaults.verify(() -> SalesRectificativeFiscalDefaults.siiConfigActive(PLAIN_ORG_ID));
-    fiscalDefaults.verify(() -> SalesRectificativeFiscalDefaults.siiConfigActive(ORG_ID),
-        Mockito.never());
+    siiUtils.verify(() -> SIIUtils.getSiiConfigFromOrg(plain));
+    siiUtils.verify(() -> SIIUtils.getSiiConfigFromOrg(org), Mockito.never());
   }
 
   @Test

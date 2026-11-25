@@ -22,6 +22,8 @@ import java.util.Date;
 import javax.servlet.http.HttpServletResponse;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
@@ -63,6 +65,8 @@ final class PurchaseInvoiceImportDua {
 
   static final String MSG_DUA_REQUIRED = "ETGO_PurchaseInvoiceImportDuaRequired";
 
+  private static final Logger log = LogManager.getLogger(PurchaseInvoiceImportDua.class);
+
   private PurchaseInvoiceImportDua() {
   }
 
@@ -83,6 +87,8 @@ final class PurchaseInvoiceImportDua {
       return isYes(invoice.get(FIELD_IMPORT_DUA));
     } catch (RuntimeException e) {
       // The column is not in the runtime model yet (update.database pending): treat as off.
+      log.debug("[ETP-6284] Import DUA check not readable on invoice {}: {}", invoice.getId(),
+          e.getMessage());
       return false;
     }
   }
@@ -109,19 +115,28 @@ final class PurchaseInvoiceImportDua {
       return null;
     }
     JSONObject body = PurchaseInvoiceTaxExtension.dataNode(context.getRequestBody());
-    if (body != null && body.has(FIELD_IMPORT_DUA) && isYes(body.opt(FIELD_IMPORT_DUA))
-        && !SiiImportDuaFlag.isEnabled()) {
-      return SiiImportDuaFlag.featureDisabled();
-    }
     Invoice stored = create ? null : readInvoice(context.getRecordId());
     if (!create && stored == null) {
       return null; // unknown or invisible: the default CRUD path answers it
+    }
+    if (turnsCheckOn(body, stored) && !SiiImportDuaFlag.isEnabled()) {
+      return SiiImportDuaFlag.featureDisabled();
     }
     HeaderState state = HeaderState.of(body, stored);
     // The SII lookup runs only when the DUA is actually missing.
     return state.missesDua() && orgFilesSii(orgIdOf(body, stored), accountingDateOf(body, stored))
         ? NeoMessageText.error(HttpServletResponse.SC_BAD_REQUEST, MSG_DUA_REQUIRED)
         : null;
+  }
+
+  /**
+   * Whether the write actually turns the check on: the body sends it on and the invoice did not
+   * already have it (a create, or a stored check that is off). Re-sending {@code true} on an
+   * already-checked invoice is not turning it on.
+   */
+  private static boolean turnsCheckOn(JSONObject body, Invoice stored) {
+    return body != null && body.has(FIELD_IMPORT_DUA) && isYes(body.opt(FIELD_IMPORT_DUA))
+        && (stored == null || !storedCheck(stored));
   }
 
   /**
@@ -139,12 +154,13 @@ final class PurchaseInvoiceImportDua {
 
   /**
    * Whether the organization files SII for an invoice of that accounting date — Classic's own
-   * criterion for a purchase invoice ({@code FacturasEventHandler.checkSIIValidations}): an SII
-   * configuration "Acogida al SII" ({@link SalesRectificativeFiscalDefaults#siiConfigActive}) whose
-   * adoption date ({@code AEATSIIConfig.fechaAcogidaSII}, read through
-   * {@link SIIUtils#getSiiConfigFromOrg}) is on or before the accounting date. An unknown date
-   * (a create that does not send one: GO defaults it to today) reads as adopted. Read in admin mode:
-   * the SII configuration is not part of the caller's purchase-invoice access. Never throws.
+   * criterion for a purchase invoice ({@code FacturasEventHandler.checkSIIValidations}): an active
+   * SII configuration ({@link SIIUtils#getSiiConfigFromOrg}, which skips inactive rows) that is
+   * "Acogida al SII" and whose adoption date ({@code AEATSIIConfig.fechaAcogidaSII}) is on or
+   * before the accounting date. Both are read from the same configuration, looked up once. An
+   * unknown date (a create that does not send one: GO defaults it to today) reads as adopted. Read
+   * in admin mode: the SII configuration is not part of the caller's purchase-invoice access.
+   * Never throws.
    *
    * @param orgId the invoice's organization
    * @param accountingDate the invoice's accounting date (else its invoice date), or {@code null}
@@ -156,14 +172,15 @@ final class PurchaseInvoiceImportDua {
     }
     OBContext.setAdminMode(true);
     try {
-      if (!SalesRectificativeFiscalDefaults.siiConfigActive(orgId)) {
-        return false;
-      }
       Organization org = OBDal.getInstance().get(Organization.class, orgId);
       AEATSIIConfig config = org == null ? null : SIIUtils.getSiiConfigFromOrg(org);
-      Date adoption = config == null ? null : config.getFechaAcogidaSII();
+      if (config == null || !Boolean.TRUE.equals(config.isAcogidaAlSII())) {
+        return false;
+      }
+      Date adoption = config.getFechaAcogidaSII();
       return adoption != null && (accountingDate == null || !accountingDate.before(adoption));
     } catch (RuntimeException e) {
+      log.debug("[ETP-6284] SII config lookup failed for org {}: {}", orgId, e.getMessage());
       return false;
     } finally {
       OBContext.restorePreviousMode();
@@ -238,9 +255,7 @@ final class PurchaseInvoiceImportDua {
     /** The body's value when it names the field (a null or blank clears it), else the stored one. */
     static HeaderState of(JSONObject body, Invoice stored) {
       boolean check = flag(body, FIELD_IMPORT_DUA, stored != null && storedCheck(stored));
-      Object type = body != null && body.has(FIELD_SII_TYPE) ? body.opt(FIELD_SII_TYPE)
-          : stored == null ? null : stored.getAeatsiiClaveTipoFc();
-      boolean importDua = check || isImportKey(type);
+      boolean importDua = check || isImportKey(typeOf(body, stored));
       boolean multiDua = flag(body, FIELD_MULTI_DUA,
           stored != null && Boolean.TRUE.equals(stored.isAeatsiiMultiDua()));
       boolean hasDua = present(body, FIELD_DUA,
@@ -248,6 +263,14 @@ final class PurchaseInvoiceImportDua {
       boolean hasDuaDate = present(body, FIELD_DUA_DATE,
           stored != null && stored.getAeatsiiFechaDua() != null);
       return new HeaderState(importDua, multiDua, hasDua, hasDuaDate);
+    }
+
+    /** The SII invoice type once the write is applied: the body's if it names it, else stored. */
+    private static Object typeOf(JSONObject body, Invoice stored) {
+      if (body != null && body.has(FIELD_SII_TYPE)) {
+        return body.opt(FIELD_SII_TYPE);
+      }
+      return stored == null ? null : stored.getAeatsiiClaveTipoFc();
     }
 
     boolean missesDua() {

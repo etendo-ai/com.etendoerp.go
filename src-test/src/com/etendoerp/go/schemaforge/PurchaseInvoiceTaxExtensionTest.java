@@ -22,7 +22,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
@@ -59,7 +58,7 @@ public class PurchaseInvoiceTaxExtensionTest {
   private MockedStatic<OBDal> obDal;
   private MockedStatic<OBContext> obContext;
   private MockedStatic<SiiImportDuaFlag> siiImportDua;
-  private MockedStatic<SalesRectificativeFiscalDefaults> fiscalDefaults;
+  private AEATSIIConfig siiConfig;
   private MockedStatic<SIIUtils> siiUtils;
 
   private Invoice invoice;
@@ -92,11 +91,9 @@ public class PurchaseInvoiceTaxExtensionTest {
     when(invoice.getOrganization()).thenReturn(org);
     when(invoice.getAccountingDate()).thenReturn(new Date());
     when(dal.get(Organization.class, "org-sii")).thenReturn(org);
-    AEATSIIConfig siiConfig = mock(AEATSIIConfig.class);
+    siiConfig = mock(AEATSIIConfig.class);
+    when(siiConfig.isAcogidaAlSII()).thenReturn(true);
     when(siiConfig.getFechaAcogidaSII()).thenReturn(new Date(0L));
-    fiscalDefaults = mockStatic(SalesRectificativeFiscalDefaults.class);
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
-        .thenReturn(true);
     siiUtils = mockStatic(SIIUtils.class);
     siiUtils.when(() -> SIIUtils.getSiiConfigFromOrg(any(Organization.class)))
         .thenReturn(siiConfig);
@@ -110,7 +107,6 @@ public class PurchaseInvoiceTaxExtensionTest {
   @After
   public void tearDown() {
     siiUtils.close();
-    fiscalDefaults.close();
     siiImportDua.close();
     obContext.close();
     obDal.close();
@@ -235,8 +231,7 @@ public class PurchaseInvoiceTaxExtensionTest {
 
   @Test
   public void aMultiDuaImportRowWithoutDuaContinuesWhenTheOrgDoesNotFileSii() throws Exception {
-    fiscalDefaults.when(() -> SalesRectificativeFiscalDefaults.siiConfigActive(anyString()))
-        .thenReturn(false);
+    when(siiConfig.isAcogidaAlSII()).thenReturn(false);
     when(invoice.isAeatsiiMultiDua()).thenReturn(true);
 
     assertNull(extension.handle(crud("POST", null, newRow())));
