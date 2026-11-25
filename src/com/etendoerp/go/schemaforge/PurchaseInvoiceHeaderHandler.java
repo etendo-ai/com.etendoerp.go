@@ -64,6 +64,7 @@ import org.openbravo.base.structure.BaseOBObject;
  *   <li>{@code Em_Aeatsii_Send} → {@link SiiSendHandler}</li>
  *   <li>{@code Em_Tbai_Xmlgenerator} → {@link TbaiXmlgeneratorHandler}</li>
  *   <li>{@code siiDeferredVat} (GET) → {@link PurchaseInvoiceSiiDeferredVat} (ETP-6284)</li>
+ *   <li>"Importación con DUA" header rule → {@link PurchaseInvoiceImportDua} (ETP-6284)</li>
  *   <li>{@code createGoodsReceipt} → {@link FollowUpActionHandler} with a {@link FollowUpFlow}
  *       of {@link InvoicePendingResolver} + {@link InOutFollowUpCreator} ({@code PURCHASE}): the
  *       draft goods receipt for the still-pending quantities (ETP-5576)</li>
@@ -214,8 +215,11 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
     return PaymentActionHandlerSupport.AGENT_EXCLUDED_ACTIONS;
   }
 
-  @Override
-  public NeoResponse handle(NeoContext context) {
+  /**
+   * The answers given before anything is captured or written: the read-only actions and selectors
+   * this header serves itself, then the write guards. {@code null} lets the request continue.
+   */
+  private NeoResponse answerBeforeCapture(NeoContext context) {
     // ETP-6284: a read-only GET action, served before anything with side effects runs.
     NeoResponse siiDeferredVat = PurchaseInvoiceSiiDeferredVat.handleIfDeferredVat(context);
     if (siiDeferredVat != null) {
@@ -231,6 +235,16 @@ public class PurchaseInvoiceHeaderHandler extends AbstractInvoiceHeaderHandler i
         InvoicePostingGate.checkHeaderRequest(context, completedEditableHeaderFields());
     if (invoiceGuard != null) {
       return invoiceGuard;
+    }
+    // ETP-6284: "Importación con DUA" on → DUA and DUA date required (unless Multiple DUA).
+    return PurchaseInvoiceImportDua.checkHeaderWrite(context);
+  }
+
+  @Override
+  public NeoResponse handle(NeoContext context) {
+    NeoResponse early = answerBeforeCapture(context);
+    if (early != null) {
+      return early;
     }
     NeoHandlerUtils.mirrorAccountingDateOnCreate(context, "invoiceDate", "accountingDate");
     // ETP-5840 (QA CP-12b): an update that changes the invoice date copies it into the accounting
