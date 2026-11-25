@@ -135,7 +135,8 @@ final class NeoDeclarativeValidation {
       source = data;
     }
     for (Map.Entry<String, JSONObject> rule : rules.entrySet()) {
-      List<JSONObject> found = evaluateRule(rule.getKey(), rule.getValue(), propResolver.apply(rule.getKey()),
+      String apiKey = rule.getKey();
+      List<JSONObject> found = evaluateRule(apiKey, rule.getValue(), propResolver.apply(apiKey),
           source, create);
       if (!found.isEmpty()) {
         errors.put(rule.getKey(), found);
@@ -184,7 +185,9 @@ final class NeoDeclarativeValidation {
   }
 
   private static void checkLength(JSONObject rule, Object value, List<JSONObject> out) {
-    if (!rule.has(McpValidationSection.MIN_LENGTH) && !rule.has(McpValidationSection.MAX_LENGTH)) {
+    boolean hasMin = rule.has(McpValidationSection.MIN_LENGTH);
+    boolean hasMax = rule.has(McpValidationSection.MAX_LENGTH);
+    if (!hasMin && !hasMax) {
       return;
     }
     if (!(value instanceof String)) {
@@ -193,16 +196,20 @@ final class NeoDeclarativeValidation {
     }
     // UTF-16 code units, the semantics the contract documents (JS String.length / AD fieldlength).
     int length = ((String) value).length();
-    if (rule.has(McpValidationSection.MIN_LENGTH) && length < rule.optLong(McpValidationSection.MIN_LENGTH)) {
-      out.add(error("TOO_SHORT", McpValidationSection.MIN_LENGTH, rule.opt(McpValidationSection.MIN_LENGTH)));
+    if (hasMin && length < rule.optLong(McpValidationSection.MIN_LENGTH)) {
+      out.add(error("TOO_SHORT", McpValidationSection.MIN_LENGTH,
+          rule.opt(McpValidationSection.MIN_LENGTH)));
     }
-    if (rule.has(McpValidationSection.MAX_LENGTH) && length > rule.optLong(McpValidationSection.MAX_LENGTH)) {
-      out.add(error("TOO_LONG", McpValidationSection.MAX_LENGTH, rule.opt(McpValidationSection.MAX_LENGTH)));
+    if (hasMax && length > rule.optLong(McpValidationSection.MAX_LENGTH)) {
+      out.add(error("TOO_LONG", McpValidationSection.MAX_LENGTH,
+          rule.opt(McpValidationSection.MAX_LENGTH)));
     }
   }
 
   private static void checkRange(JSONObject rule, Object value, List<JSONObject> out) {
-    if (!rule.has(McpValidationSection.MINIMUM) && !rule.has(McpValidationSection.MAXIMUM)) {
+    Object min = rule.opt(McpValidationSection.MINIMUM);
+    Object max = rule.opt(McpValidationSection.MAXIMUM);
+    if (min == null && max == null) {
       return;
     }
     BigDecimal number = asNumber(value);
@@ -210,11 +217,11 @@ final class NeoDeclarativeValidation {
       out.add(error(C_INVALID_TYPE, K_EXPECTED, "number"));
       return;
     }
-    if (rule.has(McpValidationSection.MINIMUM) && number.compareTo(decimal(rule.opt(McpValidationSection.MINIMUM))) < 0) {
-      out.add(error("BELOW_MINIMUM", McpValidationSection.MINIMUM, rule.opt(McpValidationSection.MINIMUM)));
+    if (min != null && number.compareTo(decimal(min)) < 0) {
+      out.add(error("BELOW_MINIMUM", McpValidationSection.MINIMUM, min));
     }
-    if (rule.has(McpValidationSection.MAXIMUM) && number.compareTo(decimal(rule.opt(McpValidationSection.MAXIMUM))) > 0) {
-      out.add(error("ABOVE_MAXIMUM", McpValidationSection.MAXIMUM, rule.opt(McpValidationSection.MAXIMUM)));
+    if (max != null && number.compareTo(decimal(max)) > 0) {
+      out.add(error("ABOVE_MAXIMUM", McpValidationSection.MAXIMUM, max));
     }
   }
 
@@ -258,7 +265,7 @@ final class NeoDeclarativeValidation {
     }
   }
 
-  /** Unknown formats are not enforced (logged once per format): a newer contract must not break writes. */
+  /** Unknown formats are not enforced (logged once per format): a newer contract must not break. */
   private static boolean matchesFormat(String format, String text) {
     switch (format.toLowerCase(Locale.ROOT)) {
       case "email":
@@ -268,8 +275,9 @@ final class NeoDeclarativeValidation {
       case "date":
         return ISO_DATE.matcher(text).matches();
       case "uri":
+        return isAbsoluteUri(parseUri(text), false);
       case "url":
-        return parseUri(text) != null;
+        return isAbsoluteUri(parseUri(text), true);
       default:
         if (REPORTED_FORMATS.add(format)) {
           log.warn("Declarative validation: unknown format '{}' is not enforced",
@@ -291,6 +299,11 @@ final class NeoDeclarativeValidation {
       }
     }
     return false;
+  }
+
+  /** A relative reference ("abc", "foo/bar") is not a URI/URL here; a URL also needs a host. */
+  private static boolean isAbsoluteUri(URI uri, boolean needsHost) {
+    return uri != null && uri.isAbsolute() && (!needsHost || uri.getHost() != null);
   }
 
   private static URI parseUri(String text) {

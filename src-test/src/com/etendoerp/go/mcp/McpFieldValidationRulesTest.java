@@ -33,10 +33,15 @@ import org.junit.Before;
 import org.junit.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
+import org.openbravo.base.model.Entity;
+import org.openbravo.base.model.ModelProvider;
+import org.openbravo.base.model.Property;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.datamodel.Column;
+import org.openbravo.model.ad.datamodel.Table;
+import org.openbravo.model.ad.ui.Tab;
 
 import com.etendoerp.go.schemaforge.data.SFEntity;
 import com.etendoerp.go.schemaforge.data.SFField;
@@ -107,8 +112,7 @@ public class McpFieldValidationRulesTest {
         field("a", false, false, "{\"validation\":{\"required\":true}}", null),
         field("b", true, true, "{\"validation\":{\"required\":true}}", null),
         field("c", true, false, "{\"fields\":{\"reason\":\"r\"}}", null),
-        field("d", true, false, null, null),
-        field(null, true, false, "{\"validation\":{\"required\":true}}", null));
+        field("d", true, false, null, null));
 
     assertTrue(rules.isEmpty());
   }
@@ -141,5 +145,35 @@ public class McpFieldValidationRulesTest {
   @Test
   public void nullEntityYieldsNoRules() {
     assertTrue(McpFieldValidationRules.forEntity(null).isEmpty());
+  }
+
+  @Test
+  public void fieldWithoutQualifierIsEnforcedUnderItsColumnPropertyName() {
+    SFField field = field(null, true, false, "{\"validation\":{\"maxLength\":3}}", null);
+    Column column = mock(Column.class);
+    when(column.getDBColumnName()).thenReturn("Name");
+    when(field.getADColumn()).thenReturn(column);
+    Table table = mock(Table.class);
+    when(table.getName()).thenReturn("BusinessPartner");
+    Tab tab = mock(Tab.class);
+    when(tab.getTable()).thenReturn(table);
+    when(entity.getADTab()).thenReturn(tab);
+    Entity dalEntity = mock(Entity.class);
+    Property property = mock(Property.class);
+    when(property.getName()).thenReturn("name");
+    when(dalEntity.getPropertyByColumnName("Name", false)).thenReturn(property);
+    ModelProvider provider = mock(ModelProvider.class);
+    when(provider.getEntity("BusinessPartner", false)).thenReturn(dalEntity);
+
+    try (MockedStatic<ModelProvider> model = Mockito.mockStatic(ModelProvider.class)) {
+      model.when(ModelProvider::getInstance).thenReturn(provider);
+      assertEquals(3, rulesOf(field).get("name").optInt("maxLength"));
+    }
+  }
+
+  @Test
+  public void fieldWithoutAnyKeyIsReportedNotSilentlyEnforced() {
+    assertTrue(rulesOf(field(null, true, false, "{\"validation\":{\"maxLength\":3}}", null))
+        .isEmpty());
   }
 }

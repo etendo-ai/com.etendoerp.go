@@ -26,9 +26,14 @@ import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.criterion.Restrictions;
+import org.openbravo.base.model.Entity;
+import org.openbravo.base.model.ModelProvider;
+import org.openbravo.base.model.Property;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.ad.datamodel.Column;
+import org.openbravo.model.ad.ui.Tab;
 
 import com.etendoerp.go.schemaforge.data.SFEntity;
 import com.etendoerp.go.schemaforge.data.SFField;
@@ -77,20 +82,43 @@ public final class McpFieldValidationRules {
     crit.add(Restrictions.eq(SFField.PROPERTY_ISACTIVE, true));
     List<SFField> fields = crit.list();
     for (SFField field : fields) {
-      String apiKey = StringUtils.trimToNull(field.getJavaQualifier());
-      if (apiKey == null || !Boolean.TRUE.equals(field.isIncluded())
-          || Boolean.TRUE.equals(field.isReadOnly())) {
+      if (!Boolean.TRUE.equals(field.isIncluded()) || Boolean.TRUE.equals(field.isReadOnly())) {
         continue;
       }
+      String apiKey = apiKeyOf(sfEntity, field);
       JSONObject body = ownValidation(field, apiKey);
-      if (body != null) {
+      if (body != null && apiKey == null) {
+        log.error("Declarative validation NOT enforced: a field has constraints but no API key");
+      } else if (body != null) {
         rules.put(apiKey, hasDefault(field) ? withoutRequired(body) : body);
       }
     }
   }
 
+  /**
+   * The key the client sends the field under: its {@code JAVA_QUALIFIER}, or — when the contract
+   * name equals the AD column name and the push left it empty — the column's DAL property name,
+   * which is the key {@code NeoFieldFilter} uses for such a field. {@code null} when neither exists.
+   */
+  private static String apiKeyOf(SFEntity sfEntity, SFField field) {
+    String qualifier = StringUtils.trimToNull(field.getJavaQualifier());
+    if (qualifier != null) {
+      return qualifier;
+    }
+    Column column = field.getADColumn();
+    Tab tab = sfEntity.getADTab();
+    if (column == null || tab == null || tab.getTable() == null) {
+      return null;
+    }
+    Entity entity = ModelProvider.getInstance().getEntity(tab.getTable().getName(), false);
+    Property property = entity == null ? null
+        : entity.getPropertyByColumnName(column.getDBColumnName(), false);
+    return property == null ? null : property.getName();
+  }
+
   /** The field's own {@code validation} body, or {@code null} when absent or unusable. */
   private static JSONObject ownValidation(SFField field, String apiKey) {
+    String label = apiKey == null ? "(no API key)" : apiKey;
     Object raw = field.get(McpEntityConfig.PROPERTY_MCP_CONFIG);
     if (raw == null || StringUtils.isBlank(String.valueOf(raw))) {
       return null;
@@ -102,14 +130,14 @@ public final class McpFieldValidationRules {
       }
       List<String> problems = McpValidationSection.validate(body);
       if (!problems.isEmpty()) {
-        log.error("Declarative validation NOT enforced for field {}: {}", apiKey,
+        log.error("Declarative validation NOT enforced for field {}: {}", label,
             String.join("; ", problems));
         return null;
       }
       return body;
     } catch (JSONException e) {
       log.error("Declarative validation NOT enforced for field {}: MCP_CONFIG is not valid JSON",
-          apiKey);
+          label);
       return null;
     }
   }

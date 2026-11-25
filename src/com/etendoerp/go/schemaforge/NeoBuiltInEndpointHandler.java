@@ -16,6 +16,7 @@ import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.dal.service.OBDal;
 
 import com.etendoerp.go.common.BoundedJsonParser;
+import com.etendoerp.go.common.MalformedJsonException;
 import com.etendoerp.go.schemaforge.NeoAttachmentAuthorizer.Access;
 import com.etendoerp.go.schemaforge.data.SFSpec;
 import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
@@ -233,7 +234,7 @@ class NeoBuiltInEndpointHandler {
         NeoFiscalModelsCatalogService.saveActiveModels(NeoRequestBodyParser.readRequestBody(request));
         OBDal.getInstance().flush();
         servlet.writeResponse(response, null);
-      } catch (IllegalArgumentException e) {
+      } catch (IllegalArgumentException | MalformedJsonException e) {
         servlet.sendError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
       }
       return;
@@ -267,7 +268,7 @@ class NeoBuiltInEndpointHandler {
       try {
         NeoFiltersService.savePreset(pathInfo.entityName, pathInfo.recordId,
             NeoRequestBodyParser.readRequestBody(request));
-      } catch (IllegalArgumentException e) {
+      } catch (IllegalArgumentException | MalformedJsonException e) {
         servlet.sendError(response, HttpServletResponse.SC_BAD_REQUEST, e.getMessage());
         return;
       }

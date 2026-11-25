@@ -44,6 +44,7 @@ import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.module.remittance.Remittance;
 import org.openbravo.module.remittance.RemittanceType;
 
+import com.etendoerp.go.common.MalformedJsonException;
 import com.etendoerp.go.schemaforge.data.SFSpec;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 import com.etendoerp.go.schemaforge.util.NeoActionContract;
@@ -401,12 +402,15 @@ public class RemittanceHeaderHandler implements NeoHandler {
     if (request == null) {
       return null;
     }
-    String raw = NeoRequestBodyParser.readRequestBody(request);
-    if (StringUtils.isBlank(raw)) {
-      return null;
-    }
     try {
+      String raw = NeoRequestBodyParser.readRequestBody(request);
+      if (StringUtils.isBlank(raw)) {
+        return null;
+      }
       return NeoRequestBodyParser.parseJsonObjectSafely(raw);
+    } catch (MalformedJsonException e) {
+      // Oversized or malformed: no body, as for any other unreadable callout body.
+      return null;
     } catch (Exception e) {
       return null;
     }

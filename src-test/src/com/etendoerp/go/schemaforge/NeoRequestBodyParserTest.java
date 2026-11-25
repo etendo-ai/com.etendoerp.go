@@ -341,4 +341,65 @@ class NeoRequestBodyParserTest {
           () -> NeoRequestBodyParser.parseJsonObject(body));
     }
   }
+
+  /** ETP-4558: a JSON body over the limit is refused with a fixed, non-sensitive message. */
+  @Nested
+  @DisplayName("readRequestBody size limit")
+  class BodySizeLimit {
+
+    private javax.servlet.http.HttpServletRequest request(byte[] body, long declaredLength)
+        throws java.io.IOException {
+      javax.servlet.http.HttpServletRequest request =
+          org.mockito.Mockito.mock(javax.servlet.http.HttpServletRequest.class);
+      org.mockito.Mockito.when(request.getContentLengthLong()).thenReturn(declaredLength);
+      java.io.ByteArrayInputStream in = new java.io.ByteArrayInputStream(body);
+      org.mockito.Mockito.when(request.getInputStream())
+          .thenReturn(new javax.servlet.ServletInputStream() {
+            @Override
+            public int read() {
+              return in.read();
+            }
+
+            @Override
+            public boolean isFinished() {
+              return in.available() == 0;
+            }
+
+            @Override
+            public boolean isReady() {
+              return true;
+            }
+
+            @Override
+            public void setReadListener(javax.servlet.ReadListener listener) {
+            }
+          });
+      return request;
+    }
+
+    @Test
+    @DisplayName("refuses by the declared length")
+    void refusedByDeclaredLength() throws Exception {
+      MalformedJsonException e = assertThrows(MalformedJsonException.class,
+          () -> NeoRequestBodyParser.readRequestBody(
+              request(new byte[0], NeoRequestBodyParser.MAX_JSON_BODY_BYTES + 1L)));
+      assertEquals("Request body too large (limit 10 MB)", e.getMessage());
+    }
+
+    @Test
+    @DisplayName("refuses while reading when no length was declared")
+    void refusedWhileReading() throws Exception {
+      byte[] big = new byte[NeoRequestBodyParser.MAX_JSON_BODY_BYTES + 1];
+      MalformedJsonException e = assertThrows(MalformedJsonException.class,
+          () -> NeoRequestBodyParser.readRequestBody(request(big, -1)));
+      assertFalse(e.getMessage().contains("Exception"));
+    }
+
+    @Test
+    @DisplayName("reads a normal body whole")
+    void readsANormalBody() throws Exception {
+      assertEquals("{\"a\":1}", NeoRequestBodyParser.readRequestBody(request(
+          "{\"a\":1}".getBytes(java.nio.charset.StandardCharsets.UTF_8), 7)));
+    }
+  }
 }

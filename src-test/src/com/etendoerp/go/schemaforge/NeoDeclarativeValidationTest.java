@@ -241,4 +241,58 @@ public class NeoDeclarativeValidationTest {
           context("PATCH", "{\"other\":1}", entity, tab), tab));
     }
   }
+
+  @Test
+  public void relativeReferencesAreNotUrisOrUrls() throws Exception {
+    for (String format : new String[] { "uri", "url" }) {
+      Map<String, JSONObject> r = rules("w", "{\"format\":\"" + format + "\"}");
+      assertEquals("INVALID_FORMAT", code(NeoDeclarativeValidation.evaluate(r, SAME,
+          new JSONObject("{\"w\":\"foo/bar\"}"), true), "w"));
+      assertTrue(NeoDeclarativeValidation.evaluate(r, SAME,
+          new JSONObject("{\"w\":\"https://example.com/x\"}"), true).isEmpty());
+    }
+    // A URL needs a host; a bare URI scheme does not.
+    assertEquals("INVALID_FORMAT", code(NeoDeclarativeValidation.evaluate(
+        rules("w", "{\"format\":\"url\"}"), SAME, new JSONObject("{\"w\":\"mailto:a@b.com\"}"),
+        true), "w"));
+    assertTrue(NeoDeclarativeValidation.evaluate(rules("w", "{\"format\":\"uri\"}"), SAME,
+        new JSONObject("{\"w\":\"mailto:a@b.com\"}"), true).isEmpty());
+  }
+
+  /** The refusal is logged with entity, field and code only: never the value. */
+  @Test
+  public void theRefusalLogHoldsFieldAndCodeButNotTheValue() throws Exception {
+    SFEntity entity = mock(SFEntity.class);
+    Tab tab = tab();
+    NeoFieldFilter filter = mock(NeoFieldFilter.class);
+    when(filter.resolveWritablePropName("etgoEmail")).thenReturn("etgoEmail");
+    org.apache.logging.log4j.core.Logger logger = (org.apache.logging.log4j.core.Logger)
+        org.apache.logging.log4j.LogManager.getLogger(NeoDeclarativeValidation.class);
+    List<String> lines = new java.util.ArrayList<>();
+    org.apache.logging.log4j.core.appender.AbstractAppender appender =
+        new org.apache.logging.log4j.core.appender.AbstractAppender("cap", null, null, true,
+            org.apache.logging.log4j.core.config.Property.EMPTY_ARRAY) {
+          @Override
+          public void append(org.apache.logging.log4j.core.LogEvent event) {
+            lines.add(event.getMessage().getFormattedMessage());
+          }
+        };
+    appender.start();
+    logger.addAppender(appender);
+    try (MockedStatic<McpFieldValidationRules> rules = mockStatic(McpFieldValidationRules.class);
+        MockedStatic<NeoFieldFilter> filters = mockStatic(NeoFieldFilter.class)) {
+      rules.when(() -> McpFieldValidationRules.forEntity(entity))
+          .thenReturn(rules("etgoEmail", "{\"format\":\"email\"}"));
+      filters.when(() -> NeoFieldFilter.forEntity(entity, "BusinessPartner")).thenReturn(filter);
+      NeoDeclarativeValidation.refusalFor(
+          context("POST", "{\"etgoEmail\":\"leak-me@@\"}", entity, tab), tab);
+    } finally {
+      logger.removeAppender(appender);
+      appender.stop();
+    }
+    String log = String.join("\n", lines);
+    assertTrue(log, log.contains("etgoEmail") && log.contains("INVALID_FORMAT"));
+    assertFalse(log, log.contains("leak-me"));
+    assertFalse(log, log.contains("Exception") || log.contains("SQL"));
+  }
 }

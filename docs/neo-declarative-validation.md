@@ -31,8 +31,14 @@ mode, since `ETGO_SF_FIELD` is system-level metadata.
   one invalid record fails the batch (`failedAt`) and nothing is persisted.
 - Import: NEO has no generic row-import endpoint (the bank-statement import is a handler action
   with its own file parsing), so there is nothing to route here.
-- Unknown / non-exposed fields and request size keep their existing handling
-  (`NeoFieldFilter`, `NeoServlet` max request size); not changed here.
+- Request size: the container's `maxRequestSize` only bounds multipart requests, so
+  `NeoRequestBodyParser.readRequestBody` now refuses a JSON body over 10 MB (checked by
+  `Content-Length` and while reading) with a 400 and the fixed message "Request body too large".
+- Fields without a `JAVA_QUALIFIER` (contract name equals the AD column) are enforced under the
+  column's DAL property name; a field with constraints and no resolvable key is logged at error level.
+- `format: uri` needs an absolute URI; `url` also needs a host.
+- Unknown / non-exposed fields keep the existing `NeoFieldFilter` handling (silently dropped; covered
+  by `NeoFieldFilterTest`).
 
 ## Error contract
 HTTP 400:
