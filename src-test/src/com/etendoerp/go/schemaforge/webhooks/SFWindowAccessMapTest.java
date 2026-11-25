@@ -18,6 +18,7 @@ package com.etendoerp.go.schemaforge.webhooks;
 
 import static com.etendoerp.go.schemaforge.TestConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -54,6 +55,7 @@ import com.etendoerp.go.schemaforge.InvoiceInboxFlag;
 import com.etendoerp.go.schemaforge.SepaRemittancesFlag;
 import com.etendoerp.go.schemaforge.data.Account;
 import com.etendoerp.go.schemaforge.data.SFSpec;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 import com.etendoerp.go.schemaforge.util.OwnerSupport;
 
@@ -90,10 +92,16 @@ class SFWindowAccessMapTest {
     private Map<String, String> parameters;
     private Map<String, String> responseVars;
 
+    private MockedStatic<GoFeatureAccess> goFeatureAccessMock;
+
     @BeforeEach
     void setUp() {
         obDalMock = mockStatic(OBDal.class);
         obContextMock = mockStatic(OBContext.class);
+        // ETP-4802: the real GoFeatureAccess runs; no role has a GO Access row here, so every
+        // answer stays the classic one.
+        goFeatureAccessMock = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
 
         mockDal = mock(OBDal.class);
         mockSession = mock(Session.class);
@@ -112,6 +120,7 @@ class SFWindowAccessMapTest {
     void tearDown() {
         obDalMock.close();
         obContextMock.close();
+        goFeatureAccessMock.close();
     }
 
     // ── role helpers ──────────────────────────────────────────────────────

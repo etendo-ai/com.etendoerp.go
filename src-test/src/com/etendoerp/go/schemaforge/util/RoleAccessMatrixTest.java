@@ -43,6 +43,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.ui.Window;
 
 /**
@@ -76,6 +77,49 @@ class RoleAccessMatrixTest {
   @AfterEach
   void tearDown() {
     obDalMock.close();
+  }
+
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  private void givenGoAccessRows(Object[]... rows) {
+    NativeQuery rowsQuery = mock(NativeQuery.class);
+    when(session.createNativeQuery(org.mockito.ArgumentMatchers.contains("etgo_go_access")))
+        .thenReturn(rowsQuery);
+    when(rowsQuery.setParameter(anyString(), org.mockito.ArgumentMatchers.any()))
+        .thenReturn(rowsQuery);
+    when(rowsQuery.list()).thenReturn(List.of(rows));
+  }
+
+  @Test
+  @DisplayName("GO Access rows replace the proxy tiers; Fiscal Monitor never touches SII Monitor")
+  void testGoAccessRowsOverlayTheProxyRowsOnly() {
+    Role role = mock(Role.class);
+    when(role.getId()).thenReturn("r1");
+    givenGoAccessRows(new Object[] { "fiscal-models", "N" },
+        new Object[] { "not-posted-documents", "Y" }, new Object[] { "fiscal-monitor", "Y" });
+    Map<String, String> tiers = new LinkedHashMap<>();
+    tiers.put(RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, RoleAccessMatrix.FULL);
+    tiers.put(RoleAccessMatrix.FISCAL_MONITOR_PROXY_WINDOW_ID, RoleAccessMatrix.READ_ONLY);
+
+    RoleAccessMatrix.overlayGoAccessTiers(role, tiers);
+
+    assertEquals(RoleAccessMatrix.READ_ONLY, tiers.get(RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID));
+    assertEquals(RoleAccessMatrix.FULL, tiers.get(RoleAccessMatrix.NOT_POSTED_DOCS_PROXY_PROCESS_ID));
+    assertEquals(RoleAccessMatrix.READ_ONLY,
+        tiers.get(RoleAccessMatrix.FISCAL_MONITOR_PROXY_WINDOW_ID));
+  }
+
+  @Test
+  @DisplayName("Without GO Access rows the proxy tiers are untouched")
+  void testNoGoAccessRowsLeavesTheProxyTiers() {
+    Role role = mock(Role.class);
+    when(role.getId()).thenReturn("r1");
+    givenGoAccessRows();
+    Map<String, String> tiers = new LinkedHashMap<>(
+        Map.of(RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, RoleAccessMatrix.FULL));
+
+    RoleAccessMatrix.overlayGoAccessTiers(role, tiers);
+
+    assertEquals(Map.of(RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, RoleAccessMatrix.FULL), tiers);
   }
 
   private static Window mockWindow(String id, String name) {

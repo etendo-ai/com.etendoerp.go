@@ -18,6 +18,7 @@ package com.etendoerp.go.schemaforge.webhooks;
 
 import static com.etendoerp.go.schemaforge.TestConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 import java.util.Collections;
@@ -43,6 +44,7 @@ import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.WindowAccess;
 import org.openbravo.model.ad.ui.Window;
 
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.ReportAccessCatalog;
 
 /**
@@ -58,6 +60,7 @@ class SFMyReportAccessTest {
 
   private MockedStatic<OBDal> obDalMock;
   private MockedStatic<OBContext> obContextMock;
+  private MockedStatic<GoFeatureAccess> goFeatureAccessMock;
   private OBDal mockDal;
   private OBContext mockContext;
   private SFMyReportAccess webhook;
@@ -76,15 +79,10 @@ class SFMyReportAccessTest {
     obContextMock.when(OBContext::getOBContext).thenReturn(mockContext);
 
     webhook = new SFMyReportAccess();
-    // ETP-4802: the GO Access lookup (native query) finds no row, so every tier stays the legacy one.
-    org.hibernate.Session goAccessSession = mock(org.hibernate.Session.class);
-    org.hibernate.query.NativeQuery goAccessQuery = mock(org.hibernate.query.NativeQuery.class);
-    org.mockito.Mockito.lenient().when(mockDal.getSession()).thenReturn(goAccessSession);
-    org.mockito.Mockito.lenient().when(goAccessSession.createNativeQuery(org.mockito.ArgumentMatchers.anyString()))
-        .thenReturn(goAccessQuery);
-    org.mockito.Mockito.lenient().when(goAccessQuery.setParameter(org.mockito.ArgumentMatchers.anyString(),
-        org.mockito.ArgumentMatchers.any())).thenReturn(goAccessQuery);
-    org.mockito.Mockito.lenient().when(goAccessQuery.list()).thenReturn(java.util.Collections.emptyList());
+    // ETP-4802: the real GoFeatureAccess overlay runs; the role has no GO Access row here, so
+    // every tier stays the legacy one.
+    goFeatureAccessMock = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+    goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
     parameters = new HashMap<>();
     responseVars = new HashMap<>();
   }
@@ -93,6 +91,7 @@ class SFMyReportAccessTest {
   void tearDown() {
     obDalMock.close();
     obContextMock.close();
+    goFeatureAccessMock.close();
   }
 
   private void givenNoRole() {

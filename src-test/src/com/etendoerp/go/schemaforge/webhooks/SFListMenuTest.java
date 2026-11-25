@@ -18,6 +18,7 @@ package com.etendoerp.go.schemaforge.webhooks;
 
 import static com.etendoerp.go.schemaforge.TestConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -46,6 +47,8 @@ import org.openbravo.model.ad.access.ProcessAccess;
 import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.WindowAccess;
 
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
+
 /**
  * Unit tests for {@link SFListMenu}.
  * Covers tree building, search mode, resolveType/str helpers,
@@ -65,10 +68,16 @@ class SFListMenuTest {
     private Map<String, String> parameters;
     private Map<String, String> responseVars;
 
+    private MockedStatic<GoFeatureAccess> goFeatureAccessMock;
+
     @BeforeEach
     void setUp() {
         obDalMock = mockStatic(OBDal.class);
         obContextMock = mockStatic(OBContext.class);
+        // ETP-4802: the real GoFeatureAccess runs; no role has a GO Access row here, so every
+        // answer stays the classic one.
+        goFeatureAccessMock = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
 
         mockDal = mock(OBDal.class);
         mockSession = mock(Session.class);
@@ -178,6 +187,7 @@ class SFListMenuTest {
     void tearDown() {
         obDalMock.close();
         obContextMock.close();
+        goFeatureAccessMock.close();
     }
 
     // ── helpers ──────────────────────────────────────────────────────────

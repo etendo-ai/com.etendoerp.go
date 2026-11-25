@@ -37,12 +37,32 @@ handlers, `RoleAccessMatrix` / `ReportAccessCatalog` tiers (overlay), and `NeoAt
   the declaration also names Java-side support tables. Follow-up if features must be added without a
   release.
 
+**Seeding and migration (this PR)**
+- `SeedGoAccessScript` (module script, compiled class committed) inserts one GO Access row per role
+  that holds an active classic grant on a feature's proxy/anchor (`AD_Window_Access` or
+  `OBUIAPP_Process_Access`), at the same `IsReadWrite`, skipping inactive grants. Idempotent:
+  `INSERT ... WHERE NOT EXISTS` on role + feature, backed by the unique index; it never touches an
+  existing row. System templates are roles too, so their grants are seeded by the same script.
+- The legacy fallback stays for one release as a safety net (roles created from a template after
+  the seed hold only the classic grant and are still decided by it). Dropping it, the classic
+  proxy grants in `TemplateRoleWindowAccess` / `EnsureSystemRoleTemplatesScript` and propagating GO
+  Access rows from the templates is the follow-up.
+- SPA: all SPA access goes through `SFWindowAccessMap` (page guards, `menu.json` anchors) and
+  `SFListMenu` (`allowedIds`); both apply the GO Access tier, so the SPA answers like the backend.
+- An inactive GO Access row is ignored (the legacy grant decides again): deactivating a row does
+  not revoke while the classic grant exists; revoke by deleting the row and the classic grant.
+- Fiscal Monitor limitation: its anchor is the real SII Monitor window, so its row is not overlaid
+  on the SPA surfaces (it would change SII Monitor's tier while the real window's check stays
+  classic). Its row only governs `GoFeatureAccess` gates until the SPA addresses the feature by id.
+
 **Not done here (follow-ups)**
 - tax-report keeps today's behaviour (open to every authenticated role through the permissive
   fallback in `NeoAccessHelper#hasAccessToConstituentWindows`). TODO(ETP-4802): functional decision
-  on its grant source, then declare it as a feature and close the fallback.
-- Role-template migration (`TemplateRoleWindowAccess`, `EnsureSystemRoleTemplatesScript`) to GO
-  Access rows, and the SPA copies (schema_forge `menu.json`, route guards): the legacy grant still
-  feeds them, so they keep working; removing the proxies needs both.
-- Identifier uniqueness validation in sf-validate-pipeline: the DB unique index covers role+feature;
-  `GoFeature.ids()` is the single identifier list.
+  on its grant source, then declare it as a feature and close the fallback. This is an explicit
+  exception to the ticket's "no permissive fallback" criterion, taken from the human guidance.
+- Retiring the classic proxies/anchors and the SPA ids; propagating GO Access rows from templates.
+- Identifier uniqueness validation in sf-validate-pipeline: the DB unique index covers role +
+  feature; `GoFeature.ids()` is the single identifier list.
+- The AD dictionary records were written by hand: `update.database` hung against the shared local
+  Tomcat database in this environment, so they were not exported. Run `update.database` and
+  `export.database` before merge and commit the exported sourcedata.

@@ -137,7 +137,8 @@ public final class ReportAccessCatalog {
   public static final String AGING_PAYABLE_PROCESS_ID = "EB4C4053F3B94A17A08D1DD7E89CEB7E";
 
   /** {@code AD_Window_ID} of the tab-less pseudo-window gating {@code inventory-stock-report}. */
-  public static final String INVENTORY_STOCK_REPORT_WINDOW_ID = "6346B88619F948F9A42224BDB0B239FA";
+  public static final String INVENTORY_STOCK_REPORT_WINDOW_ID =
+      GoFeature.INVENTORY_STOCK_REPORT.legacyId;
 
   /**
    * {@code AD_Window_ID} of "Informes financieros" / Financial Reports — a real, active,
@@ -149,7 +150,8 @@ public final class ReportAccessCatalog {
    * "Corrected inventory" note), so this coarse, category-level gate is genuinely their only
    * real access boundary.
    */
-  public static final String FINANCIAL_REPORTS_WINDOW_ID = "D647D118F5014D00AF47A636B2CD0DD3";
+  public static final String FINANCIAL_REPORTS_WINDOW_ID =
+      GoFeature.FINANCIAL_REPORTS.legacyId;
 
   /** Hardcoded Informes category for the Finance-family report rows. */
   public static final String FINANCE_CATEGORY = "Finance";
@@ -206,6 +208,7 @@ public final class ReportAccessCatalog {
    */
   public static Map<String, String> resolveTierMap(Role role) {
     Map<String, String> reportTiers = new LinkedHashMap<>();
+    Map<String, String> granted = GoFeatureAccess.grantedTiers(role);
     for (Row row : ROWS) {
       String tier;
       switch (row.kind) {
@@ -220,7 +223,7 @@ public final class ReportAccessCatalog {
           tier = resolveWindowTierMap(role, Set.of(row.anchorId)).getOrDefault(row.anchorId, NONE);
           break;
       }
-      reportTiers.put(row.id, GoFeatureAccess.overlayTier(role, row.anchorId, tier));
+      reportTiers.put(row.id, GoFeatureAccess.overlayTier(granted, row.anchorId, tier));
     }
     return reportTiers;
   }

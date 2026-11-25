@@ -134,6 +134,7 @@ com.etendoerp.go.mcp.ToolRegistryTest
 com.etendoerp.go.modulescript.EnsureDocumentStatusTranslationsScriptTest
 com.etendoerp.go.modulescript.EnsureLegacyPlanScriptTest
 com.etendoerp.go.modulescript.SeedAllowedPlanChangesScriptTest
+com.etendoerp.go.modulescript.SeedGoAccessScriptTest
 com.etendoerp.go.oauth2.ApiScopesTest
 com.etendoerp.go.oauth2.OAuth2AuthorizationCodeSupportTest
 com.etendoerp.go.oauth2.OAuth2AuthorizeSupportTest

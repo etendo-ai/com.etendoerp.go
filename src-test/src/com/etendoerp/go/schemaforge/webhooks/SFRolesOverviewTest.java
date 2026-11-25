@@ -111,11 +111,10 @@ class SFRolesOverviewTest extends BaseWebhookTest {
     void setUp() {
         webhook = new SFRolesOverview();
 
-        // ETP-4802: the GO Access overlay reads its own table; no role has a GO Access row here,
-        // so every tier stays the legacy classic one.
-        goFeatureAccess = mockStatic(GoFeatureAccess.class);
-        goFeatureAccess.when(() -> GoFeatureAccess.overlayTier(any(), anyString(), anyString()))
-            .thenAnswer(invocation -> invocation.getArgument(2));
+        // ETP-4802: the real GoFeatureAccess overlay runs; no role has a GO Access row here, so
+        // every tier stays the legacy classic one.
+        goFeatureAccess = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+        goFeatureAccess.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
 
         // ETP-4907: buildRolesOverview() unconditionally resolves the matrix's window
         // categories via a native query. Default every test to "no category rows" (every

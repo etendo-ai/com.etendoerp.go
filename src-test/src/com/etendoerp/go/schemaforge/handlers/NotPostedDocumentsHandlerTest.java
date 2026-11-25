@@ -63,6 +63,7 @@ import org.openbravo.model.common.enterprise.Organization;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoResponse;
+import com.etendoerp.go.schemaforge.util.GoFeature;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 
 /**
@@ -86,7 +87,7 @@ public class NotPostedDocumentsHandlerTest {
   private MockedStatic<NeoAccessHelper> mockAccessGranted() {
     MockedStatic<NeoAccessHelper> accessMock = mockStatic(NeoAccessHelper.class);
     accessMock.when(() -> NeoAccessHelper.hasObuiappProcessAccess(
-        NotPostedDocumentsHandler.NOT_POSTED_DOCUMENTS_PROCESS_ID)).thenReturn(true);
+        GoFeature.NOT_POSTED_DOCUMENTS.legacyId)).thenReturn(true);
     return accessMock;
   }
 
@@ -106,7 +107,7 @@ public class NotPostedDocumentsHandlerTest {
 
     try (MockedStatic<NeoAccessHelper> accessMock = mockStatic(NeoAccessHelper.class)) {
       accessMock.when(() -> NeoAccessHelper.hasObuiappProcessAccess(
-          NotPostedDocumentsHandler.NOT_POSTED_DOCUMENTS_PROCESS_ID)).thenReturn(false);
+          GoFeature.NOT_POSTED_DOCUMENTS.legacyId)).thenReturn(false);
 
       NeoContext ctx = mock(NeoContext.class);
       // Deliberately not stubbing getEndpointType()/getFieldName(): the guard must short-circuit

@@ -22,8 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,9 +38,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.criterion.SimpleExpression;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.openbravo.dal.service.OBCriteria;
@@ -68,19 +72,19 @@ class SFSystemRoleTemplatesTest extends BaseWebhookTest {
     private static final String CALLER_CLIENT_ID = "some-tenant-client";
 
     private SFSystemRoleTemplates webhook;
-    private org.mockito.MockedStatic<GoFeatureAccess> goFeatureAccess;
+    private MockedStatic<GoFeatureAccess> goFeatureAccess;
 
     @BeforeEach
     void setUp() {
         webhook = new SFSystemRoleTemplates();
 
-        // ETP-4802: no role has a GO Access row here, so every tier stays the legacy classic one.
-        goFeatureAccess = org.mockito.Mockito.mockStatic(GoFeatureAccess.class);
-        goFeatureAccess.when(() -> GoFeatureAccess.overlayTier(any(), org.mockito.ArgumentMatchers.anyString(),
-            org.mockito.ArgumentMatchers.anyString())).thenAnswer(invocation -> invocation.getArgument(2));
+        // ETP-4802: the real GoFeatureAccess overlay runs; no role has a GO Access row here, so
+        // every tier stays the legacy classic one.
+        goFeatureAccess = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+        goFeatureAccess.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
     }
 
-    @org.junit.jupiter.api.AfterEach
+    @AfterEach
     void closeGoFeatureAccess() {
         goFeatureAccess.close();
     }
