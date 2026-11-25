@@ -763,7 +763,7 @@ class BankBounceAiTest {
     }
 
     @Test
-    @DisplayName("two rejections the model recommends the same outflow for are both left without a recommendation")
+    @DisplayName("two rejections the model recommends the same outflow for get no entry at all")
     void conflictingRecommendations() throws Exception {
       StatementLine a = line("A", 0, 1, "-50", "ta");
       StatementLine b = line("B", 1, 2, "-50", "tb");
@@ -776,10 +776,8 @@ class BankBounceAiTest {
 
       assertEquals(1, decider.calls.get());
       assertEquals(2, decider.questions.get(0).size());
-      assertTrue(assessments(data).getJSONObject("R1").isNull("recommendedLineId"));
-      assertTrue(assessments(data).getJSONObject("R2").isNull("recommendedLineId"));
-      assertEquals(90, assessments(data).getJSONObject("R1").getJSONObject("probabilities")
-          .getInt("A"));
+      assertFalse(data.has(BankBounceAi.KEY_ASSESSMENTS),
+          "the AI abstains on both rejections: no entry at all");
     }
   }
 
@@ -1627,12 +1625,11 @@ class BankBounceAiTest {
     }
 
     @Test
-    @DisplayName("a recommendation cleared by a conflict with a sibling reappears once the sibling is gone")
+    @DisplayName("an assessment the AI abstained on because of a conflict reappears once the sibling is gone")
     void aConflictClearedRecommendationReappears() throws Exception {
       model(1, 0); // A -> O2 and B -> O2: the same outflow twice
       JSONObject first = annotated(plan(a(), b()));
-      assertNull(recommended(first, "AR"));
-      assertNull(recommended(first, "BR"), "both claims of O2 are cleared");
+      assertFalse(first.has(BankBounceAi.KEY_ASSESSMENTS), "the AI abstains on both");
       assertEquals(409, aiChoice(detection(a(), b()), "O2", "BR").getHttpStatus());
 
       assertNull(aiChoice(detection(b()), "O2", "BR"), "B alone: O2 is recommended and valid");
@@ -1640,6 +1637,56 @@ class BankBounceAiTest {
 
       assertEquals("O2", recommended(next, "BR"));
       assertEquals(1, decider.calls.get(), "recomputed on read from the cached raw answer");
+    }
+
+    @Test
+    @DisplayName("a partial conflict: the response carries only the non-conflicting rejection, and the abstaining ones are refused and have no facts")
+    void partialConflictKeepsOnlyTheOthers() throws Exception {
+      Pair c = ambiguous(line("CR", 7, 12, "50", "devolucion c"), o3("transfer 3"),
+          line("O4", 3, 4, "-50", "transfer 4"));
+      // A -> O2 and B -> O2 conflict; C is alone on O4.
+      decider.script = qs -> FakeDecider.perQuestion(qs, 0.9, 1, 0, 1);
+
+      JSONObject data = annotated(plan(a(), b(), c));
+
+      assertEquals(1, decider.calls.get());
+      assertEquals(Set.of("CR"), keys(assessments(data)), "A and B abstain: no entry at all");
+      assertEquals("O4", recommended(data, "CR"));
+      Detection all = detection(a(), b(), c);
+      assertEquals(409, aiChoice(all, "O2", "AR").getHttpStatus());
+      assertEquals(409, aiChoice(all, "O2", "BR").getHttpStatus());
+      assertNull(aiChoice(all, "O4", "CR"));
+      assertNull(BankBounceAi.facts(all, "AR", "O2", true), "no ai_* for an abstention");
+      assertNull(BankBounceAi.facts(all, "BR", "O2", true));
+      assertEquals(new BankBounceAi.Facts(true, 90, true, true),
+          BankBounceAi.facts(all, "CR", "O4", true));
+    }
+
+    @Test
+    @DisplayName("an abstaining rejection: no entry, 409, no facts; once the sibling is gone entry, recommendation, choice and facts are back, from the same cache")
+    void abstentionEndsWithTheConflict() throws Exception {
+      model(1, 0); // A -> O2 and B -> O2
+      Detection both = detection(a(), b());
+
+      JSONObject first = annotated(plan(a(), b()));
+      JSONObject again = annotated(plan(a(), b()));
+
+      assertFalse(first.has(BankBounceAi.KEY_ASSESSMENTS));
+      assertFalse(again.has(BankBounceAi.KEY_ASSESSMENTS), "still abstaining");
+      assertEquals(1, decider.calls.get(), "the raw answers stay cached: no new model call");
+      assertEquals(409, aiChoice(both, "O2", "BR").getHttpStatus());
+      assertNull(BankBounceAi.facts(both, "BR", "O2", true));
+
+      Detection alone = detection(b());
+      JSONObject later = annotated(plan(b()));
+
+      assertEquals("O2", recommended(later, "BR"));
+      assertEquals(90, assessments(later).getJSONObject("BR").getJSONObject("probabilities")
+          .getInt("O2"));
+      assertNull(aiChoice(alone, "O2", "BR"));
+      assertEquals(new BankBounceAi.Facts(true, 90, true, true),
+          BankBounceAi.facts(alone, "BR", "O2", true));
+      assertEquals(1, decider.calls.get());
     }
 
     @Test

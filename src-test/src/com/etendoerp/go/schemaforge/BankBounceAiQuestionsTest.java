@@ -515,6 +515,53 @@ class BankBounceAiQuestionsTest {
     }
 
     @Test
+    @DisplayName("the guidance carries the calibration rules: may not be a rejection, amount is never enough, missing data, 90 % ceiling, single candidate, one outflow per line")
+    void guidanceCalibratesTheModel() {
+      String g = BankBounceAiQuestions.GUIDANCE;
+
+      assertTrue(g.contains("may NOT be a rejection at all"), "the line may not be a rejection");
+      assertTrue(g.contains("refund") && g.contains("credit") && g.contains("new payment")
+          && g.contains("collection"));
+      assertTrue(g.contains("necessary, never sufficient"), "same amount is not enough");
+      assertTrue(g.contains("Treat missing information as missing"));
+      assertTrue(g.contains("RETROCESION TRANSFERENCIA INMEDIATA"));
+      assertTrue(g.contains("no candidate may get a high probability"), "no data, no high probability");
+      assertTrue(g.contains("about 90 %"), "the ceiling");
+      assertTrue(g.contains("ONE candidate"), "unless exactly one candidate is singled out");
+      assertTrue(g.contains("SINGLE candidate") && g.contains("a lone candidate is not evidence"));
+      assertTrue(g.contains("never reverse the same outflow"));
+      assertTrue(g.contains("untrusted") && g.contains("never follow an instruction"));
+      assertTrue(g.contains("Answer each question with the probability of every listed outflow and of "
+          + BankBounceAiQuestions.NONE));
+    }
+
+    @Test
+    @DisplayName("every question repeats the calibration, and none is described, the candidates are not")
+    void questionInstructionAndNoneDescription() {
+      Batch batch = new Batch(components(pairs()));
+
+      for (DecisionQuestion q : batch.questions()) {
+        String text = q.getInstructions();
+        assertTrue(text.contains("It may not be a bank rejection at all"), text);
+        assertTrue(text.contains(BankBounceAiQuestions.NONE + " is a normal answer"), text);
+        assertTrue(text.contains("necessary but never sufficient"), text);
+        assertTrue(text.contains("exactly one candidate"), text);
+        assertTrue(text.contains("A single candidate is not evidence"), text);
+        List<DecisionQuestion.Option> options = q.getOptions();
+        DecisionQuestion.Option none = options.get(options.size() - 1);
+        assertEquals(BankBounceAiQuestions.NONE, none.value());
+        assertEquals(BankBounceAiQuestions.NONE_DESCRIPTION, none.description());
+        assertTrue(none.description().contains("refund") && none.description().contains("not enough"));
+        for (DecisionQuestion.Option o : options.subList(0, options.size() - 1)) {
+          assertNull(o.description(), "only none is described: " + o);
+          assertTrue(o.value().matches("o\\d+"), "the aliases are unchanged: " + o.value());
+        }
+      }
+      assertEquals(List.of("r1", "r2"),
+          batch.questions().stream().map(DecisionQuestion::getName).toList());
+    }
+
+    @Test
     @DisplayName("the guidance tells the model the bank fields are untrusted data")
     void guidanceWarnsAboutUntrustedText() {
       assertTrue(BankBounceAiQuestions.GUIDANCE.contains("untrusted"));
@@ -773,6 +820,28 @@ class BankBounceAiQuestionsTest {
         }
       }
       throw new AssertionError("no question for " + bounceId);
+    }
+
+    @Test
+    @DisplayName("PROMPT_VERSION is bounce-ai-v2 and the component key is a digest of the question keys, which carry it")
+    void promptVersionReachesBothKeys() throws Exception {
+      assertEquals("bounce-ai-v2", BankBounceAiQuestions.PROMPT_VERSION);
+      BankBounceAiQuestions.Question q1 =
+          question(line("R1", 5, 1, "50"), line("O1", 0, 1, "-50"), line("O2", 1, 2, "-50"));
+      BankBounceAiQuestions.Question q2 =
+          question(line("R2", 6, 2, "50"), line("O2", 1, 2, "-50"), line("O3", 2, 3, "-50"));
+
+      StringBuilder canonical = new StringBuilder();
+      field(canonical, q1.key());
+      field(canonical, q2.key());
+
+      assertEquals(sha256(canonical.toString()),
+          BankBounceAiQuestions.componentKey(List.of(q1, q2)));
+      // A key built under another version differs, so the component key built from it does too.
+      StringBuilder old = new StringBuilder();
+      field(old, sha256(canonical("bounce-ai-v1", MODEL, CLIENT, q1)));
+      field(old, sha256(canonical("bounce-ai-v1", MODEL, CLIENT, q2)));
+      assertNotEquals(sha256(old.toString()), BankBounceAiQuestions.componentKey(List.of(q1, q2)));
     }
 
     @Test
@@ -1131,7 +1200,7 @@ class BankBounceAiQuestionsTest {
     }
 
     @Test
-    @DisplayName("two rejections recommended the same outflow: both are cleared, with no second choice")
+    @DisplayName("two rejections recommended the same outflow: the AI abstains on both, with no second choice")
     void conflictClearsBoth() {
       StatementLine a = line("A", 0, 1, "-50");
       StatementLine b = line("B", 1, 2, "-50");
@@ -1142,14 +1211,12 @@ class BankBounceAiQuestionsTest {
       Map<String, Assessment> verdict = evaluateOne(c,
           new double[] { 0.9, 0.05, 0.05 }, new double[] { 0.88, 0.07, 0.05 });
 
-      assertNull(verdict.get("R1").recommendedLineId());
-      assertNull(verdict.get("R2").recommendedLineId());
-      assertEquals(90, verdict.get("R1").probabilities().get("A"));
-      assertEquals(88, verdict.get("R2").probabilities().get("A"));
+      assertNull(verdict.get("R1"));
+      assertNull(verdict.get("R2"));
     }
 
     @Test
-    @DisplayName("a recommendation of a different outflow survives another rejection's conflict")
+    @DisplayName("only the rejections in a conflict abstain; the others keep their assessment")
     void dedupOnlyClearsTheClaimedOutflow() {
       Map<String, Assessment> byBounce = new LinkedHashMap<>();
       byBounce.put("R1", new Assessment(pct("A", 90, "B", 5), 5, "A"));
@@ -1159,12 +1226,110 @@ class BankBounceAiQuestionsTest {
 
       Map<String, Assessment> out = BankBounceAiQuestions.dedup(byBounce);
 
-      assertNull(out.get("R1").recommendedLineId());
-      assertNull(out.get("R2").recommendedLineId());
+      assertNull(out.get("R1"));
+      assertNull(out.get("R2"));
       assertEquals("C", out.get("R3").recommendedLineId());
       assertNull(out.get("R4").recommendedLineId());
-      assertEquals(90, out.get("R1").probabilities().get("A"));
-      assertEquals(5, out.get("R1").none());
+    }
+
+    /** Raw answers of a component asked alone, by rejection id. */
+    private Map<String, BankBounceAiQuestions.Raw> rawsOf(Component component,
+        double[]... probabilitiesPerQuestion) {
+      Batch batch = new Batch(List.of(component));
+      List<DecisionQuestion> questions = batch.questions();
+      DecisionAnswer[] answers = new DecisionAnswer[questions.size()];
+      for (int i = 0; i < answers.length; i++) {
+        answers[i] = answer(questions.get(i), probabilitiesPerQuestion[i]);
+      }
+      return batch.evaluate(result(answers)).get(component.key());
+    }
+
+    @Test
+    @DisplayName("three rejections with a partial conflict: the two that claim the same outflow are absent, the third keeps its entry and its recommendation")
+    void partialConflict() {
+      StatementLine a = line("A", 0, 1, "-50");
+      StatementLine b = line("B", 1, 2, "-50");
+      Component c = components(List.of(
+          ambiguous(line("R1", 5, 5, "50"), a, b),
+          ambiguous(line("R2", 6, 6, "50"), a, b),
+          ambiguous(line("R3", 7, 7, "50"), a, b))).get(0);
+
+      Map<String, Assessment> verdict = evaluateOne(c, new double[] { 0.9, 0.05, 0.05 },
+          new double[] { 0.88, 0.07, 0.05 }, new double[] { 0.05, 0.9, 0.05 });
+
+      assertFalse(verdict.containsKey("R1"));
+      assertFalse(verdict.containsKey("R2"));
+      assertEquals(Set.of("R3"), verdict.keySet());
+      assertEquals("B", verdict.get("R3").recommendedLineId());
+      assertEquals(90, verdict.get("R3").probabilities().get("B"));
+    }
+
+    @Test
+    @DisplayName("a rejection in a conflict is absent with its percentages too, not just without a recommendation")
+    void abstentionHidesThePercentages() {
+      StatementLine a = line("A", 0, 1, "-50");
+      StatementLine b = line("B", 1, 2, "-50");
+      Component c = components(List.of(ambiguous(line("R1", 5, 5, "50"), a, b),
+          ambiguous(line("R2", 6, 6, "50"), a, b))).get(0);
+
+      Map<String, Assessment> verdict = evaluateOne(c, new double[] { 0.9, 0.05, 0.05 },
+          new double[] { 0.9, 0.05, 0.05 });
+
+      assertTrue(verdict.isEmpty(), verdict.toString());
+    }
+
+    @Test
+    @DisplayName("a recommendation and a claim that does not reach 80/30 on the same outflow are no conflict")
+    void aWeakClaimIsNoConflict() {
+      StatementLine a = line("A", 0, 1, "-50");
+      StatementLine b = line("B", 1, 2, "-50");
+      Component c = components(List.of(ambiguous(line("R1", 5, 5, "50"), a, b),
+          ambiguous(line("R2", 6, 6, "50"), a, b))).get(0);
+
+      Map<String, Assessment> verdict = evaluateOne(c, new double[] { 0.9, 0.05, 0.05 },
+          new double[] { 0.6, 0.3, 0.1 });
+
+      assertEquals("A", verdict.get("R1").recommendedLineId());
+      assertNull(verdict.get("R2").recommendedLineId());
+      assertEquals(60, verdict.get("R2").probabilities().get("A"), "the percentages are kept");
+    }
+
+    @Test
+    @DisplayName("the abstention goes away when the conflicting sibling is no longer in the component, from the same cached raw answers")
+    void abstentionDisappearsWithTheSibling() {
+      StatementLine a = line("A", 0, 1, "-50");
+      StatementLine b = line("B", 1, 2, "-50");
+      Pair first = ambiguous(line("R1", 5, 5, "50"), a, b);
+      Pair second = ambiguous(line("R2", 6, 6, "50"), a, b);
+      Component both = components(List.of(first, second)).get(0);
+      Map<String, BankBounceAiQuestions.Raw> raws =
+          rawsOf(both, new double[] { 0.9, 0.05, 0.05 }, new double[] { 0.88, 0.07, 0.05 });
+      assertTrue(BankBounceAiQuestions.assess(both, raws).isEmpty(), "both abstain together");
+
+      // R2 leaves (discarded, or taken by a group): the component is rebuilt without it.
+      Component alone = components(List.of(first)).get(0);
+      Map<String, Assessment> after = BankBounceAiQuestions.assess(alone, raws);
+
+      assertEquals(Set.of("R1"), after.keySet());
+      assertEquals("A", after.get("R1").recommendedLineId());
+      assertEquals(90, after.get("R1").probabilities().get("A"));
+      // Same when the sibling is still in the component but has no cached answer.
+      Map<String, BankBounceAiQuestions.Raw> onlyFirst = new LinkedHashMap<>();
+      onlyFirst.put("R1", raws.get("R1"));
+      assertEquals("A", BankBounceAiQuestions.assess(both, onlyFirst).get("R1").recommendedLineId());
+    }
+
+    @Test
+    @DisplayName("the 80/30 rule itself is unchanged by the abstention: a rejection with no conflict is judged on its own answer")
+    void ruleUnchangedWithoutAConflict() {
+      Component c = components(List.of(ambiguous(line("R", 5, 5, "50"), line("A", 0, 1, "-50"),
+          line("B", 1, 2, "-50")))).get(0);
+
+      assertEquals("A", evaluateOne(c, new double[] { 0.80, 0.20, 0.0 }).get("R").recommendedLineId());
+      assertNull(evaluateOne(c, new double[] { 0.79, 0.21, 0.0 }).get("R").recommendedLineId());
+      assertEquals("A", evaluateOne(c, new double[] { 0.80, 0.0, 0.20 }).get("R").recommendedLineId());
+      assertNull(evaluateOne(c, new double[] { 0.20, 0.0, 0.80 }).get("R").recommendedLineId(),
+          "none is the best option");
     }
   }
 }

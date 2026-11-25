@@ -123,6 +123,13 @@ before `decide()` (the note under *Request*: do not hold a DAL transaction aroun
 JVM-wide back-off after a failure (`isRetryable()` picks 5 or 30 minutes) and never logs the
 exception message, which carries the gateway's text. Its runtime configuration is read on every call, so a key added later needs no restart (a rotated key
 does, since the HTTP client is reused while the gateway, model and configured state are unchanged).
+The prompt is calibrated against overconfidence (`BankBounceAiQuestions.GUIDANCE`): the line may
+not be a bank rejection at all (a refund or credit of the counterparty), so `none` is a normal answer;
+same amount and opposite sign is necessary, never sufficient; missing text is missing information;
+no outflow gets more than about 90 % unless the text or reference singles out exactly one candidate;
+a lone candidate is not evidence; two lines never reverse the same outflow. Any change to it bumps
+`PROMPT_VERSION` (now `bounce-ai-v2`), which is part of every cache key, so assessments from an
+older prompt are discarded.
 See `neo-headless.md` §4.12.1.1, *AI second
 layer*.
 

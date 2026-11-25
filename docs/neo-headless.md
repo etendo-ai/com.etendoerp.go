@@ -4576,8 +4576,14 @@ The percentages are integers (round half up), raw (never renormalized) and only 
 the offered pair carries; `none` is "none of these outflows is the one". `recommendedLineId` is set
 only for a pair offered as ambiguous, when the best option is an outflow, reaches 80 % and leads
 the second option (`none` counts as an option) by 30 points, judged on the rounded integers; an
-outflow recommended to two or more rejections is cleared for all of them, with no fallback to a
-second option. A pair with a single outflow gets the percentage and never a recommendation.
+outflow recommended to two or more rejections is a conflict (two rejections never reverse the same
+outflow): the AI **abstains** on every rejection involved, which gets **no entry** in
+`bounceAiAssessments` at all (the SPA renders it as without the AI; if no rejection of the answer
+keeps an entry the field is absent), with no fallback to a second option. Only the rejections in the
+conflict abstain. The abstention is computed on every read from the cached raw answers, so when a
+sibling is discarded or taken and the conflict disappears the assessment reappears; a
+`choiceSource:"ai"` discard for an abstaining rejection is stale (409) and its decision event has no
+`ai_*`. A pair with a single outflow gets the percentage and never a recommendation.
 
 How a call is made (all in `BankBounceAi` / `BankBounceAiQuestions`):
 
@@ -4595,8 +4601,8 @@ How a call is made (all in `BankBounceAi` / `BankBounceAiQuestions`):
   serialized JSON, never a sibling). The prompt is still one call per component; the answer is stored
   per rejection as raw percentages. The recommendation (80/30 rule) and the conflict check are
   computed on every read over the component the current detection builds, so discarding or taking a
-  sibling does not make an untouched rejection stale, and a rejection whose recommendation was
-  cleared by a conflict may legitimately become recommended once the sibling is gone. A component is
+  sibling does not make an untouched rejection stale, and a rejection the AI abstained on because of
+  a conflict gets its assessment back once the sibling is gone. A component is
   a cache hit only when all its rejections are present. At most 5000 entries, 24 hours, single flight
   per component (a lost race re-checks the cache before calling); an unexpected failure of our own
   side is remembered as "no assessment" for 5 minutes. A
