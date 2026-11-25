@@ -26,6 +26,7 @@ import java.util.Date;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Pattern;
 
 import org.openbravo.module.bptaxidkey.ViesService;
@@ -156,8 +157,11 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       return NeoResponse.error(400, e);
     } catch (Exception e) {
       SessionHandler.getInstance().rollback();
+      Throwable root = ExceptionUtils.getRootCause(e);
+      Map<String, String> query = ctx.getQueryParams();
       log.error("ContactsLocationAddressHandler error in {} (recordId={}, parentId={}, cause={})",
-          method, recordId, parentIdOf(ctx), rootCauseClassOf(e), e);
+          method, recordId, query != null ? query.get(QUERY_PARENT_ID) : null,
+          (root != null ? root : e).getClass().getName(), e);
       return NeoResponse.error(500, "Location handler error: " + e.getMessage());
     }
     // GET list and DELETE fall through to default CRUD
@@ -171,15 +175,6 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     InvalidAddressException(String message) {
       super(message);
     }
-  }
-
-  private static String parentIdOf(NeoContext ctx) {
-    return ctx.getQueryParams() != null ? ctx.getQueryParams().get(QUERY_PARENT_ID) : null;
-  }
-
-  private static String rootCauseClassOf(Throwable t) {
-    Throwable root = ExceptionUtils.getRootCause(t);
-    return (root != null ? root : t).getClass().getName();
   }
 
   /** An ISO 3166-1 alpha-2 code ({@code ES}); a {@code C_Country_ID} is never two letters. */
