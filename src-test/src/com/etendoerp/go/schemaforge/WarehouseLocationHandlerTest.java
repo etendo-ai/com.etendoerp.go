@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.ArgumentMatchers.eq;
@@ -76,6 +77,12 @@ import com.etendoerp.go.featureflags.GoFeatureFlags;
  * agrees with the capability signal the UI renders from. The two tests at the end of the
  * flag-OFF section pin exactly that: a targeted account is validated and persisted, an untargeted
  * one in the same environment still gets the off behaviour.
+ *
+ * <p>Also the ETP-5806 CP-12h rule for this handler's own route: the GET-by-id record must NAME
+ * every key it can emit, with {@code JSONObject.NULL} rather than omission, because
+ * {@code McpProvidedReadShaper#project} derives the MCP projection's emittable set from the rows
+ * themselves. See the two tests at the end for why a {@code responseEnrichedFields()} override is
+ * NOT the fix on this route.
  *
  * @covers com.etendoerp.go.schemaforge.WarehouseLocationHandler
  */
@@ -1103,6 +1110,90 @@ class WarehouseLocationHandlerTest {
 
       JSONObject rec = r.getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
       assertFalse(rec.has("streetName"));
+    }
+  }
+
+  // ── ETP-5806 CP-12h: the record must NAME every key it can emit ───────────
+
+  /**
+   * The keys {@code etendo_get(warehouse, location, fields:[…])} can legitimately ask for, by base
+   * property name — {@code country$_identifier} reduces to {@code country} before being judged.
+   */
+  private static final java.util.List<String> PROJECTABLE_KEYS = java.util.List.of(
+      "id", "name", "addressLine1", "addressLine2", "cityName", "postalCode",
+      "country", "country$_identifier", "region", "region$_identifier");
+
+  /**
+   * ETP-5806 CP-12h on THIS handler's route — the record must carry every key it can emit,
+   * explicitly, even when the value is absent.
+   *
+   * <p><b>Why this, and not a {@code responseEnrichedFields()} override.</b> CP-12h was closed on
+   * {@code contacts/locationAddress} by declaring the injected keys, because that entity is a
+   * tabbed wrapper: its read runs the generic path, and {@code McpQuerySupport#applyProjection}
+   * validates a caller's {@code fields:[…]} against {@code NeoFieldFilter#emittableResponseKeys()}
+   * — the spec's {@code ETGO_SF_FIELD} rows, which describe {@code C_BPartner_Location} and so know
+   * nothing of the {@code C_Location} keys its post-hook injects.
+   *
+   * <p>{@code warehouse/location} is a different route end to end. The entity is tab-less, so
+   * {@code handle()} serves the whole read in the READ pre-phase
+   * ({@code McpHookExecutor#runReadProvider}) and the answer is shaped by
+   * {@code McpProvidedReadShaper#project}, which derives the emittable set from <b>the rows
+   * themselves</b> rather than from the spec's fields. A {@code responseEnrichedFields()}
+   * declaration has no reader on this route, and {@code applyProjection} is never reached. What
+   * keeps the projection honest here is that {@link WarehouseLocationHandler} names every key.
+   *
+   * <p>So the regression this guards is the change that WOULD reintroduce CP-12h here: dropping a
+   * null key instead of writing {@code JSONObject.NULL}. The key would vanish from the row, the
+   * shaper would stop seeing it as emittable, and
+   * {@code etendo_get(warehouse, location, fields:["postalCode"])} would answer
+   * {@code unknownFields:["postalCode"]} on a record that merely has no postal code — the
+   * self-contradiction IMP-18 exists to prevent.
+   */
+  @Test
+  void testGetByIdNamesEveryProjectableKeyEvenWhenTheValueIsAbsent() throws Exception {
+    Location geoLoc = mock(Location.class);
+    when(geoLoc.getId()).thenReturn("geo-cp12h-1");
+    // Every optional value absent, and no country/region: the worst case for a row-derived
+    // emittable set, and the only shape in which an omission would go unnoticed.
+    when(obDal.get(Location.class, "geo-cp12h-1")).thenReturn(geoLoc);
+
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(true)) {
+      NeoResponse r = handler.handle(buildContext("GET", "geo-cp12h-1", null));
+
+      assertNotNull(r);
+      assertEquals(200, r.getHttpStatus());
+      JSONObject rec = r.getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
+      for (String key : PROJECTABLE_KEYS) {
+        assertTrue(rec.has(key), "missing projectable key '" + key + "' in " + rec);
+      }
+      // Flag on: the 3 structured keys are emittable too, so they must be named as well.
+      assertTrue(rec.has("streetName"), rec.toString());
+      assertTrue(rec.has("buildingNumber"), rec.toString());
+      assertTrue(rec.has("buildingName"), rec.toString());
+    }
+  }
+
+  /**
+   * Flag off, the same rule for the 10 keys that do not follow the flag. The 3 structured ones
+   * stay absent on purpose ({@link #testGetByIdFlagOffOmitsStructuredAddressKeysEntirely}): with
+   * the flag off they are genuinely not part of the response, so a caller asking for them should
+   * keep being told they are unknown.
+   */
+  @Test
+  void testGetByIdFlagOffStillNamesEveryNonStructuredProjectableKey() throws Exception {
+    Location geoLoc = mock(Location.class);
+    when(geoLoc.getId()).thenReturn("geo-cp12h-2");
+    when(obDal.get(Location.class, "geo-cp12h-2")).thenReturn(geoLoc);
+
+    try (MockedStatic<GoFeatureFlags> flags = mockStructuredAddressFlag(false)) {
+      NeoResponse r = handler.handle(buildContext("GET", "geo-cp12h-2", null));
+
+      assertNotNull(r);
+      assertEquals(200, r.getHttpStatus());
+      JSONObject rec = r.getBody().getJSONObject("response").getJSONArray("data").getJSONObject(0);
+      for (String key : PROJECTABLE_KEYS) {
+        assertTrue(rec.has(key), "missing projectable key '" + key + "' in " + rec);
+      }
     }
   }
 
