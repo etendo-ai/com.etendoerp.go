@@ -39,7 +39,7 @@ import java.util.stream.Collectors;
  * access while the legacy grant exists: the legacy grant decides again. To revoke, delete the row
  * and the legacy grant.</p>
  *
- * <p><b>Support tables.</b> {@link #supportTableIds} are the tables the feature writes attachments
+ * <p><b>Support tables.</b> {@link #supportTableIds()} are the tables the feature writes attachments
  * through; {@code NeoAttachmentAuthorizer} resolves table to feature to access.</p>
  */
 public enum GoFeature {
@@ -60,7 +60,7 @@ public enum GoFeature {
   INVENTORY_STOCK_REPORT("inventory-stock-report", LegacyKind.WINDOW,
       "6346B88619F948F9A42224BDB0B239FA", false);
 
-  // TODO(ETP-4802): "tax-report" is deliberately NOT a feature yet. It has no AD_Process and no
+  // Open decision (ETP-4802, needs a functional owner): "tax-report" is deliberately NOT a feature yet. It has no AD_Process and no
   // AD_Tab_ID, so NeoAccessHelper#hasAccessToConstituentWindows lets every authenticated role
   // through (permissive fallback). Keeping that behaviour here is intentional; its grant source
   // needs a functional decision before it can be declared as a feature (and the fallback closed).
@@ -86,7 +86,7 @@ public enum GoFeature {
    */
   public final boolean sharesRealWindow;
   /** {@code AD_Table_ID}s the feature writes attachments through. */
-  public final Set<String> supportTableIds;
+  private final Set<String> supportTableIds;
 
   GoFeature(String id, LegacyKind legacyKind, String legacyId, boolean sharesRealWindow,
       String... supportTableIds) {
@@ -98,6 +98,17 @@ public enum GoFeature {
   }
 
   /**
+   * Returns the tables the feature writes attachments through.
+   *
+   * @return the immutable set of {@code AD_Table_ID}s
+   */
+  public Set<String> supportTableIds() {
+    return supportTableIds;
+  }
+
+  /**
+   * Finds the feature that owns an attachment table.
+   *
    * @param tableId an {@code AD_Table_ID}
    * @return the feature that declares {@code tableId} as a support table, or {@code null}
    */
@@ -107,6 +118,8 @@ public enum GoFeature {
   }
 
   /**
+   * Finds the feature granted through a classic window or process.
+   *
    * @param legacyId id of a classic window or process
    * @return the feature currently granted through that record, or {@code null}
    */
@@ -116,6 +129,8 @@ public enum GoFeature {
   }
 
   /**
+   * Finds a feature by its GO Access {@code Feature} value.
+   *
    * @param id a GO Access {@code Feature} value
    * @return the matching feature, or {@code null}
    */
@@ -124,6 +139,8 @@ public enum GoFeature {
   }
 
   /**
+   * Lists the features whose legacy grant is of a given kind.
+   *
    * @param kind a legacy record kind
    * @return the features whose legacy grant is of that kind
    */
@@ -131,7 +148,11 @@ public enum GoFeature {
     return Arrays.stream(values()).filter(f -> f.legacyKind == kind).collect(Collectors.toList());
   }
 
-  /** @return the immutable set of every declared feature id. */
+  /**
+   * Lists every declared feature id.
+   *
+   * @return the immutable set of feature ids
+   */
   public static Set<String> ids() {
     return Collections.unmodifiableSet(
         Arrays.stream(values()).map(f -> f.id).collect(Collectors.toSet()));

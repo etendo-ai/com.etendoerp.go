@@ -64,7 +64,7 @@ import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
  *
  * <p><b>GO feature support tables.</b> Some tables are only shown by a technical support window that
  * no role template grants, while the feature itself is granted through GO Access (ETP-4802). A table
- * that a {@link GoFeature} declares in {@link GoFeature#supportTableIds} is also authorized by the
+ * that a {@link GoFeature} declares in {@link GoFeature#supportTableIds()} is also authorized by the
  * role's write access to that feature ({@link GoFeatureAccess}). Today: {@code ETGO_Fiscal_Decl}
  * (fiscal models 303/349 — the justificante / acuse de recibo upload) belongs to
  * {@link GoFeature#FISCAL_MODELS}; until a role has a GO Access row, that access still comes from

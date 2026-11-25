@@ -48,6 +48,8 @@ public final class GoFeatureAccess {
   }
 
   /**
+   * Checks whether the current role may use a feature with an HTTP method.
+   *
    * @param feature the feature
    * @param httpMethod {@code GET} for read; {@code POST}/{@code PUT}/{@code PATCH}/{@code DELETE}
    *     for write
@@ -58,6 +60,8 @@ public final class GoFeatureAccess {
   }
 
   /**
+   * Checks whether an explicit role may use a feature with an HTTP method.
+   *
    * @param role the role to check; {@code null} denies
    * @param feature the feature
    * @param httpMethod the method, as in {@link #hasAccess(GoFeature, String)}
@@ -133,6 +137,8 @@ public final class GoFeatureAccess {
   }
 
   /**
+   * Returns the tier of one GO Access row of a role.
+   *
    * @param role the role
    * @param feature the feature
    * @return the tier of the role's active GO Access row, or {@code null} when it has none
