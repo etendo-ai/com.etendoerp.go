@@ -4,7 +4,7 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=plataforma [-Pkind=mock|integration|all]
 
-# --- con mocks (657)
+# --- con mocks (658)
 com.etendoerp.go.modulescript.EnsureDocumentStatusTranslationsScriptTest
 com.etendoerp.go.onboarding.OnboardingRemittanceSetupServiceTest
 com.etendoerp.go.payment.CheckoutPromotionTermsTest
@@ -490,6 +490,7 @@ com.etendoerp.go.schemaforge.email.ApiGatewayEmailProviderAdapterTest
 com.etendoerp.go.schemaforge.email.DalEmailSafetyStoreTest
 com.etendoerp.go.schemaforge.email.DalEmailSendLogStoreTest
 com.etendoerp.go.schemaforge.email.DefaultDocumentSendEmailContractTest
+com.etendoerp.go.schemaforge.email.DocShareLinkServiceTest
 com.etendoerp.go.schemaforge.email.DocumentEmailThrottleConfigTest
 com.etendoerp.go.schemaforge.email.DocumentSendAuthorizeTierTest
 com.etendoerp.go.schemaforge.email.DocumentSendRecipientEditsTest
@@ -663,7 +664,7 @@ com.etendoerp.go.usageevents.UsageEventTypesTest
 com.etendoerp.go.usageevents.UsageEventWriterJdbcTest
 com.etendoerp.go.usageevents.UsageEventWriterTest
 
-# --- integración (BD) (53)
+# --- integración (BD) (54)
 com.etendoerp.go.accounts.AccountGroupServiceIntegrationTest
 com.etendoerp.go.accounts.DemoExpiryIntegrationTest
 com.etendoerp.go.hubspot.DalHubSpotOutboxStoreIntegrationTest
@@ -709,6 +710,7 @@ com.etendoerp.go.schemaforge.NeoSelectorStatementCountIntegrationTest
 com.etendoerp.go.schemaforge.NeoTenantWriteGuardIntegrationTest
 com.etendoerp.go.schemaforge.SelectorSearchIntegrationTest
 com.etendoerp.go.schemaforge.TenantReadIsolationIntegrationTest
+com.etendoerp.go.schemaforge.email.DocShareLinkServiceIntegrationTest
 com.etendoerp.go.schemaforge.handlers.NeoListAggregateQueryIntegrationTest
 com.etendoerp.go.schemaforge.webhooks.McpFeedbackTriageWebhooksIntegrationTest
 com.etendoerp.go.session.JdbcGoSessionStoreIntegrationTest

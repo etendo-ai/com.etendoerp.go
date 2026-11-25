@@ -319,7 +319,7 @@ public class NeoServlet extends HttpBaseServlet {
     }
     try {
       OBContext.setAdminMode(true);
-      NeoDocumentDownloadService.handle(token, response);
+      NeoDocumentDownloadService.handle(token, request.getHeader("User-Agent"), response);
     } catch (Exception e) {
       log.error("Error processing document download request", e);
       if (!response.isCommitted()) {
