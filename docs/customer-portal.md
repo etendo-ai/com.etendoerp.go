@@ -404,7 +404,7 @@ portal KPIs (portal reach, emails by piece) from two more. Contract and Mixpanel
 |---|---|---|
 | `backend_portal_document_sent` (`type`) | `PortalLinkService#confirm`, after the link's commit, `SEND` origin only | no other sent `SEND` link of the same record (renewals, decision links and re-sends never emit) |
 | `backend_portal_document_downloaded` (`type`) | `/pdf` after the stream succeeded | atomic stamp `ETGO_PORTAL_LINK.FIRST_DOWNLOADED` on the document's first sent `SEND` link (`UPDATE … WHERE first_downloaded IS NULL`): only the request that set it emits; a document never sent with a link emits nothing (it is outside the KPI's denominator) |
-| `backend_portal_opened` (`third_party`, `entry_doc_type`, `origin`) | `GET /me` answering `valid` | one per **visit**: a link's valid `/me` after 30 minutes without one (sliding, in memory per node), so reloads inside a visit do not count. `third_party` is a keyed HMAC pseudonym of the link's Business Partner (purpose `kpi-third-party:v1`): distinct customers are countable, never identifiable |
+| `backend_portal_opened` (`third_party`, `entry_doc_type`, `origin`, `portal_session`, `in_universe`) | a portal session minted (any token-validated request of a valid link without a live session) | one per **session** (below), so reloads inside a session do not count. `third_party` is a keyed HMAC pseudonym of the link's Business Partner (purpose `kpi-third-party:v1`): distinct customers are countable, never identifiable |
 | `backend_portal_email_sent` (`piece`, `doc_type`) | `PortalLinkService#confirm` (`document_send` with `doc_type`, `link_renewal`) and `PortalDecisionService#markSent` (`decision_accept`, `decision_reject`), after the commit | none: every email that left (a throttled, duplicate or failed send never reaches these hooks) |
 | `backend_quotation_decided` (`decision`, `source`) | portal: `PortalDecisionService#confirm` when applied now, through `PortalKpiTelemetry#portalQuotationConfirmed`; app: `RejectQuotationHandler#reject`, `Convertquotation` and the quotation path of `createDraftInvoice` | portal: **once per quotation, and only for a quotation emailed with a portal link** — after the commit, it fires only when the quotation has a confirmed `SEND` link (`sent_at` set) and this decision is the quotation's first `CONFIRMED` one (`ORDER BY confirmed_at, id LIMIT 1`; confirmations of a quotation are serialized by its row lock and a confirmed decision never changes, so exactly one is first). A quotation reached through a shared contact link (`SHARED`) or another document's link, or decided again from the portal after being re-opened, does not count — so the answer rate can no longer exceed 100 %. Read-only, the decision is never affected; no new column. App: the conversion of an `ETGO_AC` quotation (accepted from the portal) is not a second decision |
 
@@ -417,6 +417,43 @@ note is an `invoice` (the portal kinds do not tell it apart). The newer `entry_d
 `backend_portal_email_sent` by `piece`; visits per email = `backend_portal_opened` ÷
 `backend_portal_email_sent`. **Needs `update.database`** for the
 `FIRST_DOWNLOADED` column.
+
+### 7b. Portal sessions and the value-session KPI (ETP-6209 KPI design)
+
+**Session (`PortalSessionTracker`, table `ETGO_PORTAL_SESSION`).** Every token-validated request
+of a valid link (`/me` and the data reads, the decision request, the click event) resumes the
+session named by the request header **`X-Portal-Session`**, or mints a new one when the header is
+absent, malformed, unknown, of another link, idle for 30 minutes or older than 12 hours. The id
+(32 hex chars, 128 random bits) is answered in the response header `X-Portal-Session` and, on
+`/me` (`valid` only), as `sessionId`. It is **not a credential** (the token still is), never in a
+URL, never logged. `LAST_SEEN` is written at most once a minute. Expired, unavailable and invalid
+links start nothing. A row is one session: `ENTRY_ORIGIN` (the link's origin), `ORIGIN_KIND` /
+`ORIGIN_RECORD_ID` (the document the link was emailed for), `IN_UNIVERSE` (`Y` for a `SEND` or
+`RENEWAL` link with an origin document) and one-shot stamps (`HOME_DOC_AT`, `RELATED_DOC_AT`,
+`DECISION_AT`, `ENGAGED_AT`, `DOWNLOADED_AT`, `ETENDO_CLICK_AT`, `LEARN_MORE_CLICK_AT`,
+`START_FREE_CLICK_AT`), each set by `UPDATE … WHERE x IS NULL` and committed at once, so a stamp
+and its event happen exactly once across concurrent requests and nodes.
+
+**Page parameters.** `GET /documents/{kind}/{id}?origin=link|home|search|list|related|refresh|action`
+(anything else is `unknown`, never counted); `GET …/pdf?purpose=preview|download&origin=detail|list`
+(`purpose` absent = `preview`); `POST /events/etendo-click` with `{reference: learnMore|startFree,
+location: header|mobile|rail}` → 204, 400 `invalid_event`, 401, 429.
+
+**The click endpoint never starts a session.** Its body is checked first (400 before any session
+work); then it only *resumes* the presented `X-Portal-Session` — it never mints one, so a click
+cannot open a session (and a `backend_portal_opened`) of its own and inflate the KPI's
+denominator. With no live session (absent, expired, another link) the click is dropped silently
+and still answers 204. It is recorded **once per (session, reference)**: a later click on the same
+link from another placement is not visible (only the first click's `location` is kept).
+
+**Value interactions, rule v1** (decided with the PO; `rule` on the engaged event versions it):
+(a) a document other than the origin opened from Home or the search, (b) a related document other
+than the origin, (c) a quotation decision request sent in the session. A list open is recorded
+(`backend_portal_document_opened`) but not counted; the origin document never counts; a download
+is never a value interaction. Events and Mixpanel recipes: `backend-observability.md` →
+*Customer Portal KPIs*. The old events stay as controls; `backend_portal_opened` is now once per
+session (the in-memory per-link visit window is gone) and `backend_portal_document_downloaded`
+gains `purpose`. **Needs `update.database`** for `ETGO_PORTAL_SESSION`.
 
 ## 8. Tests
 

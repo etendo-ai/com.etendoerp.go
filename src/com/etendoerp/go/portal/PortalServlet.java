@@ -45,6 +45,7 @@ import com.etendoerp.go.schemaforge.util.NeoImageHelper;
  *
  * <pre>
  * GET  /sws/portal/me[/[{clientId}/]{token}]    the link's state, and who it speaks for when valid
+ * POST /sws/portal/events/etendo-click          KPI: a click on an etendo.ai link (ETP-6209)
  * POST /sws/portal/renew                        email a new link for an expired one
  * GET  /sws/portal/logo                         the issuing company's logo
  * GET  /sws/portal/home?months=                balances, tiles, recent, paid this year, chart
@@ -143,6 +144,12 @@ public class PortalServlet extends HttpBaseServlet {
   /** Max bytes of a decision request body (a reason text of 2000 characters fits). */
   private static final int MAX_BODY_BYTES = 16 * 1024;
   private static final String PDF_SUFFIX = "/pdf";
+  /** ETP-6209 KPIs: the customer clicked an etendo.ai link of the portal. */
+  private static final String PATH_ETENDO_CLICK = "/events/etendo-click";
+  /** Where a document open or a PDF download came from in the page (KPI design §2). */
+  private static final String PARAM_ORIGIN = "origin";
+  /** Request attribute holding the request's {@link PortalSessionTracker.Visit}. */
+  private static final String ATTR_VISIT = PortalSessionTracker.class.getName() + ".visit";
 
   /** Tenant logo, so the page can show whose portal this is. Takes no parameters. */
   private static final String PATH_LOGO = "/logo";
@@ -188,6 +195,8 @@ public class PortalServlet extends HttpBaseServlet {
   private static final String FIELD_CLIENT_ID = "clientId";
 
   private final transient PortalLinkService linkService = new PortalLinkService();
+  /** The KPI sessions; replaceable by a test ({@link #setSessionTracker}) to keep the DAL out. */
+  private transient PortalSessionTracker sessionTracker = new PortalSessionTracker();
   private final transient PortalDecisionEntry decisionEntry = new PortalDecisionEntry(linkService);
   private final transient PortalDecisionService decisionService = new PortalDecisionService();
   private final transient PortalRateLimiter meRateLimiter = new PortalRateLimiter();
@@ -214,7 +223,7 @@ public class PortalServlet extends HttpBaseServlet {
     }
     // The writes: the renewal and, Part C, a decision request and its confirmation.
     if ("POST".equalsIgnoreCase(request.getMethod()) && (path.equals(PATH_RENEW)
-        || path.equals(PATH_DECISION_CONFIRM)
+        || path.equals(PATH_DECISION_CONFIRM) || path.equals(PATH_ETENDO_CLICK)
         || path.startsWith(PATH_QUOTATIONS) && path.endsWith(DECISION_SUFFIX))) {
       doPost(request, response);
       return;
@@ -235,6 +244,8 @@ public class PortalServlet extends HttpBaseServlet {
       OBContext.setAdminMode(true);
       if (path.equals(PATH_DECISION_CONFIRM)) {
         handleDecisionConfirm(request, response);
+      } else if (path.equals(PATH_ETENDO_CLICK)) {
+        handleEtendoClick(request, response);
       } else if (path.startsWith(PATH_QUOTATIONS)) {
         handleDecisionRequest(request, response, path.substring(PATH_QUOTATIONS.length(),
             path.length() - DECISION_SUFFIX.length()));
@@ -257,6 +268,9 @@ public class PortalServlet extends HttpBaseServlet {
   static String postOperation(String path) {
     if (PATH_DECISION_CONFIRM.equals(path)) {
       return "decision confirmation";
+    }
+    if (PATH_ETENDO_CLICK.equals(path)) {
+      return "etendo click";
     }
     return path.startsWith(PATH_QUOTATIONS) ? "decision request" : FIELD_RENEWAL;
   }
@@ -325,7 +339,8 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    PortalLinkService.Validation validation = linkService.validate(resolveToken(request), resolveClient(request));
+    PortalLinkService.Validation validation = linkService.validate(resolveToken(request),
+        resolveClient(request));
     Optional<PortalLink> resolved = validation.getLink();
     if (validation.getState() == PortalLinkService.State.INVALID || !resolved.isPresent()) {
       rejectInvalidLink(response);
@@ -358,7 +373,12 @@ public class PortalServlet extends HttpBaseServlet {
         body.put("entryKind", link.getDocumentKind().name());
       }
       PortalUsageEvents.opened(link);
-      PortalKpiTelemetry.portalOpened(link);
+      // The KPI session (ETP-6209): its id for the page's X-Portal-Session; a new session emits
+      // backend_portal_opened, once.
+      PortalSessionTracker.Visit visit = track(request, response, link);
+      if (visit != null) {
+        body.put("sessionId", visit.getId());
+      }
     }
     sendJson(response, HttpServletResponse.SC_OK, body);
   }
@@ -526,7 +546,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = validSession(request);
+    Optional<PortalSession> session = validSession(request, response);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -556,7 +576,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = validSession(request);
+    Optional<PortalSession> session = validSession(request, response);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -567,6 +587,9 @@ public class PortalServlet extends HttpBaseServlet {
         textField(body, "reasonText"));
     switch (result.getOutcome()) {
       case SENT:
+        // A value interaction of the session (KPI rule v1): the request, not its later
+        // confirmation from the email.
+        sessionTracker.decisionRequested(visitOf(request));
         JSONObject sent = new JSONObject();
         sent.put(FIELD_STATE, "sent");
         sent.put("email", StringUtils.defaultString(result.getEmail()));
@@ -688,6 +711,62 @@ public class PortalServlet extends HttpBaseServlet {
     }
   }
 
+  /**
+   * Test seam: replaces the KPI session tracker (the servlet builds the real one).
+   *
+   * @param tracker the tracker every request uses from now on
+   */
+  void setSessionTracker(PortalSessionTracker tracker) {
+    this.sessionTracker = tracker;
+  }
+
+  /**
+   * ETP-6209 KPIs: records a click on an etendo.ai link of the portal
+   * ({@code backend_portal_etendo_click}, once per session and link). Authenticated by the portal
+   * token like every other call and rate limited with the data reads; records no URL, no recipient
+   * data and sets no cookie. The page fires it with {@code keepalive} and never waits for it.
+   *
+   * <p>The body is checked first, so a malformed event answers 400 without touching any session.
+   * This endpoint only <b>resumes</b> the presented session, never mints one: a click must not open
+   * a session (and so a {@code backend_portal_opened}) of its own. With no live session the click is
+   * dropped silently, still 204.
+   *
+   * <pre>
+   * 204                                  recorded, already recorded, or dropped (no live session)
+   * 400 {"error": "invalid_event"}       reference / location outside the fixed vocabulary
+   * 401                                  invalid link
+   * 429                                  rate limited
+   * </pre>
+   */
+  private void handleEtendoClick(HttpServletRequest request, HttpServletResponse response)
+      throws IOException {
+    if (!dataRateLimiter.tryAcquire(request.getRemoteAddr())) {
+      sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
+      return;
+    }
+    JSONObject body = readJson(request);
+    String reference = textField(body, "reference");
+    String location = textField(body, "location");
+    if (!PortalSessionTracker.isClick(reference, location)) {
+      sendError(response, HttpServletResponse.SC_BAD_REQUEST, "invalid_event");
+      return;
+    }
+    PortalLinkService.Validation validation = linkService.validate(resolveToken(request),
+        resolveClient(request));
+    if (!validation.getSession().isPresent() || !validation.getLink().isPresent()) {
+      rejectInvalidLink(response);
+      return;
+    }
+    // Resume only: a click never starts a session, so it cannot inflate the KPI's denominator.
+    PortalSessionTracker.Visit visit = sessionTracker.resume(
+        request.getHeader(PortalSessionTracker.HEADER_SESSION), validation.getLink().get());
+    if (visit != null) {
+      response.setHeader(PortalSessionTracker.HEADER_SESSION, visit.getId());
+      sessionTracker.etendoClicked(visit, reference, location);
+    }
+    response.setStatus(HttpServletResponse.SC_NO_CONTENT);
+  }
+
   /** Documents of every kind matching {@code ?q=}, for the home's header search. */
   private void handleSearch(HttpServletRequest request, HttpServletResponse response)
       throws IOException, JSONException {
@@ -695,7 +774,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = validSession(request);
+    Optional<PortalSession> session = validSession(request, response);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -711,7 +790,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = validSession(request);
+    Optional<PortalSession> session = validSession(request, response);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -738,7 +817,7 @@ public class PortalServlet extends HttpBaseServlet {
       sendError(response, HTTP_TOO_MANY_REQUESTS, MSG_TOO_MANY_REQUESTS);
       return;
     }
-    Optional<PortalSession> session = validSession(request);
+    Optional<PortalSession> session = validSession(request, response);
     if (!session.isPresent()) {
       rejectInvalidLink(response);
       return;
@@ -757,17 +836,20 @@ public class PortalServlet extends HttpBaseServlet {
         return;
       }
       sendJson(response, HttpServletResponse.SC_OK, body);
+      // Only an answered detail counts; how it was reached is the page's ?origin= (KPI design §2).
+      sessionTracker.documentOpened(visitOf(request), PortalDocumentsEndpoint.kindOf(parts[0]),
+          parts[1], request.getParameter(PARAM_ORIGIN));
       return;
     }
-    streamPdf(response, validated, parts[0], parts[1]);
+    streamPdf(request, response, validated, parts[0], parts[1]);
   }
 
   /**
    * Streams the document's printable: the stored main attachment, rendered first when missing and
    * again when stale. Anything out of scope or without a printable answers 404.
    */
-  private void streamPdf(HttpServletResponse response, PortalSession validated, String type,
-      String id) throws IOException {
+  private void streamPdf(HttpServletRequest request, HttpServletResponse response,
+      PortalSession validated, String type, String id) throws IOException {
     PortalDocumentKind kind = PortalDocumentsEndpoint.kindOf(type);
     BaseOBObject document = kind == null ? null
         : PortalDocumentQuery.findInScope(validated, kind, id);
@@ -793,7 +875,11 @@ public class PortalServlet extends HttpBaseServlet {
     if (AnonymousAttachmentStreamer.stream(attachment, response,
         "portal kind=" + kind.name() + " record=" + id)) {
       PortalUsageEvents.downloaded(validated, id);
-      PortalKpiTelemetry.documentDownloaded(validated, kind, id);
+      // ?purpose=preview (the detail's automatic preview, the default) or download (on purpose).
+      String purpose = PortalSessionTracker.pdfPurpose(request.getParameter("purpose"));
+      PortalKpiTelemetry.documentDownloaded(validated, kind, id, purpose);
+      sessionTracker.pdfServed(visitOf(request), kind, id, purpose,
+          request.getParameter(PARAM_ORIGIN));
     }
   }
 
@@ -836,8 +922,40 @@ public class PortalServlet extends HttpBaseServlet {
    * The session of the request's token and tenant id, when the link is valid; empty for every
    * other state, which the data endpoints all answer as an invalid link.
    */
-  private Optional<PortalSession> validSession(HttpServletRequest request) {
-    return linkService.validate(resolveToken(request), resolveClient(request)).getSession();
+  private Optional<PortalSession> validSession(HttpServletRequest request,
+      HttpServletResponse response) {
+    PortalLinkService.Validation validation = linkService.validate(resolveToken(request),
+        resolveClient(request));
+    Optional<PortalSession> session = validation.getSession();
+    if (session.isPresent() && validation.getLink().isPresent()) {
+      track(request, response, validation.getLink().get());
+    }
+    return session;
+  }
+
+  /**
+   * Resumes or starts the request's portal session for the KPIs ({@link PortalSessionTracker}) and
+   * answers its id in the {@code X-Portal-Session} header. Only for a valid link: an expired,
+   * unavailable or invalid one starts nothing. The id is no credential and never logged.
+   *
+   * @return the session, or {@code null} when it could not be tracked
+   */
+  private PortalSessionTracker.Visit track(HttpServletRequest request,
+      HttpServletResponse response, PortalLink link) {
+    PortalSessionTracker.Visit visit = sessionTracker.track(
+        request.getHeader(PortalSessionTracker.HEADER_SESSION), link);
+    if (visit != null) {
+      response.setHeader(PortalSessionTracker.HEADER_SESSION, visit.getId());
+      request.setAttribute(ATTR_VISIT, visit);
+    }
+    return visit;
+  }
+
+  /** The session {@link #track} attached to the request, or {@code null}. */
+  private static PortalSessionTracker.Visit visitOf(HttpServletRequest request) {
+    Object visit = request.getAttribute(ATTR_VISIT);
+    return visit instanceof PortalSessionTracker.Visit ? (PortalSessionTracker.Visit) visit
+        : null;
   }
 
   /**

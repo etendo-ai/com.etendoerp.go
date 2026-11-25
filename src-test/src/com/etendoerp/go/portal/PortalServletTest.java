@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.clearInvocations;
+import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockConstruction;
@@ -47,7 +48,9 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import javax.servlet.ServletOutputStream;
@@ -103,6 +106,8 @@ public class PortalServletTest {
   private PortalServlet servlet;
   private PortalLinkService linkService;
   private PortalDecisionService decisionService;
+  /** The KPI sessions, mocked so no test reaches the DAL. */
+  private PortalSessionTracker sessionTracker;
   private MockedStatic<PortalPrintable> printable;
   private PortalRateLimiter meLimiter;
   private PortalRateLimiter renewLimiter;
@@ -130,6 +135,8 @@ public class PortalServletTest {
       renewLimiter = limiters.constructed().get(1);
       dataLimiter = limiters.constructed().get(2);
     }
+    sessionTracker = mock(PortalSessionTracker.class);
+    servlet.setSessionTracker(sessionTracker);
     when(linkService.validate(any(), any()))
         .thenReturn(new PortalLinkService.Validation(PortalLinkService.State.INVALID, null));
   }
@@ -500,8 +507,10 @@ public class PortalServletTest {
         events.verify(() -> PortalUsageEvents.downloaded(any(), eq("INV-1")),
             times((Boolean) c[2] ? 1 : 0));
         // The first-download KPI is offered the same served files, with the validated scope.
+        // No ?purpose= on the request: an older page's automatic preview.
         kpi.verify(() -> PortalKpiTelemetry.documentDownloaded(any(PortalSession.class),
-            eq(PortalDocumentKind.INVOICE), eq("INV-1")), times((Boolean) c[2] ? 1 : 0));
+            eq(PortalDocumentKind.INVOICE), eq("INV-1"), eq("preview")),
+            times((Boolean) c[2] ? 1 : 0));
       }
     }
   }
@@ -614,17 +623,23 @@ public class PortalServletTest {
         { PortalDecisionService.RequestOutcome.FAILED, null, 503,
             "The portal is temporarily unavailable" },
     };
+    PortalSessionTracker.Visit visit = visit();
+    when(sessionTracker.track(any(), any())).thenReturn(visit);
     for (Object[] c : cases) {
       PortalDecisionService.RequestResult result = new PortalDecisionService.RequestResult(
           (PortalDecisionService.RequestOutcome) c[0], (PortalDecisionService.Blocked) c[1],
           "julia@example.com", Arrays.asList("julia@example.com", "boss@example.com"));
       when(decisionService.request(any(), any(), any(), any(), any())).thenReturn(result);
+      clearInvocations(sessionTracker);
       Call call = new Call();
 
       servlet.service(decisionRequest("{\"decision\": \"reject\", \"reasonCode\": \"OTHER\","
           + " \"reasonText\": null}"), call.response);
 
       assertEquals(c[0].toString(), (int) (Integer) c[2], call.status());
+      // Only a request whose email left is a value interaction of the session (ETP-6209).
+      verify(sessionTracker, times(c[0] == PortalDecisionService.RequestOutcome.SENT ? 1 : 0))
+          .decisionRequested(visit);
       JSONObject body = new JSONObject(call.body.toString());
       if (c[3] == null) {
         assertEquals("sent", body.getString("state"));
@@ -859,6 +874,184 @@ public class PortalServletTest {
     events.verify(() -> PortalUsageEvents.opened(valid));
   }
 
+  // ── KPI sessions (ETP-6209) ─────────────────────────────────────────────────
+
+  /**
+   * Only a valid link starts or resumes a session: its id goes back in {@code X-Portal-Session}
+   * and in {@code /me}'s {@code sessionId}. An expired or unavailable link tracks nothing.
+   */
+  @Test
+  public void meAnswersTheSessionIdOnlyForAValidLink() throws Exception {
+    Date future = new Date(System.currentTimeMillis() + 3_600_000L);
+    PortalLink valid = link(new Date(0L), future, true);
+    PortalSessionTracker.Visit visit = visit();
+    // Columns: link state, what the tracker answers, sessionId expected.
+    Object[][] cases = {
+        { PortalLinkService.State.VALID, visit, true },
+        { PortalLinkService.State.VALID, null, false },
+        { PortalLinkService.State.EXPIRED, visit, false },
+        { PortalLinkService.State.UNAVAILABLE, visit, false },
+    };
+    try (MockedStatic<PortalDocumentQuery> documents = mockStatic(PortalDocumentQuery.class)) {
+      for (Object[] c : cases) {
+        PortalLinkService.State state = (PortalLinkService.State) c[0];
+        when(linkService.validate(any(), any()))
+            .thenReturn(new PortalLinkService.Validation(state, valid));
+        when(sessionTracker.track(any(), any())).thenReturn((PortalSessionTracker.Visit) c[1]);
+        clearInvocations(sessionTracker);
+        HttpServletRequest request = request("GET", "/me");
+        when(request.getHeader(PortalSessionTracker.HEADER_SESSION)).thenReturn("PRESENTED");
+        Call call = new Call();
+
+        servlet.service(request, call.response);
+
+        String label = Arrays.toString(c);
+        JSONObject body = new JSONObject(call.body.toString());
+        assertEquals(label, (Boolean) c[2], body.has("sessionId"));
+        if ((Boolean) c[2]) {
+          assertEquals(label, visit.getId(), body.getString("sessionId"));
+          verify(call.response).setHeader(PortalSessionTracker.HEADER_SESSION, visit.getId());
+        } else {
+          verify(call.response, never()).setHeader(eq(PortalSessionTracker.HEADER_SESSION),
+              anyString());
+        }
+        verify(sessionTracker, times(state == PortalLinkService.State.VALID ? 1 : 0))
+            .track("PRESENTED", valid);
+      }
+    }
+  }
+
+  @Test
+  public void anAnsweredDetailPassesItsOriginToTheSessionAndA404RecordsNothing() throws Exception {
+    validLink();
+    PortalSessionTracker.Visit visit = visit();
+    when(sessionTracker.track(any(), any())).thenReturn(visit);
+    JSONObject detail = new JSONObject().put("id", "INV-1");
+    try (MockedStatic<PortalDocumentsEndpoint> endpoint =
+        mockStatic(PortalDocumentsEndpoint.class)) {
+      endpoint.when(() -> PortalDocumentsEndpoint.kindOf(any())).thenCallRealMethod();
+      endpoint.when(() -> PortalDocumentsEndpoint.detail(any(), eq("INVOICE"), eq("INV-1")))
+          .thenReturn(detail);
+      for (String id : new String[] { "INV-1", "INV-404" }) {
+        HttpServletRequest request = request("GET", "/documents/INVOICE/" + id);
+        when(request.getParameter("origin")).thenReturn("related");
+        Call call = new Call();
+
+        servlet.service(request, call.response);
+
+        assertEquals(id, "INV-1".equals(id) ? HttpServletResponse.SC_OK
+            : HttpServletResponse.SC_NOT_FOUND, call.status());
+        verify(call.response).setHeader(PortalSessionTracker.HEADER_SESSION, visit.getId());
+      }
+    }
+    verify(sessionTracker).documentOpened(visit, PortalDocumentKind.INVOICE, "INV-1", "related");
+    verify(sessionTracker, never()).documentOpened(any(), any(), eq("INV-404"), any());
+  }
+
+  @Test
+  public void aServedPdfPassesItsPurposeAndOriginToTheSession() throws Exception {
+    validLink();
+    PortalSessionTracker.Visit visit = visit();
+    when(sessionTracker.track(any(), any())).thenReturn(visit);
+    BaseOBObject invoice = mock(BaseOBObject.class);
+    Attachment attachment = mock(Attachment.class);
+    // Columns: ?purpose=, ?origin=, purpose recorded.
+    String[][] cases = { { null, null, "preview" }, { "preview", "detail", "preview" },
+        { "download", "list", "download" }, { "DOWNLOAD", "detail", "download" } };
+    try (MockedStatic<PortalDocumentQuery> documents = mockStatic(PortalDocumentQuery.class);
+        MockedStatic<PortalDocumentsEndpoint> endpoint =
+            mockStatic(PortalDocumentsEndpoint.class);
+        MockedStatic<AnonymousAttachmentStreamer> streamer =
+            mockStatic(AnonymousAttachmentStreamer.class)) {
+      endpoint.when(() -> PortalDocumentsEndpoint.kindOf(any())).thenCallRealMethod();
+      documents.when(() -> PortalDocumentQuery.findInScope(any(),
+          eq(PortalDocumentKind.INVOICE), eq("INV-1"))).thenReturn(invoice);
+      endpoint.when(() -> PortalDocumentsEndpoint.mainAttachment(any(),
+          eq(PortalDocumentKind.INVOICE), eq("INV-1"))).thenReturn(attachment);
+      streamer.when(() -> AnonymousAttachmentStreamer.stream(any(), any(), anyString()))
+          .thenReturn(true);
+      for (String[] c : cases) {
+        clearInvocations(sessionTracker);
+        kpi.clearInvocations();
+        HttpServletRequest request = request("GET", "/documents/INVOICE/INV-1/pdf");
+        when(request.getParameter("purpose")).thenReturn(c[0]);
+        when(request.getParameter("origin")).thenReturn(c[1]);
+
+        servlet.service(request, new Call().response);
+
+        verify(sessionTracker).pdfServed(visit, PortalDocumentKind.INVOICE, "INV-1", c[2], c[1]);
+        kpi.verify(() -> PortalKpiTelemetry.documentDownloaded(any(PortalSession.class),
+            eq(PortalDocumentKind.INVOICE), eq("INV-1"), eq(c[2])));
+      }
+    }
+  }
+
+  /**
+   * The etendo.ai click checks throttle, vocabulary and link in that order, and none of the
+   * refusals touches a session.
+   */
+  @Test
+  public void aRefusedEtendoClickTouchesNoSession() throws Exception {
+    String good = "{\"reference\": \"learnMore\", \"location\": \"header\"}";
+    // Columns: data limiter allows, body, link valid, status, link validated.
+    Object[][] cases = {
+        { false, good, true, 429, false },
+        { true, "{\"reference\": \"learnMore\", \"location\": \"footer\"}", true, 400,
+            false },
+        { true, "{\"reference\": \"docs\", \"location\": \"header\"}", true, 400, false },
+        { true, "{}", true, 400, false },
+        { true, "not json", true, 400, false },
+        { true, good, false, 401, true },
+    };
+    for (Object[] c : cases) {
+      when(dataLimiter.tryAcquire(anyString())).thenReturn((Boolean) c[0]);
+      if ((Boolean) c[2]) {
+        validLink();
+      } else {
+        when(linkService.validate(any(), any())).thenReturn(
+            new PortalLinkService.Validation(PortalLinkService.State.INVALID, null));
+      }
+      clearInvocations(linkService);
+      Call call = new Call();
+
+      servlet.service(etendoClick((String) c[1]), call.response);
+
+      String label = Arrays.toString(c);
+      assertEquals(label, (int) (Integer) c[3], call.status());
+      verify(linkService, times((Boolean) c[4] ? 1 : 0)).validate(any(), any());
+    }
+    verifyNoInteractions(sessionTracker);
+  }
+
+  /** A click only resumes the presented session, never starts one; without one it is dropped. */
+  @Test
+  public void anEtendoClickIsRecordedOnlyInALiveSession() throws Exception {
+    validLink();
+    PortalSessionTracker.Visit visit = visit();
+    for (PortalSessionTracker.Visit resumed : Arrays.asList(null, visit)) {
+      clearInvocations(sessionTracker);
+      when(sessionTracker.resume(any(), any())).thenReturn(resumed);
+      HttpServletRequest request = etendoClick(
+          "{\"reference\": \"startFree\", \"location\": \"rail\"}");
+      when(request.getHeader(PortalSessionTracker.HEADER_SESSION)).thenReturn("PRESENTED");
+      Call call = new Call();
+
+      servlet.service(request, call.response);
+
+      assertEquals(HttpServletResponse.SC_NO_CONTENT, call.status());
+      verify(sessionTracker).resume(eq("PRESENTED"), any(PortalLink.class));
+      verify(sessionTracker, never()).track(any(), any());
+      if (resumed == null) {
+        verify(sessionTracker, never()).etendoClicked(any(), any(), any());
+        verify(call.response, never()).setHeader(eq(PortalSessionTracker.HEADER_SESSION),
+            anyString());
+      } else {
+        verify(sessionTracker).etendoClicked(visit, "startFree", "rail");
+        verify(call.response).setHeader(PortalSessionTracker.HEADER_SESSION, visit.getId());
+      }
+    }
+  }
+
   // ── fixtures ────────────────────────────────────────────────────────────────
 
   /** Replaces the servlet's decision entry with one whose mint answers {@code token}. */
@@ -929,11 +1122,28 @@ public class PortalServletTest {
     return request;
   }
 
+  private static HttpServletRequest etendoClick(String json) throws IOException {
+    HttpServletRequest request = request("POST", "/events/etendo-click");
+    when(request.getReader()).thenReturn(new java.io.BufferedReader(new java.io.StringReader(json)));
+    return request;
+  }
+
+  private static PortalSessionTracker.Visit visit() {
+    return new PortalSessionTracker.Visit("0123456789ABCDEF0123456789ABCDEF", false, CLIENT_ID,
+        true, PortalDocumentKind.INVOICE, "INV-1", "invoice");
+  }
+
+  /** A request mock whose attributes are kept, as the servlet hands its session on through one. */
   private static HttpServletRequest request(String method, String path) {
     HttpServletRequest request = mock(HttpServletRequest.class);
     when(request.getMethod()).thenReturn(method);
     when(request.getPathInfo()).thenReturn(path);
     when(request.getRemoteAddr()).thenReturn("203.0.113.7");
+    Map<String, Object> attributes = new HashMap<>();
+    doAnswer(inv -> attributes.put(inv.getArgument(0), inv.getArgument(1))).when(request)
+        .setAttribute(anyString(), any());
+    when(request.getAttribute(anyString()))
+        .thenAnswer(inv -> attributes.get(inv.getArgument(0)));
     return request;
   }
 
