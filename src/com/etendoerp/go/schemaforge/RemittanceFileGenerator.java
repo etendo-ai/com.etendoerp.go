@@ -17,17 +17,9 @@
 
 package com.etendoerp.go.schemaforge;
 
-import java.io.File;
 import java.io.IOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.attribute.FileAttribute;
-import java.nio.file.attribute.PosixFilePermission;
-import java.nio.file.attribute.PosixFilePermissions;
-import java.util.HashMap;
-import java.util.Set;
 
 import javax.xml.parsers.ParserConfigurationException;
 import javax.xml.transform.TransformerException;
@@ -35,9 +27,7 @@ import javax.xml.transform.TransformerException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBError;
-import org.openbravo.model.ad.utility.Attachment;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.module.remittance.Remittance;
 import org.openbravo.module.remittance.utility.REM_RemittanceCreateFile;
@@ -47,17 +37,17 @@ import org.w3c.dom.Document;
 import org.xml.sax.SAXException;
 
 /**
- * ETP-6247 — writes a remittance's SEPA file with Classic's generator and stores it as the
- * record's main attachment, the way Classic's «Create File» button ({@code CreateFile
- * #getFilePrintPage}) runs it: instantiate the remittance type's {@code Classname}, {@code init},
- * {@code generate}, and read {@code getMyError()} / {@code getLineErrorDetail()} for a refusal.
+ * ETP-6247 — writes a remittance's SEPA file with Classic's generator, the way Classic's «Create
+ * File» button ({@code CreateFile#getFilePrintPage}) runs it: instantiate the remittance type's
+ * {@code Classname}, {@code init}, {@code generate}, and read {@code getMyError()} /
+ * {@code getLineErrorDetail()} for a refusal.
  *
  * <p><b>Schema validation.</b> Classic's {@code SEPA_RemittanceCreateFile#generateSEPAXML} locates
  * the XSD with {@code new File(getClass().getResource(...).getPath())}, which does not exist once
  * the module is packaged in a jar, and {@code SEPAUtil} then silently skips the validation. So GO
  * validates the produced XML itself ({@link RemittanceSepaSchema}): against the XSD next to the
  * generator class, else the copy GO ships. A file whose XSD cannot be found is refused
- * ({@value #MSG_SCHEMA_MISSING}), never stored unvalidated.
+ * ({@value #MSG_SCHEMA_MISSING}), never handed out unvalidated.
  *
  * <p><b>Creditor identifier (ETP-6247).</b> The generator computes the identifier it writes from
  * the organization and cannot be told another one, so a collection's XML is rewritten with the one
@@ -68,13 +58,9 @@ import org.xml.sax.SAXException;
  * <p><b>Encoding.</b> {@code SEPAUtil} marshals into a {@code StringBuffer} one byte per char
  * ({@code StringBufferOutputStream}), so the UTF-8 bytes are recovered with ISO-8859-1.
  *
- * <p><b>Storage.</b> The file is uploaded through the shared attachment manager, the same path the
- * {@code /sws/neo/attachments} endpoints and the AEAT receipts use, and becomes the main attachment
- * without deleting the previous one ({@link NeoAttachmentsHelper#markAsMain} with {@code keepPrevious}): a
- * regenerated file gets its own name ({@code _2}, {@code _3}...) because the attachment manager
- * overwrites a same-named attachment of the record. Nothing here commits: the caller's transaction
- * owns the attachment row. The file bytes are written to the attachment store before the commit,
- * so a rollback afterwards leaves an orphan file and no row.
+ * <p><b>Nothing is stored (ETP-6247).</b> The XML is returned to the caller: «Confirmar» generates
+ * it only to prove it can be, «Descargar fichero» generates it again on every download, as
+ * Classic's «Create File» button does ({@link RemittanceFileAction}).
  */
 final class RemittanceFileGenerator {
 
@@ -86,10 +72,6 @@ final class RemittanceFileGenerator {
   static final String MSG_NO_GENERATOR = RemittanceFileReadiness.MSG_NO_GENERATOR;
   static final String MSG_NO_IBAN = RemittanceFileReadiness.MSG_ACCOUNT_NO_IBAN;
   static final String MSG_NO_CREDITOR_ID = RemittanceFileReadiness.MSG_ACCOUNT_NO_CREDITOR_ID;
-
-  private static final String EXTENSION = "." + RemittanceSepaFileSetup.FILE_EXTENSION;
-  private static final int MAX_NAME_ATTEMPTS = 1000;
-  private static final int MAX_BASE_LENGTH = 120;
 
   private RemittanceFileGenerator() {
   }
@@ -112,17 +94,6 @@ final class RemittanceFileGenerator {
 
     Object[] getArgs() {
       return args;
-    }
-  }
-
-  /** A stored file: the attachment and the name it was stored under. */
-  static final class Stored {
-    final String attachmentId;
-    final String fileName;
-
-    Stored(String attachmentId, String fileName) {
-      this.attachmentId = attachmentId;
-      this.fileName = fileName;
     }
   }
 
@@ -216,10 +187,10 @@ final class RemittanceFileGenerator {
   }
 
   /**
-   * ETP-6247 — a collection's B2B scheme and financed flag are the remittance's, not the type's:
-   * {@code LclInstrm/Cd} becomes {@code B2B} and a financed message identifier gets its prefix
-   * ({@link RemittanceCreditorIdRewriter#applyOptions}). Nothing is rewritten for a plain CORE
-   * remittance (the provisioned type already writes CORE) nor for a payment.
+   * ETP-6247 — a collection's B2B scheme is the remittance's, not the type's: {@code LclInstrm/Cd}
+   * becomes {@code B2B} ({@link RemittanceCreditorIdRewriter#applyOptions}). Nothing is rewritten
+   * for a plain CORE remittance (the provisioned type already writes CORE) nor for a payment. The
+   * message identifier is the generator's own: financed remittances are not supported in GO.
    */
   private static byte[] withOptions(Remittance remittance, byte[] xml) throws Refusal {
     String type = RemittanceSepaFileSetup.schemeOf(remittance.getRemittanceType());
@@ -227,54 +198,15 @@ final class RemittanceFileGenerator {
       return xml;
     }
     String scheme = RemittanceSepaOptions.scheme(remittance);
-    boolean b2b = RemittanceSepaOptions.SCHEME_B2B.equals(scheme);
-    boolean financed = RemittanceSepaOptions.financed(remittance);
-    if (!b2b && !financed) {
+    if (!RemittanceSepaOptions.SCHEME_B2B.equals(scheme)) {
       return xml;
     }
     try {
-      return RemittanceCreditorIdRewriter.applyOptions(xml, b2b ? scheme : null,
-          financed ? RemittanceSepaOptions.financedPrefix(remittance) : null);
+      return RemittanceCreditorIdRewriter.applyOptions(xml, scheme);
     } catch (IOException e) {
       log.warn("Could not apply the direct debit options to the SEPA file of remittance {}",
           remittance.getId(), e);
       throw new Refusal(MSG_GENERATION_FAILED, StringUtils.defaultIfBlank(e.getMessage(), "-"));
-    }
-  }
-
-  /**
-   * Stores {@code content} as the remittance's main attachment, keeping the earlier ones.
-   *
-   * @param remittance the remittance
-   * @param content    the XML
-   * @return the stored attachment
-   * @throws IOException when the temporary file cannot be written
-   */
-  static Stored store(Remittance remittance, byte[] content) throws IOException {
-    String tableId = RemittanceSepaProvisioning.REMITTANCE_TABLE_ID;
-    String tabId = NeoAttachmentsHelper.resolveTabId(tableId, null);
-    if (tabId == null) {
-      throw new IOException("No tab of REM_Remittance to attach the SEPA file to");
-    }
-    String fileName = freeFileName(remittance);
-    Path tempDir = null;
-    try {
-      FileAttribute<Set<PosixFilePermission>> ownerOnly =
-          PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rwx------"));
-      tempDir = Files.createTempDirectory("etgo-sepa-", ownerOnly);
-      Path file = tempDir.resolve(fileName);
-      Files.write(file, content);
-      NeoAttachmentsHelper.getAttachManager().upload(new HashMap<>(), tabId,
-          remittance.getId(), remittance.getOrganization().getId(), file.toFile());
-      Attachment stored =
-          NeoAttachmentsHelper.findLatestUploadedAttachment(tableId, remittance.getId(), fileName);
-      if (stored == null) {
-        throw new IOException("The SEPA file was uploaded but its attachment cannot be found");
-      }
-      NeoAttachmentsHelper.markAsMain(stored, true);
-      return new Stored(stored.getId(), fileName);
-    } finally {
-      deleteQuietly(tempDir);
     }
   }
 
@@ -374,62 +306,6 @@ final class RemittanceFileGenerator {
       return content;
     } catch (ParserConfigurationException | SAXException | TransformerException e) {
       throw new Refusal(MSG_INVALID, version, e.getMessage());
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // File name
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Classic's name ({@code <documentNo>_<name>.xml}) restricted to safe characters, with a numeric
-   * suffix when the record already has an attachment of that name.
-   */
-  static String freeFileName(Remittance remittance) {
-    String base = baseName(remittance);
-    String candidate = base + EXTENSION;
-    for (int attempt = 2; attempt <= MAX_NAME_ATTEMPTS && nameTaken(remittance, candidate);
-        attempt++) {
-      candidate = base + "_" + attempt + EXTENSION;
-    }
-    return candidate;
-  }
-
-  static String baseName(Remittance remittance) {
-    String raw = StringUtils.defaultString(remittance.getDocumentNo()) + "_"
-        + StringUtils.defaultString(remittance.getName());
-    String safe = StringUtils.stripAccents(raw)
-        .replaceAll("[^A-Za-z0-9._-]+", "_")
-        .replaceAll("_+", "_");
-    safe = StringUtils.strip(safe, "._");
-    return StringUtils.left(StringUtils.defaultIfBlank(safe, "remittance"), MAX_BASE_LENGTH);
-  }
-
-  private static boolean nameTaken(Remittance remittance, String fileName) {
-    Long count = OBDal.getInstance().getSession().createQuery(
-        "select count(a.id) from " + Attachment.ENTITY_NAME + " as a where a.table.id = :table"
-            + " and a.record = :record and a.name = :name", Long.class)
-        .setParameter("table", RemittanceSepaProvisioning.REMITTANCE_TABLE_ID)
-        .setParameter("record", remittance.getId())
-        .setParameter("name", fileName)
-        .uniqueResult();
-    return count != null && count > 0;
-  }
-
-  private static void deleteQuietly(Path dir) {
-    if (dir == null) {
-      return;
-    }
-    try {
-      File[] children = dir.toFile().listFiles();
-      if (children != null) {
-        for (File child : children) {
-          Files.deleteIfExists(child.toPath());
-        }
-      }
-      Files.deleteIfExists(dir);
-    } catch (IOException e) {
-      log.warn("Could not clean up temporary directory {}", dir, e);
     }
   }
 }

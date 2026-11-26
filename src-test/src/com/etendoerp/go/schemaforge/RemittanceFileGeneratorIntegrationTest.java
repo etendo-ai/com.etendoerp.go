@@ -24,6 +24,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayInputStream;
+import java.math.BigDecimal;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
@@ -62,6 +63,8 @@ import org.openbravo.model.common.enterprise.OrganizationInformation;
 import org.openbravo.model.common.geography.Country;
 import org.openbravo.model.common.geography.Location;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
+import org.openbravo.model.financialmgmt.payment.FIN_Payment;
+import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.module.remittance.Instruction;
 import org.openbravo.module.remittance.Remittance;
@@ -71,7 +74,7 @@ import org.openbravo.module.remittance.utility.REM_RemittanceCreateFile;
 
 /**
  * Real-database acceptance of the SEPA files (ETP-6247), including a collection or payment whose
- * own values differ from its account's (creditor identifier, IBAN, B2B scheme, financed prefix):
+ * own values differ from its account's (creditor identifier, IBAN, B2B scheme):
  * the generated XML is parsed and validated against the XSD, and the copies the generation snapshots
  * on the remittance (the database makes none) are what a regeneration writes. See the tests named after those behaviors.
  *
@@ -108,6 +111,7 @@ import org.openbravo.module.remittance.utility.REM_RemittanceCreateFile;
  * @covers com.etendoerp.go.schemaforge.RemittanceIban
  * @covers com.etendoerp.go.schemaforge.RemittanceSepaOptions
  * @covers com.etendoerp.go.schemaforge.RemittanceFileReadiness
+ * @covers com.etendoerp.go.schemaforge.RemittanceProcessAction
  */
 public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
 
@@ -115,6 +119,11 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
   private String partnerIban = PARTNER_IBAN;
   /** The BIC of the partners' bank accounts; none unless a test sets it. */
   private String partnerBic;
+  /**
+   * Days between the due dates of consecutive collection dues ({@link #processedCollection}); 0
+   * (the default) keeps them all on one date, as most tests need.
+   */
+  private int dueDayStep;
 
   private static final String SPAIN_ID = "106";
   private static final String COMPANY_IBAN = "ES9121000418450200051332";
@@ -257,14 +266,13 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
   // ---------------------------------------------------------------- the remittance's own values
 
   @Test
-  public void aB2bFinancedCollectionCarriesTheRemittanceOwnValuesAndValidatesAgainstTheXsd()
+  public void aB2bCollectionCarriesTheRemittanceOwnValuesAndValidatesAgainstTheXsd()
       throws Exception {
     Remittance remittance = processedCollection(r -> {
       differentAccountValues(r);
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
       r.setIBAN(OWN_IBAN);
       r.setDirectDebitScheme(RemittanceSepaOptions.SCHEME_B2B);
-      r.setFinanced(true);
     }, RemittanceProcessAction.GROUPING_NONE, SALES_DUE_A);
 
     String xml = new String(goFile(remittance), StandardCharsets.UTF_8);
@@ -281,9 +289,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertEquals("the line's debtor IBAN is untouched", List.of(PARTNER_IBAN),
         values(doc, "DrctDbtTxInf", "DbtrAcct", "Id", "IBAN"));
     assertEquals(List.of("B2B"), values(doc, "PmtInf", "PmtTpInf", "LclInstrm", "Cd"));
-    String msgId = values(doc, "GrpHdr", "MsgId").get(0);
-    assertTrue(msgId, msgId.startsWith(RemittanceSepaOptions.financedPrefix(remittance)));
-    assertTrue(msgId, msgId.length() <= RemittanceSepaOptions.MSG_ID_MAX_LENGTH);
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
         xml));
   }
@@ -297,7 +302,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
       r.setIBAN(OWN_IBAN);
       r.setDirectDebitScheme(RemittanceSepaOptions.SCHEME_B2B);
-      r.setFinanced(true);
     }, RemittanceProcessAction.GROUPING_NONE, SALES_DUE_A,
         SALES_DUE_B);
     // The generator opens a new PmtInf block when the collection date changes.
@@ -329,8 +333,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     for (String id : values(doc, "CdtrSchmeId", "Id", "PrvtId", "Othr", "Id")) {
       assertEquals(OWN_CREDITOR_ID, id);
     }
-    assertTrue(values(doc, "GrpHdr", "MsgId").get(0)
-        .startsWith(RemittanceSepaOptions.financedPrefix(remittance)));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
         xml));
   }
@@ -354,6 +356,84 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertEquals(List.of(OWN_IBAN), values(doc, "PmtInf", "CdtrAcct", "Id", "IBAN"));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
         xml));
+  }
+
+  /**
+   * ETP-6247: «Group by business partner» ({@code GGP}). Two dues of the same customer with
+   * different due dates become ONE payment (GGPD and P make two), one bank instruction, one
+   * {@code DrctDbtTxInf} whose amount and the file's NbOfTxs/CtrlSum cover both, a remittance
+   * information naming both invoices within 140 characters, and a file valid against the XSD.
+   * «Cobrada» then settles that one payment.
+   */
+  @Test
+  public void groupingByPartnerMakesOnePaymentAcrossDueDatesAndAValidFile() throws Exception {
+    dueDayStep = 3;
+    Remittance remittance = processedCollection(r -> {
+      differentAccountValues(r);
+      r.setCreditorIdentifier(OWN_CREDITOR_ID);
+      r.setIBAN(OWN_IBAN);
+    }, RemittanceProcessAction.GROUPING_BP, SALES_DUE_A, SALES_DUE_B);
+
+    List<RemittanceLine> lines = remittance.getREMRemittanceLineList();
+    assertEquals(2, lines.size());
+    assertNotNull(lines.get(0).getPayment());
+    assertEquals("GGP merges dues of different dates into one payment",
+        lines.get(0).getPayment().getId(), lines.get(1).getPayment().getId());
+    assertEquals(1, remittance.getREMInstructionList().size());
+    BigDecimal total = lines.get(0).getAmount().add(lines.get(1).getAmount());
+    assertEquals(0, total.compareTo(lines.get(0).getPayment().getAmount()));
+
+    String xml = new String(goFile(remittance), StandardCharsets.UTF_8);
+    Document doc = dom(xml);
+    assertEquals(List.of("1"), values(doc, "GrpHdr", "NbOfTxs"));
+    assertEquals(0, total.compareTo(new BigDecimal(values(doc, "GrpHdr", "CtrlSum").get(0))));
+    assertEquals(1, values(doc, "DrctDbtTxInf", "InstdAmt").size());
+    assertEquals(0, total.compareTo(new BigDecimal(values(doc, "DrctDbtTxInf", "InstdAmt").get(0))));
+    List<String> remittanceInfo = values(doc, "DrctDbtTxInf", "RmtInf", "Ustrd");
+    assertEquals(1, remittanceInfo.size());
+    String ustrd = remittanceInfo.get(0);
+    assertTrue(ustrd, ustrd.length() <= 140);
+    for (RemittanceLine line : lines) {
+      String documentNo = line.getPaymentScheduleDetail().getInvoicePaymentSchedule()
+          .getInvoice().getDocumentNo();
+      assertTrue("the remittance information names invoice " + documentNo + ": " + ustrd,
+          ustrd.contains(documentNo));
+    }
+    assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
+        xml));
+
+    NeoResponse collected = RemittanceStatusAction.markCollected(remittance);
+    assertEquals(String.valueOf(collected.getBody()), 200, collected.getHttpStatus());
+    assertEquals("CT", collected.getBody().getString("status"));
+    FIN_Payment payment = OBDal.getInstance().get(FIN_Payment.class,
+        lines.get(0).getPayment().getId());
+    OBDal.getInstance().refresh(payment);
+    assertFalse("the grouped payment is settled", InvoiceRemittance.isRemitted(payment));
+  }
+
+  @Test
+  public void withoutGroupingDuesOfDifferentDatesKeepTheirOwnPayments() throws Exception {
+    assertTwoPayments(RemittanceProcessAction.GROUPING_NONE);
+  }
+
+  @Test
+  public void groupingByPartnerAndDueDateKeepsDuesOfDifferentDatesApart() throws Exception {
+    assertTwoPayments(RemittanceProcessAction.GROUPING_BP_DUE_DATE);
+  }
+
+  /** Two dues of one customer, three days apart, processed with {@code grouping}: two payments. */
+  private void assertTwoPayments(String grouping) throws Exception {
+    dueDayStep = 3;
+    Remittance remittance = processedCollection(r -> {
+      differentAccountValues(r);
+      r.setCreditorIdentifier(OWN_CREDITOR_ID);
+      r.setIBAN(OWN_IBAN);
+    }, grouping, SALES_DUE_A, SALES_DUE_B);
+
+    List<RemittanceLine> lines = remittance.getREMRemittanceLineList();
+    assertFalse(grouping + " keeps two payments", lines.get(0).getPayment().getId()
+        .equals(lines.get(1).getPayment().getId()));
+    assertEquals(grouping, 2, remittance.getREMInstructionList().size());
   }
 
   /**
@@ -396,7 +476,7 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
   }
 
   @Test
-  public void aCoreNonFinancedCollectionOnlyTakesTheRemittanceIdAndIban() throws Exception {
+  public void aCoreCollectionOnlyTakesTheRemittanceIdAndIban() throws Exception {
     Remittance remittance = processedCollection(r -> {
       differentAccountValues(r);
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
@@ -404,7 +484,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     }, RemittanceProcessAction.GROUPING_NONE, SALES_DUE_A);
     assertEquals("a collection without a stored scheme is CORE", "CORE",
         RemittanceSepaOptions.scheme(remittance));
-    assertFalse(remittance.isFinanced());
 
     String xml = new String(goFile(remittance), StandardCharsets.UTF_8);
 
@@ -413,8 +492,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertEquals(List.of(OWN_CREDITOR_ID),
         values(doc, "InitgPty", "Id", "OrgId", "Othr", "Id"));
     assertEquals(List.of(OWN_IBAN), values(doc, "PmtInf", "CdtrAcct", "Id", "IBAN"));
-    String msgId = values(doc, "GrpHdr", "MsgId").get(0);
-    assertFalse(msgId, msgId.startsWith(RemittanceSepaOptions.FINANCED_PREFIX));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_CORE, "pain.008.001.08"),
         xml));
   }
@@ -424,7 +501,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     Remittance remittance = processedPayment(r -> {
       r.setIBAN(OWN_IBAN);
       r.setDirectDebitScheme(RemittanceSepaOptions.SCHEME_B2B);
-      r.setFinanced(true);
       r.setCreditorIdentifier(OWN_CREDITOR_ID);
     });
 
@@ -437,8 +513,6 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertTrue(values(doc, "PmtInf", "PmtTpInf", "LclInstrm", "Cd").isEmpty());
     assertFalse(xml, xml.contains("B2B"));
     assertFalse(xml, xml.contains(OWN_CREDITOR_ID));
-    assertFalse(values(doc, "GrpHdr", "MsgId").get(0)
-        .startsWith(RemittanceSepaOptions.FINANCED_PREFIX));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_SCT, "pain.001.001.09"),
         xml));
   }
@@ -677,6 +751,14 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     FIN_PaymentScheduleDetail[] dues = new FIN_PaymentScheduleDetail[dueLabels.length];
     for (int i = 0; i < dueLabels.length; i++) {
       dues[i] = RemittanceSampleDataFixtures.openSalesDue(account, invoiceDate);
+      if (dueDayStep != 0 && i > 0) {
+        FIN_PaymentSchedule schedule = dues[i].getInvoicePaymentSchedule();
+        LocalDate expected = schedule.getExpectedDate().toInstant()
+            .atZone(ZoneId.systemDefault()).toLocalDate().plusDays((long) dueDayStep * i);
+        schedule.setExpectedDate(day(expected));
+        schedule.setDueDate(day(expected));
+        OBDal.getInstance().save(schedule);
+      }
       BusinessPartner partner = dues[i].getInvoicePaymentSchedule().getInvoice()
           .getBusinessPartner();
       if (partner.getObsepadMandateIdentifier() == null) {
@@ -704,7 +786,7 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
 
   /**
    * A remittance of {@code scheme} with one line for all of each of {@code dues}, processed by REM.
-   * {@code customize} runs before it is saved (its own IBAN, creditor identifier, B2B, financed).
+   * {@code customize} runs before it is saved (its own IBAN, creditor identifier, B2B).
    */
   private Remittance processed(Client client, FIN_FinancialAccount account, String scheme,
       String grouping, Consumer<Remittance> customize, FIN_PaymentScheduleDetail... dues)

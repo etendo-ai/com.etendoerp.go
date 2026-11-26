@@ -23,35 +23,19 @@ import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
-import static org.mockito.Mockito.RETURNS_SELF;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
-import static org.mockito.Mockito.never;
-import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.io.File;
-import java.io.IOException;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayDeque;
-import java.util.Deque;
 import java.util.List;
 
-import org.hibernate.Session;
-import org.hibernate.query.Query;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
-import org.openbravo.client.application.attachment.AttachImplementationManager;
-import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBError;
-import org.openbravo.model.ad.utility.Attachment;
-import org.openbravo.model.common.enterprise.Organization;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.module.remittance.Remittance;
 import org.openbravo.module.remittance.RemittanceType;
@@ -63,7 +47,7 @@ import com.etendoerp.go.schemaforge.util.NeoMessageTranslator;
 
 /**
  * Unit tests for {@link RemittanceFileGenerator}, which runs a remittance type's Classic SEPA
- * generator and stores its output:
+ * generator (the output is never stored; ETP-6247):
  * <ul>
  *   <li>refusals: no class name, a class that does not exist or is not a generator
  *       ({@code ETGO_RemittanceFileNoGenerator}), the generator's own error with its line detail
@@ -74,14 +58,10 @@ import com.etendoerp.go.schemaforge.util.NeoMessageTranslator;
  *       is refused ({@code ETGO_RemittanceFileSchemaMissing}, {@code -} without a version); a
  *       version GO ships is validated against GO's copy ({@code ETGO_RemittanceFileInvalid}).
  *       {@code RemittanceSepaSchemaTest} specifies the validation itself;</li>
- *   <li>the file name: Classic's {@code <documentNo>_<name>} restricted to safe characters, and
- *       {@code _2}, {@code _3}... while the record already has that name;</li>
- *   <li>the storage: uploaded, made the main attachment keeping the earlier ones; an
- *       {@code IOException} when the record has no tab or the upload cannot be found.</li>
  * </ul>
  *
  * <p>The generators are tiny public nested classes, instantiated by class name exactly as a
- * remittance type names its generator. The DAL and the attachment helper are mocked.
+ * remittance type names its generator.
  * {@code RemittanceFileGeneratorIntegrationTest} runs the real Classic generators.
  *
  * <p>A class of its own: {@code RemittanceFileGenerator} is a new production class.
@@ -699,91 +679,6 @@ class RemittanceFileGeneratorTest {
     assertEquals("/Document/CstmrDrctDbtInitn" + location, refusal.getArgs()[0]);
   }
 
-  // ---------------------------------------------------------------- file name
-
-  @Test
-  void theBaseNameKeepsOnlySafeCharacters() {
-    when(remittance.getDocumentNo()).thenReturn("REM/001");
-    when(remittance.getName()).thenReturn("Cobros ñandú: enero  2026.");
-    assertEquals("REM_001_Cobros_nandu_enero_2026", RemittanceFileGenerator.baseName(remittance));
-
-    when(remittance.getDocumentNo()).thenReturn(null);
-    when(remittance.getName()).thenReturn(null);
-    assertEquals("remittance", RemittanceFileGenerator.baseName(remittance));
-
-    when(remittance.getDocumentNo()).thenReturn("R");
-    when(remittance.getName()).thenReturn("x".repeat(300));
-    assertEquals(120, RemittanceFileGenerator.baseName(remittance).length());
-  }
-
-  @Test
-  void aTakenNameGetsTheNextFreeSuffix() {
-    when(remittance.getDocumentNo()).thenReturn("REM-001");
-    when(remittance.getName()).thenReturn("Cobros");
-    try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class)) {
-      Deque<Long> taken = new ArrayDeque<>(java.util.List.of(1L, 1L, 0L));
-      OBDal dal = dalCounting(taken);
-      dalStatic.when(OBDal::getInstance).thenReturn(dal);
-
-      assertEquals("REM-001_Cobros_3.xml", RemittanceFileGenerator.freeFileName(remittance));
-
-      taken.add(0L);
-      assertEquals("REM-001_Cobros.xml", RemittanceFileGenerator.freeFileName(remittance));
-    }
-  }
-
-  // ---------------------------------------------------------------- storage
-
-  @Test
-  void storeUploadsAndMakesItTheMainAttachmentKeepingTheEarlierOnes() throws Exception {
-    givenStorableRemittance();
-    Attachment stored = mock(Attachment.class);
-    when(stored.getId()).thenReturn("ATT-9");
-    AttachImplementationManager manager = mock(AttachImplementationManager.class);
-    try (MockedStatic<NeoAttachmentsHelper> helper = mockStatic(NeoAttachmentsHelper.class);
-        MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class)) {
-      OBDal dal = dalCounting(new ArrayDeque<>());
-      dalStatic.when(OBDal::getInstance).thenReturn(dal);
-      helper.when(() -> NeoAttachmentsHelper.resolveTabId(anyString(), any())).thenReturn("TAB");
-      helper.when(NeoAttachmentsHelper::getAttachManager).thenReturn(manager);
-      helper.when(() -> NeoAttachmentsHelper.findLatestUploadedAttachment(
-          RemittanceSepaProvisioning.REMITTANCE_TABLE_ID, "REM-1", "REM-001_Cobros.xml"))
-          .thenReturn(stored);
-
-      RemittanceFileGenerator.Stored result = RemittanceFileGenerator.store(remittance,
-          "<xml/>".getBytes(StandardCharsets.UTF_8));
-
-      assertEquals("ATT-9", result.attachmentId);
-      assertEquals("REM-001_Cobros.xml", result.fileName);
-      verify(manager).upload(any(), eq("TAB"), eq("REM-1"), eq("ORG-1"), any(File.class));
-      helper.verify(() -> NeoAttachmentsHelper.markAsMain(stored, true));
-      helper.verify(() -> NeoAttachmentsHelper.markAsMain(any(), eq(false)), never());
-    }
-  }
-
-  @Test
-  void storeFailsWhenTheUploadCannotBeFoundOrTheRecordHasNoTab() throws Exception {
-    givenStorableRemittance();
-    try (MockedStatic<NeoAttachmentsHelper> helper = mockStatic(NeoAttachmentsHelper.class);
-        MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class)) {
-      OBDal dal = dalCounting(new ArrayDeque<>());
-      dalStatic.when(OBDal::getInstance).thenReturn(dal);
-      helper.when(() -> NeoAttachmentsHelper.resolveTabId(anyString(), any())).thenReturn("TAB");
-      AttachImplementationManager manager = mock(AttachImplementationManager.class);
-      helper.when(NeoAttachmentsHelper::getAttachManager).thenReturn(manager);
-      helper.when(() -> NeoAttachmentsHelper.findLatestUploadedAttachment(anyString(),
-          anyString(), anyString())).thenReturn(null);
-
-      assertThrows(IOException.class, () -> RemittanceFileGenerator.store(remittance,
-          new byte[] { 1 }));
-      helper.verify(() -> NeoAttachmentsHelper.markAsMain(any(), anyBoolean()), never());
-
-      helper.when(() -> NeoAttachmentsHelper.resolveTabId(anyString(), any())).thenReturn(null);
-      assertThrows(IOException.class, () -> RemittanceFileGenerator.store(remittance,
-          new byte[] { 1 }));
-    }
-  }
-
   // ---------------------------------------------------------------- generators
 
   /** A plain (non-SEPA) generator answering the fields of the test. */
@@ -855,25 +750,5 @@ class RemittanceFileGeneratorTest {
 
   private void useGenerator(Class<?> generator) {
     when(type.getJavaClassName()).thenReturn(generator.getName());
-  }
-
-  private void givenStorableRemittance() {
-    when(remittance.getDocumentNo()).thenReturn("REM-001");
-    when(remittance.getName()).thenReturn("Cobros");
-    Organization org = mock(Organization.class);
-    when(org.getId()).thenReturn("ORG-1");
-    when(remittance.getOrganization()).thenReturn(org);
-  }
-
-  /** A DAL whose attachment-name count answers {@code taken} in turn, then 0. */
-  @SuppressWarnings("unchecked")
-  private static OBDal dalCounting(Deque<Long> taken) {
-    OBDal dal = mock(OBDal.class);
-    Session session = mock(Session.class);
-    when(dal.getSession()).thenReturn(session);
-    Query<Long> query = mock(Query.class, RETURNS_SELF);
-    when(query.uniqueResult()).thenAnswer(inv -> taken.isEmpty() ? 0L : taken.poll());
-    when(session.createQuery(anyString(), eq(Long.class))).thenReturn(query);
-    return dal;
   }
 }

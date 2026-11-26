@@ -21,10 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyBoolean;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
@@ -50,6 +47,7 @@ import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBError;
 import org.openbravo.module.remittance.Remittance;
 import org.openbravo.module.remittance.RemittanceType;
+import org.openbravo.module.remittance.RemittanceTypeParameter;
 import org.openbravo.module.remittance.utility.RemittanceStatusUtil;
 
 import com.etendoerp.go.schemaforge.util.NeoLanguage;
@@ -58,28 +56,30 @@ import com.etendoerp.go.schemaforge.util.NeoMessageTranslator;
 /**
  * Unit tests for {@link RemittanceFileAction}, the SEPA file actions of the remittance header:
  * <ul>
- *   <li>the requests: a write that is not a POST is a 405, an unknown remittance a 404, every
- *       action a 403 with the flag off;</li>
+ *   <li>the requests: {@code confirm} that is not a POST is a 405, an unknown remittance a 404,
+ *       every action a 403 with the flag off;</li>
  *   <li>«Confirmar» ({@code confirm}): refused when already processed, without lines, or not ready
  *       (422 with {@code error.problems}); on the happy path it backfills the type's file setup,
- *       runs REM with the grouping WITHOUT automatic settlement (ETP-6247), generates and stores the file
- *       and answers {@code {status, attachmentId, fileName, downloadUrl}}; a REM error, a REM
- *       "success" that left the remittance unprocessed and a generator refusal are each a 422 with
- *       the transaction rolled back;</li>
- *   <li>«Regenerar fichero» ({@code generateFile}): refused on an unprocessed remittance;</li>
- *   <li>the telemetry flag {@code is_regeneration}: false for confirm, true for generateFile.</li>
+ *       runs REM with the grouping WITHOUT automatic settlement and generates the file only to
+ *       prove it can be (ETP-6247: nothing is stored), answering {@code {status, fileName}}; a REM
+ *       error, a REM "success" that left the remittance unprocessed and a generator refusal are
+ *       each a 422 with the transaction rolled back;</li>
+ *   <li>«Descargar fichero» ({@code downloadFile}, read): refused on an unprocessed remittance or
+ *       one that is not ready; otherwise the XML generated now, answered as
+ *       {@code {fileName, contentType, content, returnedCount}} — returned receipts included, as
+ *       Classic's «Create File» — with Classic's file name, nothing attached and the transaction
+ *       rolled back; one {@code backend_remittance_file_generated} per download. Inside a
+ *       caller-owned transaction (a batch, where that rollback is skipped) it is refused up front,
+ *       before anything is loaded, locked or generated.</li>
  * </ul>
  *
- * <p>The REM run, the generator, the storage, the download link, the readiness and the telemetry
- * are the class's static seams, mocked through a {@code CALLS_REAL_METHODS} static mock so the
- * action logic runs for real; the DAL answers the reloaded remittance. {@code
- * RemittanceFileReadinessTest} specifies the readiness itself.
+ * <p>The REM run, the generator, the readiness, the returned receipts and the telemetry are static
+ * seams, mocked through a {@code CALLS_REAL_METHODS} static mock so the action logic runs for
+ * real; the DAL answers the reloaded remittance. {@code RemittanceFileReadinessTest} specifies the
+ * readiness itself.
  *
  * <p>A class of its own: {@code RemittanceFileAction} is a new production class; {@code
  * RemittanceHeaderHandlerTest} pins only the action list.
- *
- * <p>ETP-6247: {@code generateFile} is refused with {@code ETGO_RemittanceFileHasReturns} when the
- * remittance has returns ({@link RemittanceReturnState#hasReturns}, a static seam mocked here).
  *
  * @covers com.etendoerp.go.schemaforge.RemittanceFileAction
  */
@@ -122,7 +122,7 @@ class RemittanceFileActionTest {
     processAction = mockStatic(RemittanceProcessAction.class, Mockito.CALLS_REAL_METHODS);
     processAction.when(RemittanceProcessAction::rollback).then(inv -> null);
     telemetry = mockStatic(RemittanceFileTelemetry.class);
-    returnState = mockStatic(RemittanceReturnState.class); // hasReturns: false unless a test says so
+    returnState = mockStatic(RemittanceReturnState.class); // returnedCount: 0 unless a test says so
 
     type = mock(RemittanceType.class);
     remittance = mock(Remittance.class);
@@ -154,17 +154,16 @@ class RemittanceFileActionTest {
 
   // ---------------------------------------------------------------- requests
 
-  @ParameterizedTest
-  @ValueSource(strings = { "confirm", "generateFile" })
-  void aWriteThatIsNotAPostIsA405(String name) throws Exception {
-    NeoResponse response = handler.handle(context("GET", name, new JSONObject()));
+  @Test
+  void aConfirmThatIsNotAPostIsA405() throws Exception {
+    NeoResponse response = handler.handle(context("GET", "confirm", new JSONObject()));
 
     assertEquals(405, response.getHttpStatus());
     verify(handler, never()).loadRemittance(any());
   }
 
   @ParameterizedTest
-  @ValueSource(strings = { "fileReadiness", "confirm", "generateFile" })
+  @ValueSource(strings = { "fileReadiness", "confirm", "downloadFile" })
   void anUnknownRemittanceIsA404(String name) throws Exception {
     doReturn(null).when(handler).loadRemittance(REM_ID);
 
@@ -174,7 +173,7 @@ class RemittanceFileActionTest {
   }
 
   @ParameterizedTest
-  @ValueSource(strings = { "fileReadiness", "confirm", "generateFile" })
+  @ValueSource(strings = { "fileReadiness", "confirm", "downloadFile" })
   void everyActionAnswers403WhileTheFlagIsOff(String name) throws Exception {
     doReturn(false).when(handler).isFlagEnabled();
 
@@ -250,28 +249,50 @@ class RemittanceFileActionTest {
 
   // ---------------------------------------------------------------- confirm happy path
 
+  /** ETP-6247: «Agrupar solo por cliente» reaches REM as its own code, GGP. */
   @Test
-  void confirmProcessesGeneratesAndStoresInOrderAndAnswersTheFile() throws Exception {
+  void confirmRunsTheProcessWithTheGroupingByBusinessPartner() throws Exception {
     Remittance processed = processedReload("PR");
     givenRun(success());
     givenGenerated();
 
     NeoResponse response = confirm(new JSONObject()
-        .put("fieldValues", new JSONObject().put("grouping", "GGPD")));
+        .put("fieldValues", new JSONObject().put("grouping", "GGP")));
+
+    assertEquals(200, response.getHttpStatus(), String.valueOf(response.getBody()));
+    action.verify(() -> RemittanceFileAction.runProcess(REM_ID, "GGP"));
+    action.verify(() -> RemittanceFileAction.generate(processed));
+  }
+
+  @Test
+  void confirmProcessesAndChecksTheFileWithoutStoringIt() throws Exception {
+    Remittance processed = processedReload("PR");
+    when(processed.getDocumentNo()).thenReturn("R-1");
+    when(processed.getName()).thenReturn("Cobros");
+    givenRun(success());
+    givenGenerated();
+
+    NeoResponse response;
+    try (MockedStatic<NeoAttachmentsHelper> attachments = mockStatic(NeoAttachmentsHelper.class)) {
+      response = confirm(new JSONObject()
+          .put("fieldValues", new JSONObject().put("grouping", "GGPD")));
+      attachments.verifyNoInteractions();
+    }
 
     assertEquals(200, response.getHttpStatus(), String.valueOf(response.getBody()));
     JSONObject body = response.getBody();
     assertEquals("PR", body.getString("status"));
-    assertEquals("ATT-1", body.getString("attachmentId"));
     assertEquals("R-1_Cobros.xml", body.getString("fileName"));
-    assertEquals("https://app/download/ATT-1", body.getString("downloadUrl"));
+    assertFalse(body.has("attachmentId"), "the file is not stored (ETP-6247)");
+    assertFalse(body.has("downloadUrl"));
+    assertFalse(body.has("content"), "confirm does not hand the file out: downloadFile does");
     // ETP-6247: processed WITHOUT the automatic settlement; the flag is never turned on.
     verify(remittance, never()).setETARAutomaticprocess(any());
     setup.verify(() -> RemittanceSepaFileSetup.ensure(type, RemittanceSepaProvisioning.SCHEME_CORE));
     action.verify(() -> RemittanceFileAction.runProcess(REM_ID, "GGPD"));
     action.verify(() -> RemittanceFileAction.generate(processed));
-    action.verify(() -> RemittanceFileAction.store(eq(processed), any()));
     processAction.verify(RemittanceProcessAction::rollback, never());
+    telemetry.verifyNoInteractions();
   }
 
   /**
@@ -296,16 +317,14 @@ class RemittanceFileActionTest {
   }
 
   @Test
-  void confirmDefaultsToOnePaymentPerLineAndAnswersANullLinkWithoutASecret() throws Exception {
+  void confirmDefaultsToOnePaymentPerLine() throws Exception {
     processedReload("PR");
     givenRun(success());
     givenGenerated();
-    action.when(() -> RemittanceFileAction.downloadUrl(anyString(), anyString())).thenReturn(null);
 
     NeoResponse response = confirm(new JSONObject());
 
     assertEquals(200, response.getHttpStatus());
-    assertTrue(response.getBody().isNull("downloadUrl"));
     action.verify(() -> RemittanceFileAction.runProcess(REM_ID,
         RemittanceProcessAction.GROUPING_NONE));
   }
@@ -364,7 +383,6 @@ class RemittanceFileActionTest {
     assertTrue(message.contains("pain.008.001.08") && message.contains("cvc-pattern-valid"),
         message);
     processAction.verify(RemittanceProcessAction::rollback);
-    action.verify(() -> RemittanceFileAction.store(any(), any()), never());
     telemetry.verifyNoInteractions();
   }
 
@@ -383,64 +401,149 @@ class RemittanceFileActionTest {
     contextStatic.verify(OBContext::restorePreviousMode);
   }
 
-  // ---------------------------------------------------------------- generateFile
+  // ---------------------------------------------------------------- downloadFile
 
   @Test
-  void generateFileOnAnUnprocessedRemittanceIsRefused() throws Exception {
-    NeoResponse response = handler.handle(context("POST", "generateFile", new JSONObject()));
+  void downloadingTheFileOfAnUnprocessedRemittanceIsRefused() throws Exception {
+    NeoResponse response = download();
 
     assertEquals(422, response.getHttpStatus());
     assertEquals(RemittanceFileAction.MSG_NOT_PROCESSED, messageKey(response));
     action.verify(() -> RemittanceFileAction.generate(any()), never());
+    processAction.verify(RemittanceProcessAction::rollback);
   }
 
+  /**
+   * ETP-6247: the file is generated now and handed out in the response, as Classic's «Create
+   * File» button does: Classic's name, nothing attached, nothing processed, the transaction rolled
+   * back so whatever the generation touched is not kept, one telemetry event per download.
+   */
   @Test
-  void generateFileOfAProcessedRemittanceStoresANewFileWithoutRunningRem() throws Exception {
-    when(remittance.isProcessed()).thenReturn(true);
-    when(remittance.get(RemittanceStatusUtil.PROPERTY_REMITTANCE_STATUS)).thenReturn("CT");
+  void downloadingGeneratesTheFileNowAndAnswersItWithoutStoringIt() throws Exception {
+    givenProcessed("R-1", "Cobros");
     givenGenerated();
 
-    NeoResponse response = handler.handle(context("POST", "generateFile", new JSONObject()));
+    NeoResponse response;
+    try (MockedStatic<NeoAttachmentsHelper> attachments = mockStatic(NeoAttachmentsHelper.class)) {
+      response = handler.handle(context("GET", "downloadFile", null));
+      attachments.verifyNoInteractions();
+    }
 
-    assertEquals(200, response.getHttpStatus());
-    assertEquals("ATT-1", response.getBody().getString("attachmentId"));
+    assertEquals(200, response.getHttpStatus(), String.valueOf(response.getBody()));
+    JSONObject body = response.getBody();
+    assertEquals("R-1_Cobros.xml", body.getString("fileName"));
+    assertEquals("application/xml", body.getString("contentType"));
+    assertEquals("<xml/>", body.getString("content"));
+    assertEquals(0, body.getInt("returnedCount"));
     setup.verify(() -> RemittanceSepaFileSetup.ensure(type, RemittanceSepaProvisioning.SCHEME_CORE));
+    action.verify(() -> RemittanceFileAction.generate(remittance));
     action.verify(() -> RemittanceFileAction.runProcess(anyString(), anyString()), never());
     verify(remittance, never()).setETARAutomaticprocess(any());
+    processAction.verify(RemittanceProcessAction::rollback);
+    telemetry.verify(() -> RemittanceFileTelemetry.fileDownloaded(remittance, true, 2));
   }
 
+  /**
+   * The download undoes what the generation writes through a rollback that a caller-owned
+   * transaction skips, so inside one it is refused before anything is loaded, locked or generated:
+   * otherwise the batch would commit the type backfill, the creditor id / IBAN copies and
+   * Classic's line messages along with its own writes.
+   */
   @Test
-  void generateFileIsRefusedWhenTheRemittanceHasReturns() throws Exception {
-    when(remittance.isProcessed()).thenReturn(true);
-    returnState.when(() -> RemittanceReturnState.hasReturns(remittance)).thenReturn(true);
+  void aDownloadInsideACallerOwnedTransactionIsRefusedBeforeGeneratingAnything() throws Exception {
+    givenProcessed("R-1", "Cobros");
     givenGenerated();
+    action.when(RemittanceFileAction::callerOwnsTransaction).thenReturn(true);
 
-    NeoResponse response = handler.handle(context("POST", "generateFile", new JSONObject()));
+    NeoResponse response = download();
 
     assertEquals(422, response.getHttpStatus());
-    assertEquals("ETGO_RemittanceFileHasReturns", messageKey(response));
-    action.verify(() -> RemittanceFileAction.generate(any()), never());
-    action.verify(() -> RemittanceFileAction.store(any(), any()), never());
-    setup.verifyNoInteractions();
+    assertEquals(RemittanceFileAction.MSG_DOWNLOAD_IN_BATCH, messageKey(response));
+    verify(handler, never()).loadRemittance(any());
+    verify(handler, never()).lockRemittance(any());
     readiness.verify(() -> RemittanceFileReadiness.evaluate(any()), never());
+    setup.verifyNoInteractions();
+    action.verify(() -> RemittanceFileAction.generate(any()), never());
+    processAction.verify(RemittanceProcessAction::rollback, never());
+    telemetry.verifyNoInteractions();
   }
 
-  // ---------------------------------------------------------------- telemetry
+  /** The refusal is the download's only: the readiness, a pure read, still answers in a batch. */
+  @Test
+  void aCallerOwnedTransactionDoesNotRefuseTheReadiness() throws Exception {
+    action.when(RemittanceFileAction::callerOwnsTransaction).thenReturn(true);
+    readiness.when(() -> RemittanceFileReadiness.body(remittance))
+        .thenReturn(new JSONObject().put("ready", true));
+
+    NeoResponse response = handler.handle(context("GET", "fileReadiness", null));
+
+    assertEquals(200, response.getHttpStatus());
+    assertTrue(response.getBody().getBoolean("ready"));
+  }
+
+  /** As Classic: a remittance with returned receipts is generated whole, and says how many. */
+  @Test
+  void aRemittanceWithReturnsIsDownloadedWholeAndCountsThem() throws Exception {
+    givenProcessed("R-1", "Cobros");
+    givenGenerated();
+    returnState.when(() -> RemittanceReturnState.returnedCount(remittance)).thenReturn(2);
+
+    NeoResponse response = download();
+
+    assertEquals(200, response.getHttpStatus(), String.valueOf(response.getBody()));
+    assertEquals(2, response.getBody().getInt("returnedCount"));
+    action.verify(() -> RemittanceFileAction.generate(remittance));
+  }
 
   @Test
-  void isRegenerationIsFalseForConfirmAndTrueForGenerateFile() throws Exception {
-    Remittance processed = processedReload("CT");
-    givenRun(success());
-    givenGenerated();
+  void aDownloadThatIsNotReadyListsTheProblemsAndGeneratesNothing() throws Exception {
+    givenProcessed("R-1", "Cobros");
+    RemittanceFileProblems problems = new RemittanceFileProblems();
+    problems.account("ACC-1", RemittanceFileReadiness.MSG_ACCOUNT_NO_IBAN, "BBVA");
+    readiness.when(() -> RemittanceFileReadiness.evaluate(any()))
+        .thenReturn(result(RemittanceSepaProvisioning.SCHEME_CORE, problems, 2, 2));
 
-    confirm(new JSONObject());
-    telemetry.verify(() -> RemittanceFileTelemetry.fileGenerated(processed, true, 2, false));
+    NeoResponse response = download();
 
-    when(remittance.isProcessed()).thenReturn(true);
-    handler.handle(context("POST", "generateFile", new JSONObject()));
-    telemetry.verify(() -> RemittanceFileTelemetry.fileGenerated(remittance, true, 2, true));
-    telemetry.verify(() -> RemittanceFileTelemetry.fileGenerated(any(), anyBoolean(), anyInt(),
-        anyBoolean()), Mockito.times(2));
+    assertEquals(422, response.getHttpStatus());
+    assertEquals(RemittanceFileAction.MSG_NOT_READY, messageKey(response));
+    assertEquals(1, response.getBody().getJSONObject("error").getJSONArray("problems").length());
+    action.verify(() -> RemittanceFileAction.generate(any()), never());
+    telemetry.verifyNoInteractions();
+  }
+
+  @Test
+  void aGeneratorRefusalOfADownloadIsA422AndRolledBack() throws Exception {
+    givenProcessed("R-1", "Cobros");
+    action.when(() -> RemittanceFileAction.generate(any())).thenThrow(
+        new RemittanceFileGenerator.Refusal(RemittanceFileGenerator.MSG_INVALID,
+            "pain.008.001.08", "cvc-pattern-valid"));
+
+    NeoResponse response = download();
+
+    assertEquals(422, response.getHttpStatus());
+    assertEquals(RemittanceFileGenerator.MSG_INVALID, messageKey(response));
+    processAction.verify(RemittanceProcessAction::rollback);
+    telemetry.verifyNoInteractions();
+  }
+
+  /**
+   * Classic's name ({@code CreateFile#getFileName}): {@code <documentNo>_<name>} with
+   * {@code CreateFile#replaceStrangeCharacters}, and the type's {@code FILE_EXTENSION} in lower
+   * case, {@code xml} without one.
+   */
+  @Test
+  void theFileNameIsClassics() {
+    when(remittance.getDocumentNo()).thenReturn("1000016");
+    when(remittance.getName()).thenReturn("Cobros ñandú enero");
+    assertEquals("1000016_Cobros_nandu_enero.xml", RemittanceFileAction.fileName(remittance));
+
+    RemittanceTypeParameter extension = mock(RemittanceTypeParameter.class);
+    when(extension.getName()).thenReturn("FILE_EXTENSION");
+    when(extension.isActive()).thenReturn(true);
+    when(extension.getValue()).thenReturn("TXT");
+    when(type.getREMRemittanceTypeParamList()).thenReturn(java.util.List.of(extension));
+    assertEquals("1000016_Cobros_nandu_enero.txt", RemittanceFileAction.fileName(remittance));
   }
 
   // ---------------------------------------------------------------- helpers
@@ -465,10 +568,16 @@ class RemittanceFileActionTest {
 
   private void givenGenerated() {
     action.when(() -> RemittanceFileAction.generate(any())).thenReturn("<xml/>".getBytes());
-    action.when(() -> RemittanceFileAction.store(any(), any()))
-        .thenReturn(new RemittanceFileGenerator.Stored("ATT-1", "R-1_Cobros.xml"));
-    action.when(() -> RemittanceFileAction.downloadUrl(REM_ID, "ATT-1"))
-        .thenReturn("https://app/download/ATT-1");
+  }
+
+  private void givenProcessed(String documentNo, String name) {
+    when(remittance.isProcessed()).thenReturn(true);
+    when(remittance.getDocumentNo()).thenReturn(documentNo);
+    when(remittance.getName()).thenReturn(name);
+  }
+
+  private NeoResponse download() {
+    return handler.handle(context("POST", "downloadFile", new JSONObject()));
   }
 
   private static OBError success() {
@@ -498,13 +607,14 @@ class RemittanceFileActionTest {
         new java.util.LinkedHashMap<>();
     RemittanceFileAction.addContracts(contracts);
 
-    assertEquals(java.util.List.of("fileReadiness", "confirm", "generateFile"),
+    assertEquals(java.util.List.of("fileReadiness", "confirm", "downloadFile"),
         new java.util.ArrayList<>(contracts.keySet()));
     assertFalse(contracts.get("fileReadiness").isMutating());
     assertTrue(contracts.get("confirm").isMutating());
     assertTrue(contracts.get("confirm").isFieldValuesBody());
-    assertTrue(contracts.get("generateFile").isMutating());
-    assertTrue(RemittanceFileAction.serves("confirm"));
+    assertFalse(contracts.get("downloadFile").isMutating(), "a download writes nothing");
+    assertTrue(RemittanceFileAction.serves("downloadFile"));
+    assertFalse(RemittanceFileAction.serves("generateFile"), "«Regenerar fichero» is gone");
     assertFalse(RemittanceFileAction.serves("process"));
   }
 }

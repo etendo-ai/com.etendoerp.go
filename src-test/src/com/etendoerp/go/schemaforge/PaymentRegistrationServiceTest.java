@@ -33,6 +33,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
@@ -66,11 +67,13 @@ import org.openbravo.model.common.invoice.Invoice;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.model.financialmgmt.payment.FIN_Payment;
 import org.openbravo.model.financialmgmt.payment.FIN_Payment_Credit;
+import org.openbravo.model.financialmgmt.payment.FIN_PaymentDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentMethod;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FinAccPaymentMethod;
 import org.openbravo.model.ad.system.Client;
+import org.openbravo.module.remittance.RemittanceLine;
 
 import com.etendoerp.psd2.bank.integration.data.PisPayment;
 import com.etendoerp.psd2.bank.integration.utils.BankIntegrationConstants;
@@ -87,6 +90,8 @@ import com.etendoerp.psd2.bank.integration.utils.BankIntegrationConstants;
  *       and without valid payment methods</li>
  *   <li>{@code handleListPayments} - blank invoiceId, normal results, exception path</li>
  * </ul>
+ *
+ * @covers com.etendoerp.go.schemaforge.PaymentRegistrationService
  */
 @ExtendWith(MockitoExtension.class)
 @MockitoSettings(strictness = Strictness.LENIENT)
@@ -140,6 +145,13 @@ class PaymentRegistrationServiceTest {
     when(obDal.createCriteria(FIN_Payment_Credit.class)).thenReturn(creditCriteria);
     when(creditCriteria.add(any(Criterion.class))).thenReturn(creditCriteria);
     when(creditCriteria.list()).thenReturn(Collections.emptyList());
+
+    // ETP-6247: paymentListItem names the remittance a payment came from (REM_RemittanceLine),
+    // same reasoning as the two stubs above: no remittance unless a test says otherwise.
+    OBCriteria<RemittanceLine> remittanceLineCriteria = mock(OBCriteria.class);
+    when(obDal.createCriteria(RemittanceLine.class)).thenReturn(remittanceLineCriteria);
+    when(remittanceLineCriteria.add(any(Criterion.class))).thenReturn(remittanceLineCriteria);
+    when(remittanceLineCriteria.uniqueResult()).thenReturn(null);
   }
 
   /** ETP-5558: the installment must be the invoice's own to be paid through it. */
@@ -314,6 +326,103 @@ class PaymentRegistrationServiceTest {
     NeoResponse response = PaymentRegistrationService.doRegisterPayment(
         "inv-1", "sched-1", "100.00", "2026-01-15", "acc-1", true);
 
+    assertEquals(400, response.getHttpStatus());
+    assertTrue(response.getBody().getJSONObject("error").getString("message")
+        .contains("No pending payment schedule details"));
+  }
+
+  // ── doRegisterPayment on an installment in a confirmed remittance (InvoiceRemittance) ──
+
+  /**
+   * An own invoice, installment and same-currency account; the installment's details are
+   * {@code remitted} (linked to a REM_SENT payment) plus {@code free} (unlinked, may be null).
+   * Returns the criteria of the pending-PSD lookup, empty, so a test can tell whether the
+   * registration went past the remittance guard.
+   */
+  @SuppressWarnings("unchecked")
+  private OBCriteria<FIN_PaymentScheduleDetail> stubRemittedInstallment(String remitted,
+      String free) {
+    Invoice invoice = mock(Invoice.class);
+    FIN_PaymentSchedule schedule = mock(FIN_PaymentSchedule.class);
+    FIN_FinancialAccount account = mock(FIN_FinancialAccount.class);
+    Currency sameCurrency = mock(Currency.class);
+    when(sameCurrency.getId()).thenReturn("USD-ID");
+    when(sameCurrency.getStandardPrecision()).thenReturn(2L);
+    when(invoice.getCurrency()).thenReturn(sameCurrency);
+    when(account.getCurrency()).thenReturn(sameCurrency);
+    when(obDal.get(Invoice.class, "inv-1")).thenReturn(invoice);
+    when(obDal.get(FIN_PaymentSchedule.class, "sched-1")).thenReturn(schedule);
+    linkToInvoice(schedule, invoice);
+    when(obDal.get(FIN_FinancialAccount.class, "acc-1")).thenReturn(account);
+
+    FIN_Payment remittedPayment = mock(FIN_Payment.class);
+    when(remittedPayment.getId()).thenReturn("rem-pay-1");
+    when(remittedPayment.getDocumentNo()).thenReturn("PAY-REM");
+    when(remittedPayment.getStatus()).thenReturn(InvoiceRemittance.STATUS_REMITTED);
+    FIN_PaymentDetail remittedDetail = mock(FIN_PaymentDetail.class);
+    when(remittedDetail.getFinPayment()).thenReturn(remittedPayment);
+    FIN_PaymentScheduleDetail remittedPsd = mock(FIN_PaymentScheduleDetail.class);
+    when(remittedPsd.getAmount()).thenReturn(new BigDecimal(remitted));
+    when(remittedPsd.getPaymentDetails()).thenReturn(remittedDetail);
+    List<FIN_PaymentScheduleDetail> details = new ArrayList<>(List.of(remittedPsd));
+    if (free != null) {
+      FIN_PaymentScheduleDetail freePsd = mock(FIN_PaymentScheduleDetail.class);
+      when(freePsd.getAmount()).thenReturn(new BigDecimal(free));
+      details.add(freePsd);
+    }
+    when(schedule.getFINPaymentScheduleDetailInvoicePaymentScheduleList()).thenReturn(details);
+
+    OBCriteria<FIN_PaymentScheduleDetail> psdCriteria = mock(OBCriteria.class);
+    when(obDal.createCriteria(FIN_PaymentScheduleDetail.class)).thenReturn(psdCriteria);
+    when(psdCriteria.add(any(Criterion.class))).thenReturn(psdCriteria);
+    when(psdCriteria.addOrderBy(anyString(), anyBoolean())).thenReturn(psdCriteria);
+    when(psdCriteria.list()).thenReturn(Collections.emptyList());
+    return psdCriteria;
+  }
+
+  /** Same setup as the empty-PSD case above, but fully remitted: it says why, not the generic 400. */
+  @Test
+  void testDoRegisterPaymentFullyRemittedInstallmentReturns422() throws Exception {
+    stubRemittedInstallment("100.00", null);
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPayment(
+        "inv-1", "sched-1", "100.00", "2026-01-15", "acc-1", true);
+
+    assertEquals(422, response.getHttpStatus());
+    JSONObject error = response.getBody().getJSONObject("error");
+    assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE,
+        error.getJSONArray("messageKeys").getString(0));
+    assertEquals("PAY-REM", error.getString("remittanceDocumentNo"));
+    verify(obDal, never()).createCriteria(FIN_PaymentScheduleDetail.class);
+  }
+
+  @Test
+  void testDoRegisterPaymentOverPayableOfPartlyRemittedInstallmentReturns422() throws Exception {
+    stubRemittedInstallment("60.00", "40.00");
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPayment(
+        "inv-1", "sched-1", "40.01", "2026-01-15", "acc-1", true);
+
+    assertEquals(422, response.getHttpStatus());
+    JSONObject error = response.getBody().getJSONObject("error");
+    assertEquals(0, new BigDecimal("40.00").compareTo(
+        new BigDecimal(error.getString("payableAmount"))));
+    assertEquals(0, new BigDecimal("60.00").compareTo(
+        new BigDecimal(error.getString("remittedAmount"))));
+    verify(obDal, never()).createCriteria(FIN_PaymentScheduleDetail.class);
+  }
+
+  /** Within the payable part the guard lets it through to the ordinary registration. */
+  @Test
+  void testDoRegisterPaymentWithinPayableOfPartlyRemittedInstallmentPassesTheGuard()
+      throws Exception {
+    OBCriteria<FIN_PaymentScheduleDetail> psdCriteria = stubRemittedInstallment("60.00", "40.00");
+
+    NeoResponse response = PaymentRegistrationService.doRegisterPayment(
+        "inv-1", "sched-1", "40.00", "2026-01-15", "acc-1", true);
+
+    // Past the guard: it reached the pending-installment lookup (empty here → its own 400).
+    verify(psdCriteria).list();
     assertEquals(400, response.getHttpStatus());
     assertTrue(response.getBody().getJSONObject("error").getString("message")
         .contains("No pending payment schedule details"));
