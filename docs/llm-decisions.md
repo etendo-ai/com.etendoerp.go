@@ -114,7 +114,9 @@ Jev, Cloudflare Clef, …) once they are added there; a caller selects one, keep
 credentials, with `new LlmDecider(LlmConfig.fromRuntime().withModel("<model group>"), "<target>")`.
 
 **First production caller: bank-rejection suggestions (ETP-6359).** `BankBounceAi` asks one
-`choice` question per bank rejection from inside a REST `autoMatch`, with target
+`choice` question per bank rejection from inside a REST `autoMatch` (gated by the
+`bank-bounce-suggestions` flag plus a configured key; it has no flag of its own, by product
+decision), with target
 `bank-bounce-suggestions` (so its spend is told apart in `ETGO_USAGE_EVENT`) and
 `LlmConfig.fromRuntime().withTimeout(8000)`: a request thread waits for it, so the generic 30 s is
 too long. `withTimeout` is generic (a copy with another connect and request timeout, next to

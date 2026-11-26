@@ -816,8 +816,8 @@ final class BankBounceAi {
   // ---------------------------------------------------------------------------
 
   /**
-   * The server-side control of {@code discardPair} for an outflow the user took from the AI
-   * recommendation ({@code choiceSource: "ai"}): the pair must still be a detected pair and the
+   * The server-side control of {@code discardPair}, and of a {@code bouncePair} group of
+   * {@code applySuggestions}, for an outflow the user took from the AI recommendation ({@code choiceSource: "ai"}): the pair must still be a detected pair and the
    * cache, read under the key of THIS rejection (its own question and candidates, rebuilt from the
    * current detection), must still recommend that outflow once the conflict check runs over the
    * siblings present now. A sibling that changed without touching this rejection's question does
@@ -827,7 +827,8 @@ final class BankBounceAi {
    * and rethrown, so the action answers its generic server error instead of pretending the
    * suggestion is stale.</p>
    *
-   * @param body      the request body
+   * @param body      the request body of {@code discardPair}, or one {@code bouncePair} group of
+   *                  {@code applySuggestions}; both carry the optional {@code choiceSource}
    * @param detection the action's detection, already read by the validation
    * @param pair      the validated pair
    * @return {@code null} to go on, or the 409 {@code BOUNCE_AI_SUGGESTION_STALE}

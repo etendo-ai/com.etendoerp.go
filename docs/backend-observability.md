@@ -531,7 +531,7 @@ of whose candidates, is the other.
 | `preselected` | the pair came checked (proposed `high`) |
 | `decision` | `discarded`, `unchecked`, `sent_to_panel`, `failed` |
 | `surface` | `modal` (`applySuggestions`, also when an agent calls it) / `panel` (`discardPair`, `dismissPair`) |
-| `chosen_among_alternatives` | the user discarded one candidate of an ambiguous pair (`discardPair`, or `dismissPair` naming the candidate) |
+| `chosen_among_alternatives` | the user discarded one candidate of an ambiguous pair (`discardPair`, an `applySuggestions` `bouncePair` group naming a candidate — the modal's *Excluir*, ETP-6359 — or `dismissPair` naming the candidate) |
 | `channel` | `mcp` for an MCP tool call or MCP batch, else `ui` (the server cannot tell the SPA from another REST client) |
 | `flag_enabled` | always `true` |
 | `ai_assessed` | ETP-6359: the AI second layer had assessed the rejection (an assessment was in the cache). Only when the AI assessed this rejection (a valid assessment is in the cache), always `true` then |

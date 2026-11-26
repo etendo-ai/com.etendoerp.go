@@ -4446,7 +4446,18 @@ share 140.
   second time. Each pair succeeds or fails alone in `results[]` (`{kind, statementLineId,
   counterpartLineId, discarded:true}` or the coded refusal). A group of an unknown `kind` is refused
   (400); a group with no `kind` and no operations is refused as before. With the flag off every
-  bounce group answers 403 `BOUNCE_SUGGESTIONS_OFF`. The `reconciliation_match_evaluated`
+  bounce group answers 403 `BOUNCE_SUGGESTIONS_OFF`. **Optional per-group `choiceSource`** (ETP-6359,
+  the modal resolving an ambiguous pair: `statementLineId` is the picked outflow, `counterpartLineId`
+  the rejection): `"ai"` says the outflow is the untouched AI default; the group then runs the same
+  control as `discardPair` (after validation, before the discard): if the pair is no longer detected
+  or the cached assessment no longer recommends that outflow (stale, expired, abstained, not
+  recommended) **that group alone** is refused, and the others of the call proceed. Its `results[]`
+  entry is the usual coded refusal tagged like every other one:
+  `{kind:"bouncePair", statementLineId, counterpartLineId, code:"BOUNCE_AI_SUGGESTION_STALE",
+  message, error:{message, status:409, code, messageKeys:["ETGO_BounceAiSuggestionStale"]}}`;
+  it counts as a `failed` decision in the KPI. An internal failure of the lookup propagates (generic
+  server error, never a stale 409). `"user"`, absent or any other value is ignored: the group behaves
+  as before. The `reconciliation_match_evaluated`
   telemetry counts transaction groups only. **Optional `bounceDecisions: [{groupKey, decision}]`**
   (flag on only; read for the KPI, never validated, never an error): the SPA sends it whenever the
   modal showed at least one bounce pair (possibly `[]`), one entry per shown pair it did NOT check —
@@ -4552,9 +4563,10 @@ user chose it, and its signal is stored as null.
 
 **AI second layer (ETP-6359).** After the deterministic detection, `autoMatch` asks the Decisions
 API (`LlmDecider`, target `bank-bounce-suggestions`) how likely each candidate outflow is the one a
-`review` rejection reverses. **No flag of its own**: it is part of `bank-bounce-suggestions`, so it
-runs whenever that flag is on for the account, on the REST channel outside a batch, with a Copilot
-key configured and at least one offered `review` pair. A `high` pair is never sent. The AI never
+`review` rejection reverses. **No flag of its own**, by product decision (the ticket asked for a
+separate `bank-bounce-ai` flag; it was deliberately not created): it is part of
+`bank-bounce-suggestions`, so it runs whenever that flag is on for the account, on the REST channel
+outside a batch, with a Copilot key configured and at least one offered `review` pair. A `high` pair is never sent. The AI never
 adds a pair, never discards on its own and never changes a pair, its `groupKey`, its confidence or
 the order of `candidates[]`; `pendingLines` is not touched.
 
@@ -6967,7 +6979,8 @@ with no `bouncePair` group reports nothing for bounces.
 The AI second layer of `autoMatch` (see *AI second layer* in §4.12.1.1) is **REST-only**. On the MCP
 channel, and inside any batch, `autoMatch` never calls the model, never adds `bounceAiAssessments`
 and the decision events carry no `ai_*` property (nor do they on the UI channel for a rejection the AI did not assess): an agent's `autoMatch` is byte for byte the one
-without the AI. `discardPair` accepts `choiceSource` on both channels, but only the SPA sends it
+without the AI. `discardPair` and the `bouncePair` groups of `applySuggestions` accept `choiceSource`
+on both channels, but only the SPA sends it
 (it is not declared in the agent contract); absent, the behaviour is the pre-ETP-6359 one. The
 reason is mechanical, not a policy: the call releases the DAL connection, which a batch cannot
 allow, and an agent already sees the signals and the candidates and decides on them.

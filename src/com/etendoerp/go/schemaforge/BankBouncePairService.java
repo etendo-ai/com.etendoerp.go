@@ -79,6 +79,11 @@ import com.etendoerp.go.schemaforge.BankBounceDetector.StatementLine;
  * {@value BankBounceDetector#WINDOW_DAYS} days of the earlier ({@code DISCARD_NOT_ALLOWED}); and no
  * real ERP payment on either line ({@code HAS_PAYMENT}, {@link BankBouncePaymentGuard}). A pair the
  * detection did not propose (no signal) is accepted when it passes all of this: the user chose it.
+ * After it, and before the discard, a request that carries {@code choiceSource: "ai"} (the body of
+ * {@code discardPair}, or one {@code bouncePair} group of {@code applySuggestions}, ETP-6359) runs
+ * {@link BankBounceAi#checkAiChoice}: a stale AI pick is refused with 409
+ * {@code BOUNCE_AI_SUGGESTION_STALE}, for a group that group alone while the others proceed. Any other
+ * {@code choiceSource}, or none, changes nothing.
  *
  * <p><b>Concurrency.</b> Once both lines are known to belong to the account, they are locked
  * {@code FOR UPDATE} in id order and re-read before their state is checked ({@link #lockLines}),
@@ -349,7 +354,9 @@ final class BankBouncePairService {
    * group is prepared and in the same request transaction. Every line it discards joins
    * {@code takenLineIds}, the set the transaction groups are then prepared against, so a line
    * checked in two groups is refused the second time (409). Each pair succeeds or fails on its own;
-   * a refusal is appended to {@code results} tagged with its lines and kind. With the flag off,
+   * a refusal is appended to {@code results} tagged with its lines and kind. A group may carry the
+   * optional {@code choiceSource}: {@code "ai"} adds the stale-AI control after the validation and
+   * before the discard, and a stale pick refuses that group only. With the flag off,
    * every such group is refused with the 403 and nothing is written. The account's detection is
    * read once, on the first pair that needs it, and shared by every pair of the call
    * ({@link Detection}).
@@ -402,7 +409,7 @@ final class BankBouncePairService {
       String lineId = group.optString(ReconciliationHandler.KEY_STATEMENT_LINE_ID, null);
       String counterpartId = group.optString(KEY_COUNTERPART_LINE_ID, null);
       Validated outcome = detection != null
-          ? applyOne(handler, account, lineId, counterpartId, takenLineIds, detection)
+          ? applyOne(handler, account, group, takenLineIds, detection)
           : Validated.failed(BankBounceErrors.suggestionsOff());
       if (detection != null && outcomes != null) {
         outcomes.accept(lineId, counterpartId, outcome);
@@ -418,16 +425,20 @@ final class BankBouncePairService {
    *
    * @param handler       the reconciliation handler
    * @param account       the account of the call
-   * @param lineId        the group's {@code statementLineId}
-   * @param counterpartId the group's {@code counterpartLineId}
+   * @param group         the submitted group: {@code statementLineId}, {@code counterpartLineId}
+   *                      and the optional {@code choiceSource} (ETP-6359: {@code "ai"} makes the
+   *                      same server-side control as {@code discardPair}; any other value or none
+   *                      changes nothing)
    * @param takenLineIds  the lines already taken in this call, updated on success
    * @param detection     the detection of the call, read once and shared by its pairs
-   * @return the discarded pair, or the refusal ({@link Validated#error()})
-   * @throws Exception when the account data cannot be read
+   * @return the discarded pair, or the refusal ({@link Validated#error()}); a stale AI pick is the
+   *         409 {@code BOUNCE_AI_SUGGESTION_STALE} of that group only
+   * @throws Exception when the account data cannot be read, or the AI lookup fails internally
    */
   private static Validated applyOne(ReconciliationHandler handler, FIN_FinancialAccount account,
-      String lineId, String counterpartId, Set<String> takenLineIds, Detection detection)
-      throws Exception {
+      JSONObject group, Set<String> takenLineIds, Detection detection) throws Exception {
+    String lineId = group.optString(ReconciliationHandler.KEY_STATEMENT_LINE_ID, null);
+    String counterpartId = group.optString(KEY_COUNTERPART_LINE_ID, null);
     NeoResponse missing = missingIds(lineId, counterpartId);
     if (missing != null) {
       return Validated.failed(missing);
@@ -438,6 +449,11 @@ final class BankBouncePairService {
     Validated pair = validate(handler, account, lineId, counterpartId, detection);
     if (pair.error() != null) {
       return pair;
+    }
+    // ETP-6359: an outflow taken from the AI default is accepted only while it still holds.
+    NeoResponse stale = BankBounceAi.checkAiChoice(group, detection, pair);
+    if (stale != null) {
+      return Validated.failed(stale);
     }
     discard(pair);
     takenLineIds.add(lineId);

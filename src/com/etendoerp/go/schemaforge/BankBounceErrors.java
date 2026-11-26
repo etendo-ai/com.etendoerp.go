@@ -48,7 +48,9 @@ final class BankBounceErrors {
   /**
    * ETP-6359: {@code discardPair} came with {@code choiceSource: "ai"} but the AI recommendation
    * is no longer current (the pair is not detected anymore, or the assessment that recommended the
-   * outflow is gone or changed). 409.
+   * outflow is gone or changed). 409. A {@code bouncePair} group of {@code applySuggestions} can
+   * carry the same {@code choiceSource} and gets the same refusal as a per-group entry of
+   * {@code results[]}; the other groups of the call proceed.
    */
   static final String CODE_AI_SUGGESTION_STALE = "BOUNCE_AI_SUGGESTION_STALE";
 
