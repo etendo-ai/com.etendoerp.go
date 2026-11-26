@@ -27,12 +27,14 @@ import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.openbravo.module.bptaxidkey.ViesService;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.hibernate.criterion.Restrictions;
@@ -40,7 +42,9 @@ import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.base.exception.OBException;
+import org.openbravo.base.exception.OBSecurityException;
 import org.openbravo.base.provider.OBProvider;
+import org.openbravo.base.validation.ValidationException;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.core.SessionHandler;
 import org.openbravo.dal.service.OBCriteria;
@@ -121,6 +125,8 @@ public class ContactsLocationAddressHandler implements StructuredAddressCustomiz
   private static final String FIELD_LOCATION_ADDRESS = "locationAddress";
   /** Free-text region, resolved server-side against the payload's own country. See {@link #resolveRegionByName}. */
   private static final String FIELD_REGION_NAME = "regionName";
+  /** Query parameter carrying the parent Business Partner id. */
+  private static final String QUERY_PARENT_ID = "parentId";
   /**
    * ETP-5806 CP-12h (QA finding) — the {@code C_Location} keys {@link #putGeoLocFields} injects
    * into EVERY record of a GET, single or list, regardless of the feature flag. Declared through
@@ -161,13 +167,37 @@ public class ContactsLocationAddressHandler implements StructuredAddressCustomiz
       if (("PUT".equals(method) || "PATCH".equals(method)) && recordId != null) {
         return handleUpdate(ctx);
       }
+    } catch (OBSecurityException e) {
+      SessionHandler.getInstance().rollback();
+      log.warn("ContactsLocationAddressHandler refused {}", method);
+      return NeoResponse.error(403, "Access denied");
+    } catch (InvalidAddressException | ValidationException e) {
+      // The caller's data (unresolvable region, DAL column validation): a descriptive 400 without
+      // a stack trace. A plain OBException (session, connection) is not client data and falls
+      // through to the 500 below.
+      SessionHandler.getInstance().rollback();
+      log.warn("ContactsLocationAddressHandler rejected {}: {}", method, e.getMessage());
+      return NeoResponse.error(400, e);
     } catch (Exception e) {
       SessionHandler.getInstance().rollback();
-      log.error("ContactsLocationAddressHandler error in {}", method, e);
+      Throwable root = ExceptionUtils.getRootCause(e);
+      Map<String, String> query = ctx.getQueryParams();
+      log.error("ContactsLocationAddressHandler error in {} (recordId={}, parentId={}, cause={})",
+          method, recordId, query != null ? query.get(QUERY_PARENT_ID) : null,
+          (root != null ? root : e).getClass().getName(), e);
       return NeoResponse.error(500, "Location handler error: " + e.getMessage());
     }
     // GET list and DELETE fall through to default CRUD
     return null;
+  }
+
+  /** A client-data refusal raised by this handler, as opposed to any other {@link OBException}. */
+  private static final class InvalidAddressException extends OBException {
+    private static final long serialVersionUID = 1L;
+
+    InvalidAddressException(String message) {
+      super(message);
+    }
   }
 
   /** An ISO 3166-1 alpha-2 code ({@code ES}); a {@code C_Country_ID} is never two letters. */
@@ -282,10 +312,14 @@ public class ContactsLocationAddressHandler implements StructuredAddressCustomiz
         StructuredAddressComposer.isEnabled(GoAccountResolver.currentAccountEmail());
     String bpId = body != null ? body.optString(FIELD_BUSINESS_PARTNER, null) : null;
     if (StringUtils.isBlank(bpId) && ctx.getQueryParams() != null) {
-      bpId = ctx.getQueryParams().get("parentId");
+      bpId = ctx.getQueryParams().get(QUERY_PARENT_ID);
     }
     if (StringUtils.isBlank(bpId)) {
       return NeoResponse.error(400, "Missing parentId (Business Partner ID)");
+    }
+    if (body == null) {
+      // parentId came in the query string: let rejectUnusableCreatePayload answer the 400
+      body = new JSONObject();
     }
 
     String locationAddressId = nullIfEmpty(body.optString(FIELD_LOCATION_ADDRESS, null));
@@ -941,7 +975,7 @@ public class ContactsLocationAddressHandler implements StructuredAddressCustomiz
    * disagree with its siblings.
    */
   private static OBException regionFailure(String shown, String detail) {
-    return new OBException("The region \"" + shown + "\" " + detail);
+    return new InvalidAddressException("The region \"" + shown + "\" " + detail);
   }
 
   /**
