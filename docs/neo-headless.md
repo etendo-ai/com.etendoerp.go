@@ -1448,8 +1448,9 @@ naming both parents), since persistence would keep one and the check would judge
 compared ignoring case.
 
 **The link to the parent is not judged (ETP-6470).** On a child tab, the link-to-parent property
-(the column the AD flags `IsParent`, whose target is the parent tab's entity) is skipped by the
-selector check, on create and update alike and on every channel. The app never offers it in a
+(the first active column the AD flags `IsParent`, when its target is the parent tab's entity) is
+skipped by the selector check on a create, and on an update that keeps the stored parent, on every
+channel. The app never offers it in a
 picker: it fills it with the record the user is standing on. Its selector belongs to the header
 field and filters for that use, so judging the link refused legitimate parents: the Business Partner
 window is a sales window, so the merged context gets `isCustomer=Y` from the window direction, and
@@ -1459,8 +1460,9 @@ window answered 422 `REFERENCE_NOT_ALLOWED`. The link still decides the parent o
 Nothing about the parent goes unchecked: `NeoReferenceOwnership` refuses a link value or `parentId`
 of another tenant before this check (`NeoWritePreflight` for REST single and `/batch`, the MCP
 create/update router). A create naming two different parents is still refused, as described above.
-On an update the stored parent stays the context, and a link value in the body is still checked
-for ownership. Only a tab that has
+On an update the exemption holds only while the link keeps the stored parent: an update that sends
+a different link value moves the record (NEO does not enforce `IsUpdateable` on the link), and that
+changed link is judged by its selector like any other reference, besides the ownership check. Only a tab that has
 a parent tab qualifies: on a header tab a column flagged as a link stays a picker choice and keeps
 its selector.
 

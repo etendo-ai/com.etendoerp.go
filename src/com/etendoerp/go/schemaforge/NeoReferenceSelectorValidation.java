@@ -96,6 +96,7 @@ import com.etendoerp.go.schemaforge.util.NeoHandlerLookup;
  * is the record the user stands on, not a choice from a picker, so no selector is asked about it;
  * it is still the parent of the merged context. Ownership of that parent is enforced by
  * {@link NeoReferenceOwnership}, and an explicit {@code parentId} naming another parent is refused.
+ * An update that changes the link moves the record to another parent: that is judged.
  *
  * <p><b>Fail closed.</b> A selector that cannot answer (error, unverifiable) refuses the write, like
  * one that answered and did not list the record.
@@ -242,8 +243,7 @@ public final class NeoReferenceSelectorValidation {
       String id = referenceId(written, key, sent ? requestFields.opt(key) : storedId(stored, key));
       Column column = id == null ? null : columnOf(adTab, property);
       if (column == null || !mustValidate(column, key, sent, changed, stored)
-          || inputs.isLinkToParent(key)) {
-        // The link to the parent is not picked from a selector: see linkToTheParentRecord.
+          || isUnmovedLinkToParent(inputs, key, id, stored)) {
         continue;
       }
       current[0] = key;
@@ -586,6 +586,18 @@ public final class NeoReferenceSelectorValidation {
   }
 
   /**
+   * The link to the parent is not picked from a selector (see {@link #linkToTheParentRecord}), so it
+   * is not judged on a create ({@link #parentDisagreement} guards two parents) nor on an update that
+   * keeps the stored parent. An update that moves the record to another parent is a choice, and is
+   * judged by the link's selector like any other reference.
+   */
+  private static boolean isUnmovedLinkToParent(OfferInputs inputs, String key, String id,
+      BaseOBObject stored) {
+    return inputs.isLinkToParent(key)
+        && (stored == null || StringUtils.equalsIgnoreCase(id, storedId(stored, key)));
+  }
+
+  /**
    * The link-to-parent property of a child tab, exempt from selector judgement (ETP-6470): the app
    * never offers it in a picker, it fills it with the record the user is standing on. Its
    * selector, written for a header's own field, would refuse legitimate parents — the default
@@ -597,6 +609,8 @@ public final class NeoReferenceSelectorValidation {
    * that parent's entity: a header table column flagged as a link keeps its selector.
    */
   private static Property linkToTheParentRecord(Tab adTab, Entity written) {
+    // The first active IsParent column (as parentLink); a target that is not the parent tab's
+    // entity, or any name missing, yields no exemption: the link is judged (fail closed).
     Entity parentEntity = parentEntity(adTab);
     Property link = parentEntity == null ? null : parentLink(adTab, written);
     return link != null && link.getTargetEntity() != null
