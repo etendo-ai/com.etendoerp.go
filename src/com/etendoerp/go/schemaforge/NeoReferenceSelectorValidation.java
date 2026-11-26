@@ -243,7 +243,7 @@ public final class NeoReferenceSelectorValidation {
       String id = referenceId(written, key, sent ? requestFields.opt(key) : storedId(stored, key));
       Column column = id == null ? null : columnOf(adTab, property);
       if (column == null || !mustValidate(column, key, sent, changed, stored)
-          || isUnmovedLinkToParent(inputs, key, id, stored)) {
+          || inputs.isUnmovedLinkToParent(key, id)) {
         continue;
       }
       current[0] = key;
@@ -292,12 +292,39 @@ public final class NeoReferenceSelectorValidation {
       return context;
     }
 
-    boolean isLinkToParent(String key) {
+    /**
+     * The link to the parent is not picked from a selector (see {@link #linkToTheParentRecord}), so
+     * it is not judged on a create ({@link NeoReferenceSelectorValidation#parentDisagreement} guards
+     * two parents) nor on an update that keeps the stored parent. An update that moves the record
+     * to another parent is a choice, and is judged by the link's selector like any other reference.
+     */
+    boolean isUnmovedLinkToParent(String key, String id) {
       if (!linkToParentResolved) {
-        linkToParent = linkToTheParentRecord(adTab, written);
+        linkToParent = linkToTheParentRecord();
         linkToParentResolved = true;
       }
-      return linkToParent != null && key.equals(linkToParent.getName());
+      return linkToParent != null && key.equals(linkToParent.getName())
+          && (stored == null || StringUtils.equalsIgnoreCase(id, storedId(stored, key)));
+    }
+
+    /**
+     * The link-to-parent property of a child tab, exempt from selector judgement (ETP-6470): the
+     * app never offers it in a picker, it fills it with the record the user is standing on. Its
+     * selector, written for a header's own field, would refuse legitimate parents — the default
+     * business-partner selector filters by the window direction, so an address created under a
+     * vendor-only partner in a sales window was refused. Whether the parent may be referenced at
+     * all is {@link NeoReferenceOwnership}'s question (the link value and {@code parentId}, before
+     * this check, on every channel). Only a tab that has a parent tab, and only when the link
+     * targets that parent's entity: a header table column flagged as a link keeps its selector.
+     */
+    private Property linkToTheParentRecord() {
+      // The first active IsParent column (as parentLink); a target that is not the parent tab's
+      // entity, or any name missing, yields no exemption: the link is judged (fail closed).
+      Entity parentEntity = parentEntity(adTab);
+      Property link = parentEntity == null ? null : parentLink(adTab, written);
+      return link != null && link.getTargetEntity() != null
+          && parentEntity.getName() != null
+          && parentEntity.getName().equals(link.getTargetEntity().getName()) ? link : null;
     }
 
     NeoHandler customization() {
@@ -583,39 +610,6 @@ public final class NeoReferenceSelectorValidation {
         : KernelUtils.getInstance().getParentTab(adTab);
     return parentTab == null || parentTab.getTable() == null ? null
         : ModelProvider.getInstance().getEntityByTableId(parentTab.getTable().getId());
-  }
-
-  /**
-   * The link to the parent is not picked from a selector (see {@link #linkToTheParentRecord}), so it
-   * is not judged on a create ({@link #parentDisagreement} guards two parents) nor on an update that
-   * keeps the stored parent. An update that moves the record to another parent is a choice, and is
-   * judged by the link's selector like any other reference.
-   */
-  private static boolean isUnmovedLinkToParent(OfferInputs inputs, String key, String id,
-      BaseOBObject stored) {
-    return inputs.isLinkToParent(key)
-        && (stored == null || StringUtils.equalsIgnoreCase(id, storedId(stored, key)));
-  }
-
-  /**
-   * The link-to-parent property of a child tab, exempt from selector judgement (ETP-6470): the app
-   * never offers it in a picker, it fills it with the record the user is standing on. Its
-   * selector, written for a header's own field, would refuse legitimate parents — the default
-   * business-partner selector filters by the window direction, so an address created under a
-   * vendor-only partner in a sales window was refused. Whether the parent may be referenced at all
-   * is {@link NeoReferenceOwnership}'s question (the link value and {@code parentId}, before this
-   * check, on every channel), and a create naming two parents is still refused by
-   * {@link #parentDisagreement}. Only a tab that has a parent tab, and only when the link targets
-   * that parent's entity: a header table column flagged as a link keeps its selector.
-   */
-  private static Property linkToTheParentRecord(Tab adTab, Entity written) {
-    // The first active IsParent column (as parentLink); a target that is not the parent tab's
-    // entity, or any name missing, yields no exemption: the link is judged (fail closed).
-    Entity parentEntity = parentEntity(adTab);
-    Property link = parentEntity == null ? null : parentLink(adTab, written);
-    return link != null && link.getTargetEntity() != null
-        && parentEntity.getName() != null
-        && parentEntity.getName().equals(link.getTargetEntity().getName()) ? link : null;
   }
 
   private static Property parentLink(Tab adTab, Entity written) {
