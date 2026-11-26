@@ -355,7 +355,7 @@ class McpActionsViewTest {
 
         String post = declared.get("post").getDescription();
         assertTrue(post.contains("costNotCalculated") && post.contains("retryAfterSeconds"), post);
-        assertTrue(post.contains("costCalculationStalled") && post.contains("do not retry"), post);
+        assertTrue(post.contains("stalled:true") && post.contains("do not retry automatically"), post);
         assertEquals(0, declared.get("post").getParams().size());
         assertEquals(0, declared.get("unpost").getParams().size());
       }
