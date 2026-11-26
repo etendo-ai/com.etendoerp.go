@@ -113,7 +113,6 @@
         "handleDemoDataTransfer"
       ],
       "paths": [
-        "src/com/etendoerp/go/payment/DemoDataTransferFlag.java",
         "src/com/etendoerp/go/payment/DemoDataTransferService.java",
         "src/com/etendoerp/go/payment/DemoDataTransferReflection.java"
       ],
