@@ -34,7 +34,7 @@ import org.junit.jupiter.api.Test;
 /**
  * Guards the mirror's safety rule (ETP-4802): no GO Access row may outlive a revoked classic grant.
  * The DAL observer covers every DAL write, so the only way to bypass it is native SQL that writes
- * {@code AD_Window_Access} or {@code OBUIAPP_Process_Access}. Any production class that does must
+ * {@code AD_Window_Access} or {@code OBUIAPP_Process_Access}. Any production class or module script that does must
  * call {@link GoAccessLegacyMirror}; a new native writer fails this test until it does.
  *
  * @covers com.etendoerp.go.roles.goaccess.GoAccessLegacyMirror
@@ -54,20 +54,31 @@ class GoAccessNativeWritersTest {
   /** Files that name a classic access table next to a write keyword but never write it. */
   private static final Set<String> CONFIRMED_READ_ONLY = Set.of(
       // the mirror itself: it only reads the classic tables and writes ETGO_GO_ACCESS
-      "src/com/etendoerp/go/roles/goaccess/GoAccessLegacyMirror.java");
+      "src/com/etendoerp/go/roles/goaccess/GoAccessLegacyMirror.java",
+      // module scripts: each writes grants of its own roles only, and none grants a role a GO
+      // feature through a path the mirror must follow
+      // templates: re-mirrored by SeedGoAccessScript on every update.database
+      "src-util/modulescript/src/com/etendoerp/go/modulescript/EnsureSystemRoleTemplatesScript.java",
+      // the seed itself writes ETGO_GO_ACCESS from the classic grants and only reads them
+      "src-util/modulescript/src/com/etendoerp/go/modulescript/SeedGoAccessScript.java",
+      // grants the support role the Support window and processes, none of which is a GO feature
+      "src-util/modulescript/src/com/etendoerp/go/modulescript/EnsureSupportAccessSeedScript.java");
 
   @Test
   void everyNativeWriterOfAClassicGrantGoesThroughTheMirror() throws IOException {
     Path root = moduleRoot();
     List<String> offenders = new ArrayList<>();
-    try (Stream<Path> files = Files.walk(root.resolve("src"))) {
-      for (Path file : (Iterable<Path>) files.filter(f -> f.toString().endsWith(".java"))::iterator) {
-        String source = COMMENTS.matcher(
-            new String(Files.readAllBytes(file), StandardCharsets.UTF_8)).replaceAll("");
-        String relative = root.relativize(file).toString();
-        if (CLASSIC_TABLE.matcher(source).find() && WRITE_KEYWORD.matcher(source).find()
-            && !MIRROR_CALL.matcher(source).find() && !CONFIRMED_READ_ONLY.contains(relative)) {
-          offenders.add(relative);
+    for (String dir : List.of("src", "src-util/modulescript/src")) {
+      try (Stream<Path> files = Files.walk(root.resolve(dir))) {
+        for (Path file : (Iterable<Path>) files
+            .filter(f -> f.toString().endsWith(".java"))::iterator) {
+          String source = COMMENTS.matcher(
+              new String(Files.readAllBytes(file), StandardCharsets.UTF_8)).replaceAll("");
+          String relative = root.relativize(file).toString();
+          if (CLASSIC_TABLE.matcher(source).find() && WRITE_KEYWORD.matcher(source).find()
+              && !MIRROR_CALL.matcher(source).find() && !CONFIRMED_READ_ONLY.contains(relative)) {
+            offenders.add(relative);
+          }
         }
       }
     }
