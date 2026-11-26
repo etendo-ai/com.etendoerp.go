@@ -62,6 +62,12 @@ public final class InboxDocument {
   public static final String K_INDEX = "index";
   public static final String K_DESCRIPTION = "description";
   public static final String K_QUANTITY = "quantity";
+  /**
+   * Line key (ETP-6051): {@code true} on a line the user added with {@code addLine}, never on a
+   * line the OCR read. Written only by the server; a line without it (every legacy document, every
+   * OCR line) is an OCR line. It selects the lines whose product is priced from the price list.
+   */
+  public static final String K_MANUAL = "manual";
   public static final String K_UNIT_PRICE = "unitPrice";
   public static final String K_TAX_RATE = "taxRate";
   public static final String K_TAX_LABEL = "taxLabel";
@@ -75,6 +81,29 @@ public final class InboxDocument {
   public static final String K_DOC_TAX_AMOUNT = "docTaxAmount";
   /** Header key (ETP-6050): the id of the document currency. */
   public static final String K_CURRENCY_ID = "currencyId";
+  /**
+   * Header key (ETP-6051): where the currency came from, one of {@link #CURRENCY_PRINTED},
+   * {@link #CURRENCY_MANUAL} or {@link #CURRENCY_DEFAULT}.
+   */
+  public static final String K_CURRENCY_SOURCE = "currencySource";
+  /**
+   * Header key (ETP-6051): the currency exactly as printed on the document (symbol or code),
+   * display only.
+   */
+  public static final String K_CURRENCY_RAW = "currencyRaw";
+  /**
+   * Header key (ETP-6051): the ISO code the document printed that is not an active currency of
+   * the tenant.
+   */
+  public static final String K_CURRENCY_UNAVAILABLE = "currencyUnavailable";
+  /** Currency source: the currency the document printed. */
+  public static final String CURRENCY_PRINTED = "printed";
+  /** Currency source: chosen by the user in the review panel. */
+  public static final String CURRENCY_MANUAL = "manual";
+  /** Currency source: the organization / client default. */
+  public static final String CURRENCY_DEFAULT = "default";
+  /** Notice code (ETP-6051): the printed currency symbol matches none or several currencies. */
+  public static final String N_CURRENCY_SYMBOL_AMBIGUOUS = "currency_symbol_ambiguous";
   /** Product key (ETP-6050): the data of the product to create, {@code state = new}. */
   public static final String K_NEW = "new";
   public static final String K_CATEGORY_ID = "categoryId";

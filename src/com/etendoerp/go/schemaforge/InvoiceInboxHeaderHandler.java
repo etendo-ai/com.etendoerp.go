@@ -19,6 +19,8 @@ package com.etendoerp.go.schemaforge;
 
 import java.util.Set;
 
+import com.etendoerp.go.schemaforge.data.IncomingDocument;
+
 /**
  * ETP-6049 — keeps the whole invoice inbox spec behind the {@code invoice-inbox} feature flag, not
  * only its upload, and serves the {@code discard} action. Without the gate
@@ -52,6 +54,18 @@ import java.util.Set;
 @NeoExtension(spec = "invoice-inbox", entity = "header")
 public class InvoiceInboxHeaderHandler implements NeoHandler {
 
+  /**
+   * ETP-6051: the inbox row is not a {@code C_Invoice}, so the currency options are scoped by the
+   * row itself: its organization and client (never the session's) and its stored invoice date
+   * (the summary column the edits keep in sync with the document), unless the caller asks for
+   * another {@code date}. Stateless, so a plain instance serves every request.
+   */
+  private static final DocumentCurrencyRate.RateType RATE_TYPE = new DocumentCurrencyRate.RateType(
+      IncomingDocument.ENTITY_NAME, null, IncomingDocument.PROPERTY_INVOICEDATE,
+      DocumentRateMessages.LABEL_ACCOUNTING_DATE);
+
+  private final CurrencyOptionsHandler currencyOptions = new CurrencyOptionsHandler();
+
   @Override
   public NeoResponse handle(NeoContext context) {
     // Evaluated at request entry, while the request runs as the account owner.
@@ -65,9 +79,13 @@ public class InvoiceInboxHeaderHandler implements NeoHandler {
   }
 
   /** Routes an inbox action to its implementation; {@code null} for an action not served here. */
-  private static NeoResponse dispatchAction(NeoContext context) {
+  private NeoResponse dispatchAction(NeoContext context) {
     String action = context.getFieldName();
     boolean post = "POST".equals(context.getHttpMethod());
+    if (CurrencyOptionsHandler.CONTRACT.getName().equals(action)) {
+      context.setAttribute(DocumentCurrencyRate.ATTR_RATE_TYPE, RATE_TYPE);
+      return currencyOptions.handle(context);
+    }
     if (InvoiceInboxReview.ACTION.equals(action)) {
       // The review only reads: it is a GET (the record id is kept for GET actions).
       return "GET".equals(context.getHttpMethod())
@@ -103,12 +121,13 @@ public class InvoiceInboxHeaderHandler implements NeoHandler {
   /**
    * Discard is irreversible; review, apply and mark-reviewed are the review panel's own read and
    * edits; confirm (ETP-6051) creates and completes an invoice with its vendor and products from a
-   * document nobody but its reviewer vouched for: all five ship for people only
-   * (neo-headless.md §4.12.9).
+   * document nobody but its reviewer vouched for; and so does {@code currencyOptions} (ETP-6051,
+   * the currency selector's read): all six ship for people only (neo-headless.md §4.12.9).
    */
   @Override
   public Set<String> agentExcludedActions() {
     return Set.of(InvoiceInboxDiscard.ACTION, InvoiceInboxReview.ACTION, InvoiceInboxApply.ACTION,
-        InvoiceInboxMarkReviewed.ACTION, InvoiceInboxConfirm.ACTION);
+        InvoiceInboxMarkReviewed.ACTION, InvoiceInboxConfirm.ACTION,
+        CurrencyOptionsHandler.CONTRACT.getName());
   }
 }

@@ -695,6 +695,26 @@ public class InvoiceSifPresetTest {
   }
 
   /**
+   * A return whose sifFields arrives as a string holding the JSON object (an MCP client that
+   * serializes nested objects, ETP-6179 CP-16): it is read as that object, not refused.
+   */
+  @Test
+  public void aReturnWithSifFieldsAsAJsonStringIsReadAsTheObject() throws Exception {
+    Invoice invoice = recordingInvoice();
+    JSONObject body = new JSONObject().put(InvoiceSifPreset.PARAM_SIF_FIELDS,
+        new JSONObject().put(Invoice.PROPERTY_ETVFACINVTYPE, "R2").toString());
+
+    try (Env env = new Env(true, true)) {
+      InvoiceSifPreset.applyBeforeCompletion(invoice, body,
+          InvoiceSifPreset.RETURN_RECTIFICATION_DEFAULT);
+
+      verify(invoice).set(Invoice.PROPERTY_ETVFACINVTYPE, "R2");
+      verify(invoice, never()).set(Invoice.PROPERTY_ETVFACINVTYPE, "R1");
+      verify(env.dal, never()).rollbackAndClose();
+    }
+  }
+
+  /**
    * The same partial sifFields on the 2-argument path (no rectification default): nothing fills
    * the omitted codes and the guard refuses them, as before the return default existed.
    */

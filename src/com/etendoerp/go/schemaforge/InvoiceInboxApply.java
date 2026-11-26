@@ -45,6 +45,7 @@ import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_STATE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_TAX;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_TAX_LABEL;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_TAX_RATE;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_MANUAL;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_UNIT_PRICE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_UOM_ID;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_VALIDATION;
@@ -123,6 +124,7 @@ final class InvoiceInboxApply {
   static final String CODE_UNKNOWN_CATEGORY = "unknown_category";
   static final String CODE_UNKNOWN_UOM = "unknown_uom";
   static final String CODE_UNKNOWN_TAX = "unknown_tax";
+  static final String CODE_INVALID_CURRENCY = "invalid_currency";
 
   static final String OP_SET_HEADER = "setHeader";
   static final String OP_SET_LINE = "setLine";
@@ -132,6 +134,8 @@ final class InvoiceInboxApply {
   static final String OP_NEW_VENDOR = "newVendor";
   static final String OP_SELECT_PRODUCT = "selectProduct";
   static final String OP_NEW_PRODUCT = "newProduct";
+  static final String OP_SET_CURRENCY = "setCurrency";
+  private static final String KEY_CURRENCY_ID = "currencyId";
 
   private static final String KEY_UPDATED = "updated";
   private static final String KEY_OPERATIONS = "operations";
@@ -172,7 +176,8 @@ final class InvoiceInboxApply {
       OP_SELECT_VENDOR, Set.of(KEY_OP, KEY_ID),
       OP_NEW_VENDOR, Set.of(KEY_OP, KEY_FIELDS),
       OP_SELECT_PRODUCT, Set.of(KEY_OP, K_INDEX, KEY_ID),
-      OP_NEW_PRODUCT, Set.of(KEY_OP, K_INDEX, K_NAME, K_CATEGORY_ID, K_UOM_ID));
+      OP_NEW_PRODUCT, Set.of(KEY_OP, K_INDEX, K_NAME, K_CATEGORY_ID, K_UOM_ID),
+      OP_SET_CURRENCY, Set.of(KEY_OP, KEY_CURRENCY_ID));
 
   private InvoiceInboxApply() {
   }
@@ -318,6 +323,9 @@ final class InvoiceInboxApply {
       throw invalidRequest();
     }
     if (allowed.contains(KEY_ID) && !isId(op.opt(KEY_ID))) {
+      throw invalidRequest();
+    }
+    if (allowed.contains(KEY_CURRENCY_ID) && !isId(op.opt(KEY_CURRENCY_ID))) {
       throw invalidRequest();
     }
     validateOptionalIds(op);
@@ -490,6 +498,9 @@ final class InvoiceInboxApply {
         break;
       case OP_SELECT_PRODUCT:
         InvoiceInboxApplyResolution.selectProduct(edit, op);
+        break;
+      case OP_SET_CURRENCY:
+        InvoiceInboxApplyResolution.setCurrency(edit, op);
         break;
       default:
         InvoiceInboxApplyResolution.newProduct(edit, op);
@@ -684,8 +695,8 @@ final class InvoiceInboxApply {
     int index = nextIndex(lines);
     JSONObject previous = lines.length() == 0 ? null : lines.optJSONObject(lines.length() - 1);
     BigDecimal rate = previous == null ? null : storedNumber(previous, K_TAX_RATE, RATE_SCALE);
-    JSONObject line = new JSONObject().put(K_INDEX, index).put(K_DESCRIPTION, "")
-        .put(K_QUANTITY, 1).put(K_UNIT_PRICE, 0)
+    JSONObject line = new JSONObject().put(K_INDEX, index).put(K_MANUAL, true)
+        .put(K_DESCRIPTION, "").put(K_QUANTITY, 1).put(K_UNIT_PRICE, 0)
         .put(K_TAX_RATE, rate == null ? JSONObject.NULL : (Object) rate.doubleValue())
         .put(K_TAX_LABEL, "")
         .put(K_PRODUCT, new JSONObject().put(K_STATE, S_NONE).put(K_CANDIDATES, new JSONArray()))

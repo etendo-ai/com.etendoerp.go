@@ -68,11 +68,11 @@ final class ConversionRateWriteActions {
 
   private static final String CREATE_PARAMS_NOTE = " Parameters: toCurrency (C_Currency id or ISO"
       + " code), multipleRateBy (units of toCurrency per 1 unit of the organization currency, > 0),"
-      + " optional validFromDate (yyyy-MM-ddTHH:mm[:ss] server-local; default: now; never later"
-      + " than now). The server writes the rate AND its inverse and closes the range in force one"
-      + " minute before validFromDate, in one transaction. Answers the new rate"
-      + " (organization currency -> toCurrency). Run previewManualRate with the same parameters"
-      + " to see the effect first.";
+      + " optional validFromDate (yyyy-MM-ddTHH:mm[:ss], wall clock of the server's time zone"
+      + " returned by serverClock; default: now; never later than now). The server writes the"
+      + " rate AND its inverse and closes the range in force one minute before validFromDate,"
+      + " in one transaction. Answers the new rate (organization currency -> toCurrency). Run"
+      + " previewManualRate with the same parameters to see the effect first.";
 
   private ConversionRateWriteActions() {
   }
@@ -119,8 +119,9 @@ final class ConversionRateWriteActions {
             "Units of the destination currency per 1 unit of the organization currency;"
                 + " greater than zero."),
         Param.optional(ConversionRateWrites.F_VALID_FROM, NeoActionContract.TYPE_STRING,
-            "Start of the rate, server-local yyyy-MM-ddTHH:mm[:ss]; default: the current"
-                + " minute (serverClock). Never later than now.") };
+            "Start of the rate, yyyy-MM-ddTHH:mm[:ss] wall clock of the server's time zone"
+                + " (timeZone of serverClock); default: the current minute (now of serverClock)."
+                + " Never later than now.") };
   }
 
   /** Whether {@code name} is one of these actions. */

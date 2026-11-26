@@ -555,7 +555,8 @@ final class InvoiceSifPreset {
     if (invoice == null) {
       return;
     }
-    JSONObject requested = body != null ? body.optJSONObject(PARAM_SIF_FIELDS) : null;
+    JSONObject requested = body != null
+        ? NeoActionContract.asObject(body.opt(PARAM_SIF_FIELDS)) : null;
     if (body != null && body.has(PARAM_SIF_FIELDS) && requested == null
         && !JSONObject.NULL.equals(body.opt(PARAM_SIF_FIELDS))) {
       throw invalid(PARAM_SIF_FIELDS, "must be a JSON object");

@@ -123,6 +123,25 @@ class HubSpotEventSenderTest {
     assertEquals("self_serve", properties.getString("etendo_camino_entrada"));
     assertEquals("Ana", properties.getString("firstname"));
     assertEquals("García López", properties.getString("lastname"));
+    // ETP-6363: marketing joins the contact to the product's account, and tells an app sign-up
+    // from the website's self-serve.
+    assertEquals(ACCOUNT, properties.getString("etendo_account_id"));
+    assertEquals("trial_app", properties.getString("canal_entrada"));
+  }
+
+  @Test
+  void aWebsiteSelfServeAccountKeepsTheEntryChannelMarketingGaveIt() throws Exception {
+    PendingEvent event = new PendingEvent("row-7", ACCOUNT, HubSpotOutboxStore.DEMO_READY, CLIENT,
+        "{\"companyName\":\"Empresa SL\",\"country\":\"España\",\"countryCode\":\"ES\"}", 0,
+        null, "ana@empresa.es", "Ana García López", null, null, null, null, "web");
+
+    sender.send(event, NOW);
+
+    JSONObject contact = call("POST", "/batch/upsert").body().getJSONArray("inputs")
+        .getJSONObject(0).getJSONObject("properties");
+    assertEquals("self_serve", contact.getString("etendo_camino_entrada"));
+    assertEquals(ACCOUNT, contact.getString("etendo_account_id"));
+    assertFalse(contact.has("canal_entrada"), "the website's sign-ups get marketing's channel");
   }
 
   @Test
@@ -258,6 +277,8 @@ class HubSpotEventSenderTest {
     JSONObject company = call("POST", "/crm/v3/objects/companies").properties();
     assertEquals("Empresa SL", company.getString("name"));
     assertEquals("Spain", company.getString("country"));
+    // ETP-6363: recorded, so the next sign-up of the same company finds it.
+    assertEquals("empresa.es", company.getString("domain"));
 
     Call deal = call("POST", "/crm/v3/objects/deals");
     assertEquals("Empresa SL — Self-serve", deal.properties().getString("dealname"));
@@ -316,6 +337,47 @@ class HubSpotEventSenderTest {
         && c.path().equals("/crm/v3/objects/deals")));
   }
 
+  // ETP-6363: HubSpot's search finds a new deal only seconds later; DEMO_READY, often sent in the
+  // same run as ACCOUNT_CREATED, created a second deal and HubSpot refused it (400, id taken).
+  @Test
+  void aReadyDemoRightAfterTheAccountsEventUsesItsDealInsteadOfCreatingAnother() throws Exception {
+    when(store.findAccountDealId(ACCOUNT)).thenReturn("deal-1");
+    answers = call -> call.method().equals("GET")
+            && call.path().startsWith("/crm/v3/objects/deals/deal-1")
+        ? new Response(200, "{\"id\":\"deal-1\",\"properties\":{\"pipeline\":\"pipe\"}}")
+        : call.path().endsWith("/deals/deal-1/associations/companies")
+            ? new Response(200, "{\"results\":[]}") : ok(call);
+
+    Outcome outcome = sender.send(event(HubSpotOutboxStore.DEMO_READY,
+        HubSpotOutbox.demoPayload("Empresa SL", "Spain", "ES")), NOW);
+
+    assertEquals(Outcome.Kind.SENT, outcome.kind());
+    assertEquals("deal-1", outcome.hubSpotObjectId());
+    assertTrue(calls.stream().noneMatch(c -> c.path().endsWith("/deals/search")),
+        "read by id, not searched");
+    assertTrue(calls.stream().noneMatch(c -> c.method().equals("POST")
+        && c.path().equals("/crm/v3/objects/deals")), "no second deal");
+    assertEquals("Empresa SL — Self-serve",
+        call("PATCH", "/deals/deal-1").properties().getString("dealname"));
+    call("PUT", "/deals/deal-1/associations/default/companies/company-1");
+  }
+
+  @Test
+  void aRecordedDealDeletedInHubSpotIsSearchedForAndABusyReadRetried() {
+    when(store.findAccountDealId(ACCOUNT)).thenReturn("deal-gone");
+    answers = call -> call.path().startsWith("/crm/v3/objects/deals/deal-gone")
+        ? new Response(404, "{}") : ok(call);
+    sender.send(event(HubSpotOutboxStore.DEMO_READY,
+        HubSpotOutbox.demoPayload("Empresa SL", "Spain")), NOW);
+    call("POST", "/deals/search");
+
+    calls.clear();
+    answers = call -> call.path().startsWith("/crm/v3/objects/deals/deal-gone")
+        ? new Response(503, "") : ok(call);
+    assertEquals(Outcome.Kind.RETRY, sender.send(event(HubSpotOutboxStore.DEMO_READY,
+        HubSpotOutbox.demoPayload("Empresa SL", "Spain")), NOW).kind());
+  }
+
   @Test
   void aRetriedReadyDemoDoesNotCreateASecondCompany() {
     answers = call -> call.path().endsWith("/deals/search")
@@ -329,6 +391,65 @@ class HubSpotEventSenderTest {
 
     assertTrue(calls.stream().noneMatch(c -> c.path().endsWith("/companies")
         && c.method().equals("POST")));
+  }
+
+  // --- ETP-6363: the company is looked up by the address's domain before one is created ---
+
+  @Test
+  void aCompanyHubSpotHasForTheDomainIsReusedInsteadOfCreatingAnother() throws Exception {
+    answers = call -> call.path().endsWith("/companies/search")
+        ? new Response(200, "{\"results\":[{\"id\":\"company-7\"}]}") : ok(call);
+
+    sender.send(event(HubSpotOutboxStore.DEMO_READY,
+        HubSpotOutbox.demoPayload("Empresa SL", "Spain")), NOW);
+
+    JSONObject filter = call("POST", "/companies/search").body().getJSONArray("filterGroups")
+        .getJSONObject(0).getJSONArray("filters").getJSONObject(0);
+    assertEquals("domain", filter.getString("propertyName"));
+    assertEquals("empresa.es", filter.getString("value"));
+    assertTrue(calls.stream().noneMatch(c -> c.method().equals("POST")
+        && c.path().equals("/crm/v3/objects/companies")), "no second company");
+    call("PUT", "/crm/v4/objects/companies/company-7/associations/default/contacts/contact-1");
+    assertTrue(call("POST", "/crm/v3/objects/deals").body().getJSONArray("associations")
+        .toString().contains("company-7"));
+  }
+
+  @Test
+  void aPersonalAddressGetsACompanyOfItsOwnWithoutLookingItUp() throws Exception {
+    PendingEvent event = new PendingEvent("row-8", ACCOUNT, HubSpotOutboxStore.DEMO_READY, CLIENT,
+        HubSpotOutbox.demoPayload("Taller Ana", "Spain"), 0, null, "ana@Gmail.com",
+        "Ana García López", null);
+
+    sender.send(event, NOW);
+
+    assertTrue(calls.stream().noneMatch(c -> c.path().endsWith("/companies/search")));
+    JSONObject company = call("POST", "/crm/v3/objects/companies").properties();
+    assertEquals("Taller Ana", company.getString("name"));
+    assertFalse(company.has("domain"), "gmail.com names no company");
+  }
+
+  @Test
+  void aBusyLookupIsRetriedAndARefusedOneCreatesTheCompanyAllTheSame() {
+    answers = call -> call.path().endsWith("/companies/search")
+        ? new Response(503, "") : ok(call);
+    assertEquals(Outcome.Kind.RETRY, sender.send(event(HubSpotOutboxStore.DEMO_READY,
+        HubSpotOutbox.demoPayload("Empresa SL", "Spain")), NOW).kind());
+
+    calls.clear();
+    answers = call -> call.path().endsWith("/companies/search")
+        ? new Response(403, "{\"category\":\"MISSING_SCOPES\"}") : ok(call);
+    assertEquals(Outcome.Kind.SENT, sender.send(event(HubSpotOutboxStore.DEMO_READY,
+        HubSpotOutbox.demoPayload("Empresa SL", "Spain")), NOW).kind());
+    call("POST", "/crm/v3/objects/companies");
+  }
+
+  @Test
+  void onlyACompanyAddressHasACompanyDomain() {
+    assertEquals("empresa.es", HubSpotCompanies.companyDomain(" Ana@Empresa.ES "));
+    assertNull(HubSpotCompanies.companyDomain("ana@hotmail.com.ar"));
+    assertNull(HubSpotCompanies.companyDomain("ana@localhost"));
+    assertNull(HubSpotCompanies.companyDomain("no-address"));
+    assertNull(HubSpotCompanies.companyDomain(null));
   }
 
   @Test
@@ -955,6 +1076,8 @@ class HubSpotEventSenderTest {
     JSONObject contact = call("POST", "/batch/upsert").body().getJSONArray("inputs")
         .getJSONObject(0).getJSONObject("properties");
     assertFalse(contact.has("etendo_camino_entrada"), "a booked demo's way in is marketing's");
+    assertFalse(contact.has("canal_entrada"), "and so is its entry channel");
+    assertEquals(ACCOUNT, contact.getString("etendo_account_id"));
     assertEquals("España", contact.getString("country"));
   }
 
@@ -1083,7 +1206,9 @@ class HubSpotEventSenderTest {
     assertEquals("García López", fields.getString("lastname"));
     assertEquals("Argentina", fields.getString("country"));
     assertEquals("self_serve", fields.getString("etendo_camino_entrada"));
+    assertEquals(ACCOUNT, fields.getString("etendo_account_id"));
     // Not fields of the form: the account's event writes them right after.
+    assertFalse(fields.has("canal_entrada"));
     assertFalse(fields.has("phone"));
     assertFalse(fields.has("sector"));
     assertFalse(fields.has("hs_country_region_code"));

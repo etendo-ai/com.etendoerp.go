@@ -62,6 +62,7 @@ final class InvoiceInboxMessages {
   static final String UNKNOWN_CATEGORY = "ETGO_InvoiceInboxUnknownCategory";
   static final String UNKNOWN_UOM = "ETGO_InvoiceInboxUnknownUom";
   static final String UNKNOWN_TAX = "ETGO_InvoiceInboxUnknownTax";
+  static final String INVALID_CURRENCY = "ETGO_InvoiceInboxInvalidCurrency";
   static final String NOT_VALID = "ETGO_InvoiceInboxNotValid";
   static final String NOT_CONFIRMABLE = "ETGO_InvoiceInboxNotConfirmable";
   static final String DUPLICATE_INVOICE = "ETGO_InvoiceInboxDuplicateInvoice";
@@ -117,6 +118,8 @@ final class InvoiceInboxMessages {
       Map.entry(UNKNOWN_CATEGORY, "The product category does not exist or cannot be used."),
       Map.entry(UNKNOWN_UOM, "The unit of measure does not exist or cannot be used."),
       Map.entry(UNKNOWN_TAX, "The tax does not exist or cannot be used on this document."),
+      Map.entry(INVALID_CURRENCY, "The currency does not exist or cannot be used on this "
+          + "document: choose one of the currencies registered for the organization."),
       Map.entry(NOT_VALID, "The document is not complete: @missing@."),
       Map.entry(NOT_CONFIRMABLE, "The document cannot be confirmed in status @status@. Only "
           + "documents pending review or ready to confirm can be confirmed, or one whose last "
@@ -134,8 +137,9 @@ final class InvoiceInboxMessages {
       Map.entry(CONFIRM_CURRENCY_MISMATCH, "The invoice currency does not match the document "
           + "currency."),
       Map.entry(CONFIRM_NO_FILE, "The original file of the document is no longer available."),
-      Map.entry(PRICE_LIST_TAX_INCLUDED, "The vendor's purchase price list includes tax, which the "
-          + "invoice inbox does not support: use a price list without tax included for this vendor."),
+      Map.entry(PRICE_LIST_TAX_INCLUDED, "The purchase price list of this invoice (the vendor's, or the "
+          + "default one when the vendor has none) includes tax, which the invoice inbox does not "
+          + "support: use a price list without tax included."),
       Map.entry(CONFIRM_NO_CATEGORY, "The contact category 'Proveedor' does not exist exactly "
           + "once for this company, so the new vendor cannot be created as a supplier. Fix the "
           + "contact categories and confirm again."),
