@@ -314,6 +314,14 @@ public class SFWindowAccessMap extends BaseWebhookService {
     // ETP-6284 — same account, same reasoning; SiiImportDuaFlag never throws (false on any error).
     capabilities.put(SII_IMPORT_DUA, SiiImportDuaFlag.isEnabledFor(accountEmail));
 
+    // ETP-4802 — the six GO features are addressed by their own id in the same flat map: the SPA
+    // page guards and menu.json entries read windowAccess["fiscal-models"] etc. instead of the
+    // proxy/anchor window ids. A feature id never collides with an AD_Window_ID (32 hex chars).
+    // The legacy anchor keys above stay (overlaid) so an SPA build that still reads them agrees.
+    for (Map.Entry<String, String> tier : GoFeatureAccess.effectiveTiers(role).entrySet()) {
+      windowAccess.put(tier.getKey(), tier.getValue());
+    }
+
     JSONObject result = new JSONObject();
     result.put(WINDOW_ACCESS, windowAccess);
     result.put(CAPABILITIES, capabilities);

@@ -20,6 +20,7 @@ package com.etendoerp.go.schemaforge.util;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -47,7 +48,6 @@ import java.util.stream.Stream;
 
 import org.hibernate.Session;
 import org.hibernate.query.NativeQuery;
-import org.junit.Assume;
 import org.junit.Test;
 import org.mockito.MockedStatic;
 import org.openbravo.dal.service.OBDal;
@@ -213,7 +213,8 @@ public class GoFeatureAccessTest {
   public void theFeatureListReferenceMatchesTheDeclaredFeatures() throws Exception {
     Path root = Stream.of(Paths.get(""), Paths.get("modules", "com.etendoerp.go"))
         .filter(p -> Files.isRegularFile(p.resolve(GO_ACCESS_MODEL))).findFirst().orElse(null);
-    Assume.assumeNotNull(root);
+    assertNotNull("module root not found from " + Paths.get("").toAbsolutePath()
+        + ": the list reference check must run, not be skipped", root);
     String xml = new String(Files.readAllBytes(root.resolve(AD_REF_LIST)), StandardCharsets.UTF_8);
     String reference = new String(Files.readAllBytes(root.resolve(AD_REFERENCE)),
         StandardCharsets.UTF_8).replaceAll("<!--\\w+-->", "");
@@ -240,7 +241,7 @@ public class GoFeatureAccessTest {
   private static final Path AD_REFERENCE = Paths.get("src-db", "database", "sourcedata",
       "AD_REFERENCE.xml");
 
-    /** {read, write} decision of a role with the given rows and legacy tier. */
+  /** {read, write} decision of a role with the given rows and legacy tier. */
   private static boolean[] decisions(GoFeature feature, Map<String, String> rows, String legacy) {
     try (Env env = new Env(rows, legacy)) {
       return new boolean[] { GoFeatureAccess.hasAccess(env.role, feature, "GET"),
@@ -258,6 +259,41 @@ public class GoFeatureAccessTest {
     // A classic process grant has no read/write tier: it allows every method (legacy behaviour).
     assertEquals(feature.id + " write " + rows + "/" + legacy, legacyWriteIgnored || write,
         actual[1]);
+  }
+
+  @Test
+  public void effectiveTiersResolvesRowsThenLegacyGrantsAndGivesAdminsEverything() {
+    Map<String, String> rows = Map.of(GoFeature.FISCAL_MODELS.id, RoleAccessMatrix.READ_ONLY,
+        GoFeature.SMART_SCAN.id, RoleAccessMatrix.FULL);
+    try (Env env = new Env(rows, NONE);
+        MockedStatic<RoleAccessMatrix> matrix = mockStatic(RoleAccessMatrix.class)) {
+      env.helper.when(() -> NeoAccessHelper.isAdminOrClientAdmin(env.role)).thenReturn(false);
+      // legacy: full Tax Report (shadowed by the read-only row), read-only Financial Reports
+      // anchor, and a full not-posted process grant
+      matrix.when(() -> RoleAccessMatrix.resolveWindowTierMap(any(Role.class), any()))
+          .thenReturn(Map.of(GoFeature.FISCAL_MODELS.legacyId, RoleAccessMatrix.FULL,
+              GoFeature.FINANCIAL_REPORTS.legacyId, RoleAccessMatrix.READ_ONLY));
+      matrix.when(() -> RoleAccessMatrix.resolveProcessTierMap(any(Role.class), anyString()))
+          .thenReturn(Map.of(GoFeature.NOT_POSTED_DOCUMENTS.legacyId, RoleAccessMatrix.FULL));
+
+      Map<String, String> tiers = GoFeatureAccess.effectiveTiers(env.role);
+
+      assertEquals(RoleAccessMatrix.READ_ONLY, tiers.get(GoFeature.FISCAL_MODELS.id));
+      assertEquals(RoleAccessMatrix.FULL, tiers.get(GoFeature.SMART_SCAN.id));
+      assertEquals(RoleAccessMatrix.READ_ONLY, tiers.get(GoFeature.FINANCIAL_REPORTS.id));
+      assertEquals(RoleAccessMatrix.FULL, tiers.get(GoFeature.NOT_POSTED_DOCUMENTS.id));
+      assertFalse(tiers.containsKey(GoFeature.FISCAL_MONITOR.id));
+      assertFalse(tiers.containsKey(GoFeature.INVENTORY_STOCK_REPORT.id));
+    }
+    try (Env env = new Env(Map.of(), NONE)) {
+      env.helper.when(() -> NeoAccessHelper.isAdminOrClientAdmin(env.role)).thenReturn(true);
+
+      Map<String, String> tiers = GoFeatureAccess.effectiveTiers(env.role);
+
+      assertEquals(GoFeature.values().length, tiers.size());
+      assertTrue(tiers.values().stream().allMatch(RoleAccessMatrix.FULL::equals));
+      assertTrue(GoFeatureAccess.effectiveTiers(null).isEmpty());
+    }
   }
 
   /** A role with the given GO Access rows and a classic grant of the given tier on the anchor. */

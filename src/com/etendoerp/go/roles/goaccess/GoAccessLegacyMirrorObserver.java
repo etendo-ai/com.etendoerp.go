@@ -1,0 +1,118 @@
+/*
+ * *************************************************************************
+ * The contents of this file are subject to the Etendo License
+ * (the "License"), you may not use this file except in compliance with
+ * the License.
+ * You may obtain a copy of the License at
+ * https://github.com/etendosoftware/etendo_core/blob/main/legal/Etendo_license.txt
+ * Software distributed under the License is distributed on an
+ * "AS IS" basis, WITHOUT WARRANTY OF ANY KIND, either express or
+ * implied. See the License for the specific language governing rights
+ * and limitations under the License.
+ * All portions are Copyright © 2021–2026 FUTIT SERVICES, S.L
+ * All Rights Reserved.
+ * Contributor(s): Futit Services S.L.
+ * *************************************************************************
+ */
+
+package com.etendoerp.go.roles.goaccess;
+
+import javax.enterprise.event.Observes;
+
+import org.openbravo.base.model.Entity;
+import org.openbravo.base.model.ModelProvider;
+import org.openbravo.base.structure.BaseOBObject;
+import org.openbravo.client.application.Process;
+import org.openbravo.client.application.ProcessAccess;
+import org.openbravo.client.kernel.event.EntityDeleteEvent;
+import org.openbravo.client.kernel.event.EntityNewEvent;
+import org.openbravo.client.kernel.event.EntityPersistenceEvent;
+import org.openbravo.client.kernel.event.EntityPersistenceEventObserver;
+import org.openbravo.client.kernel.event.EntityUpdateEvent;
+import org.openbravo.model.ad.access.Role;
+import org.openbravo.model.ad.access.WindowAccess;
+import org.openbravo.model.ad.ui.Window;
+
+import com.etendoerp.go.schemaforge.util.GoFeature;
+
+/**
+ * Mirrors a classic window/OBUIAPP process grant onto the role's GO Access row when the grant is
+ * one of the six legacy records of a {@link GoFeature} (ETP-4802). It covers every write that goes
+ * through the DAL: the Role window, the template injectors, role composition and the roles-matrix
+ * editor. See {@link GoAccessLegacyMirror} for the rule and for the native writers.
+ *
+ * <p>Runs after the unprioritised core observers and the overlap guards, so it sees the final
+ * tier of the row.</p>
+ */
+public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver {
+
+  private static Entity[] entities;
+
+  @Override
+  protected Entity[] getObservedEntities() {
+    if (entities == null) {
+      entities = new Entity[] { ModelProvider.getInstance().getEntity(WindowAccess.ENTITY_NAME),
+          ModelProvider.getInstance().getEntity(ProcessAccess.ENTITY_NAME) };
+    }
+    return entities;
+  }
+
+  /**
+   * Handles a new grant.
+   *
+   * @param event the persistence event
+   */
+  public void onSave(@Observes EntityNewEvent event) {
+    handle(event, false);
+  }
+
+  /**
+   * Handles a changed grant (tier, active flag, or record).
+   *
+   * @param event the persistence event
+   */
+  public void onUpdate(@Observes EntityUpdateEvent event) {
+    handle(event, false);
+  }
+
+  /**
+   * Handles a revoked grant.
+   *
+   * @param event the persistence event
+   */
+  public void onDelete(@Observes EntityDeleteEvent event) {
+    handle(event, true);
+  }
+
+  private void handle(EntityPersistenceEvent event, boolean deleted) {
+    if (!isValidEvent(event)) {
+      return;
+    }
+    BaseOBObject target = event.getTargetInstance();
+    Role role;
+    String legacyId;
+    if (target instanceof WindowAccess) {
+      WindowAccess access = (WindowAccess) target;
+      role = access.getRole();
+      Window window = access.getWindow();
+      legacyId = window == null ? null : window.getId();
+    } else if (target instanceof ProcessAccess) {
+      ProcessAccess access = (ProcessAccess) target;
+      role = access.getRole();
+      Process process = access.getObuiappProcess();
+      legacyId = process == null ? null : process.getId();
+    } else {
+      return;
+    }
+    if (role == null || GoFeature.forLegacyId(legacyId) == null) {
+      return;
+    }
+    Entity entity = target.getEntity();
+    boolean active = !deleted
+        && Boolean.TRUE.equals(event.getCurrentState(entity.getProperty("active")));
+    boolean readWrite = Boolean.TRUE
+        .equals(event.getCurrentState(entity.getProperty("editableField")));
+    GoAccessLegacyMirror.onClassicGrantChange(role.getId(), legacyId, active, readWrite,
+        (String) target.getId());
+  }
+}

@@ -19,8 +19,11 @@ package com.etendoerp.go.schemaforge.util;
 
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.access.Role;
@@ -56,7 +59,14 @@ public final class GoFeatureAccess {
    * @return whether the current role may use the feature with that method
    */
   public static boolean hasAccess(GoFeature feature, String httpMethod) {
-    return decide(NeoAccessHelper.resolveCurrentRole(), feature, httpMethod, true, false);
+    Boolean decided = decideFromRole(NeoAccessHelper.resolveCurrentRole(), feature, httpMethod);
+    if (decided != null) {
+      return decided;
+    }
+    if (feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS) {
+      return NeoAccessHelper.hasObuiappProcessAccess(feature.legacyId);
+    }
+    return NeoAccessHelper.hasWindowAccess(feature.legacyId, httpMethod);
   }
 
   /**
@@ -68,7 +78,16 @@ public final class GoFeatureAccess {
    * @return whether {@code role} may use the feature with that method
    */
   public static boolean hasAccess(Role role, GoFeature feature, String httpMethod) {
-    return decide(role, feature, httpMethod, false, false);
+    if (role == null) {
+      return false;
+    }
+    Boolean decided = decideFromRole(role, feature, httpMethod);
+    if (decided != null) {
+      return decided;
+    }
+    return feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS
+        ? NeoAccessHelper.hasObuiappProcessAccess(role, feature.legacyId)
+        : NeoAccessHelper.hasWindowAccess(role, feature.legacyId, httpMethod);
   }
 
   /**
@@ -79,38 +98,73 @@ public final class GoFeatureAccess {
    * @return whether the current role may read the feature
    */
   public static boolean hasReadAccess(GoFeature feature) {
-    return decide(NeoAccessHelper.resolveCurrentRole(), feature, "GET", true, true);
+    Boolean decided = decideFromRole(NeoAccessHelper.resolveCurrentRole(), feature, "GET");
+    if (decided != null) {
+      return decided;
+    }
+    return feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS
+        ? NeoAccessHelper.hasObuiappProcessAccess(feature.legacyId)
+        : NeoAccessHelper.hasWindowAccess(feature.legacyId);
   }
 
   /**
-   * @param current whether the legacy check uses the current-role helper overloads (which also deny
-   *     a missing role and pass the admin roles themselves)
-   * @param singleArgRead whether a read of a window uses the one-argument window helper
+   * The part of the decision that does not depend on the legacy grant.
+   *
+   * @return {@code TRUE} for an admin role or when the role's GO Access row allows the method,
+   *     {@code FALSE} when the row denies it, {@code null} when the legacy grant must decide
+   *     (no role, or no row)
    */
-  private static boolean decide(Role role, GoFeature feature, String httpMethod, boolean current,
-      boolean singleArgRead) {
-    if (role == null && !current) {
-      return false;
+  private static Boolean decideFromRole(Role role, GoFeature feature, String httpMethod) {
+    if (role == null) {
+      return null;
     }
-    if (role != null) {
-      if (NeoAccessHelper.isAdminOrClientAdmin(role)) {
-        return true;
+    if (NeoAccessHelper.isAdminOrClientAdmin(role)) {
+      return Boolean.TRUE;
+    }
+    String granted = grantedTier(role, feature);
+    if (granted == null) {
+      return null;
+    }
+    return !NeoAccessHelper.isWriteMethod(httpMethod) || RoleAccessMatrix.FULL.equals(granted);
+  }
+
+  /**
+   * The tier a role has for every feature it can use, resolved with one GO Access query plus one
+   * query per legacy record kind: the GO Access row when there is one, the classic grant of the
+   * feature otherwise; admin roles get {@link RoleAccessMatrix#FULL} everywhere. Features the role
+   * cannot use are absent. This is what the SPA reads, so it answers like the gates.
+   *
+   * @param role the role; {@code null} yields an empty map
+   * @return feature id to {@link RoleAccessMatrix#FULL} or {@link RoleAccessMatrix#READ_ONLY}
+   */
+  public static Map<String, String> effectiveTiers(Role role) {
+    Map<String, String> tiers = new LinkedHashMap<>();
+    if (role == null) {
+      return tiers;
+    }
+    boolean admin = NeoAccessHelper.isAdminOrClientAdmin(role);
+    Map<String, String> granted = admin ? Collections.emptyMap() : grantedTiers(role);
+    Map<String, String> legacy = new HashMap<>();
+    if (!admin) {
+      Set<String> windowIds = new HashSet<>();
+      for (GoFeature feature : GoFeature.withLegacyKind(GoFeature.LegacyKind.WINDOW)) {
+        windowIds.add(feature.legacyId);
       }
-      String granted = grantedTier(role, feature);
-      if (granted != null) {
-        return !NeoAccessHelper.isWriteMethod(httpMethod) || RoleAccessMatrix.FULL.equals(granted);
+      legacy.putAll(RoleAccessMatrix.resolveWindowTierMap(role, windowIds));
+      for (GoFeature feature : GoFeature.withLegacyKind(GoFeature.LegacyKind.OBUIAPP_PROCESS)) {
+        legacy.putAll(RoleAccessMatrix.resolveProcessTierMap(role, feature.legacyId));
       }
     }
-    if (!current) {
-      return feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS
-          ? NeoAccessHelper.hasObuiappProcessAccess(role, feature.legacyId)
-          : NeoAccessHelper.hasWindowAccess(role, feature.legacyId, httpMethod);
+    for (GoFeature feature : GoFeature.values()) {
+      String tier = admin ? RoleAccessMatrix.FULL : granted.get(feature.id);
+      if (tier == null) {
+        tier = legacy.get(feature.legacyId);
+      }
+      if (tier != null) {
+        tiers.put(feature.id, tier);
+      }
     }
-    if (feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS) {
-      return NeoAccessHelper.hasObuiappProcessAccess(feature.legacyId);
-    }
-    return singleArgRead ? NeoAccessHelper.hasWindowAccess(feature.legacyId)
-        : NeoAccessHelper.hasWindowAccess(feature.legacyId, httpMethod);
+    return tiers;
   }
 
   /**

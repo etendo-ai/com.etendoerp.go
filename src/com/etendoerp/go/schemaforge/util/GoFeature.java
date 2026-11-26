@@ -60,7 +60,8 @@ public enum GoFeature {
   INVENTORY_STOCK_REPORT("inventory-stock-report", LegacyKind.WINDOW,
       "6346B88619F948F9A42224BDB0B239FA", false);
 
-  // Open decision (ETP-4802, needs a functional owner): "tax-report" is deliberately NOT a feature yet. It has no AD_Process and no
+  // TODO(ETP-4802: replace with the key of the tax-report follow-up issue; this issue will be closed).
+  // Open decision (needs a functional owner): "tax-report" is deliberately NOT a feature yet. It has no AD_Process and no
   // AD_Tab_ID, so NeoAccessHelper#hasAccessToConstituentWindows lets every authenticated role
   // through (permissive fallback). Keeping that behaviour here is intentional; its grant source
   // needs a functional decision before it can be declared as a feature (and the fallback closed).
@@ -78,11 +79,12 @@ public enum GoFeature {
   public final String legacyId;
   /**
    * Whether {@link #legacyId} is also a real, separately exposed window (SII Monitor stands for
-   * "Monitor fiscal"). The SPA surfaces (roles matrix, window access map, menu) are keyed by that
-   * window id, so a GO Access row of this feature is NOT overlaid there: it would change the tier
-   * of the real window while the real window's own access check stays on its classic grant. Until
-   * the SPA addresses the feature by its own id, such a feature's SPA source stays the classic
-   * window grant; the row still governs {@link GoFeatureAccess} gates.
+   * "Monitor fiscal"). The window-keyed SPA surfaces (roles matrix, the legacy-id keys of the
+   * window access map) are keyed by that window id, so a GO Access row of this feature is NOT
+   * overlaid there: it would change the tier of the real window while the real window's own access
+   * check stays on its classic grant. The feature is still addressed by its own id: the Fiscal
+   * Monitor page guard reads {@code windowAccess["fiscal-monitor"]} (ETP-4802), which does honour the
+   * row, as do the {@link GoFeatureAccess} gates.
    */
   public final boolean sharesRealWindow;
   /** {@code AD_Table_ID}s the feature writes attachments through. */

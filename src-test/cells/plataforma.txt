@@ -6,6 +6,7 @@
 
 # --- con mocks (659)
 com.etendoerp.go.modulescript.EnsureDocumentStatusTranslationsScriptTest
+com.etendoerp.go.modulescript.SeedGoAccessScriptTest
 com.etendoerp.go.onboarding.OnboardingRemittanceSetupServiceTest
 com.etendoerp.go.payment.CheckoutPromotionTermsTest
 com.etendoerp.go.payment.MonthlySecondMonthPromotionServiceTest
@@ -309,6 +310,7 @@ com.etendoerp.go.roles.RoleWriteConflictsTest
 com.etendoerp.go.roles.TemplateRoleWindowAccessTest
 com.etendoerp.go.roles.UserRoleCompositionServiceSupportTest
 com.etendoerp.go.roles.UserRoleCompositionServiceTest
+com.etendoerp.go.roles.goaccess.GoAccessLegacyMirrorTest
 com.etendoerp.go.roles.overlap.HigherPrecedenceSkipTest
 com.etendoerp.go.roles.overlap.OverlapReconciliationCoreTest
 com.etendoerp.go.roles.overlap.TemplateRemovalTrackerTest
@@ -333,6 +335,7 @@ com.etendoerp.go.schemaforge.DocumentPdfMonthlyReportProcessTest
 com.etendoerp.go.schemaforge.DocumentPdfMonthlyReportTest
 com.etendoerp.go.schemaforge.DocumentPdfUsageTest
 com.etendoerp.go.schemaforge.ForeignOriginalTest
+com.etendoerp.go.schemaforge.GoFeatureGateHandlersTest
 com.etendoerp.go.schemaforge.HiddenMandatoryDefaultsTest
 com.etendoerp.go.schemaforge.InvoiceCompletionQuotaHookTest
 com.etendoerp.go.schemaforge.ListReferenceSelectorExecutorTest

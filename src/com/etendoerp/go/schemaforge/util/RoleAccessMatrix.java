@@ -391,6 +391,13 @@ public final class RoleAccessMatrix {
         features.add(feature);
       }
     }
+    // an anchor that also shows up as a window row of the matrix gets the same overlay, so the
+    // matrix never shows the legacy tier while the gates and the SPA use the GO Access one
+    for (GoFeature feature : GoFeature.values()) {
+      if (tiers.containsKey(feature.legacyId) && !features.contains(feature)) {
+        features.add(feature);
+      }
+    }
     GoFeatureAccess.overlayTiers(role, tiers, features);
   }
 
