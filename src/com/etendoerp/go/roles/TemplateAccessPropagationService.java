@@ -102,6 +102,8 @@ public class TemplateAccessPropagationService {
   private static final String SYSTEM_TEMPLATES_SQL = "SELECT tr.ad_role_id FROM ad_role tr "
       + "WHERE tr.istemplate = 'Y' AND tr.ad_client_id = '0'";
 
+  /** Roles per query when snapshotting the classic grants of the GO features (ETP-4802). */
+  private static final int MIRROR_CHUNK_SIZE = 500;
   private static final String ROLES_PARAM = "roles";
   private static final String AD_PROCESS_ID = "ad_process_id";
   private static final String OBUIAPP_PROCESS_ID = "obuiapp_process_id";
@@ -383,9 +385,6 @@ public class TemplateAccessPropagationService {
     }
     return counts;
   }
-
-  /** Roles per query when snapshotting the classic grants of the GO features (ETP-4802). */
-  private static final int MIRROR_CHUNK_SIZE = 500;
 
   /**
    * {@link #sweepRoles} for one personal role inside a composition request (ETP-5565, the
