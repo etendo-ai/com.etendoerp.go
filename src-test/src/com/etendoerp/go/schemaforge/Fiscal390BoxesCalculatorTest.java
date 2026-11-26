@@ -353,6 +353,29 @@ public class Fiscal390BoxesCalculatorTest {
     assertNull(r.boxes.get(92));
   }
 
+  /**
+   * [63] is a deduction on classic's bean (SumDeducciones / ResRegGeneral), so it reaches [64],
+   * [65] and [84]/[86] in liquidation mode, and the territory [84] too — unlike [661].
+   */
+  @Test
+  public void testInvestmentRegularizationIsADeduction() {
+    Fiscal390BoxesCalculator.Result liq = Fiscal390BoxesCalculator.compute(typicalYear(),
+        inputs("390INVESTMENT_REGULARIZATION", "-10.32", "LIQANUAL_VAT_LAW_REGULARIZATION", "10"));
+
+    assertBox(liq, 63, "-10.32");
+    assertBox(liq, 64, "73.18");  // 83.50 - 10.32
+    assertBox(liq, 65, "266.50"); // 339.68 - 73.18
+    assertBox(liq, 84, "276.50"); // 266.50 + 10
+    assertBox(liq, 86, "276.50");
+
+    Fiscal390BoxesCalculator.Result terr = Fiscal390BoxesCalculator.compute(typicalYear(),
+        inputs("COMMON_TERRITORY", "100", "390INVESTMENT_REGULARIZATION", "6.18"));
+
+    assertBox(terr, 64, "89.68");  // 83.50 + 6.18
+    assertBox(terr, 84, "250");    // 339.68 - 89.68: [63] is taken off, as on the bean
+    assertBox(terr, 92, "250");
+  }
+
   /** [85] is only printed from 0.01 up, as classic's generateLiqAnual. */
   @Test
   public void testCompensationBelowOneCentIsNotPrinted() {

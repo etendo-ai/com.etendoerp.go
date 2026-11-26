@@ -83,7 +83,7 @@ The values the user types (compensations, territory percentages, monthly results
 `ISSUPPLEMENTARY`) are named by the classic `TaxReportParameter` search keys
 (`390_Report_Tax_Parameters.xml`): `LIQANUAL_COMPENSATION`, `LIQANUAL_VAT_LAW_REGULARIZATION`
 [658], `LIQANUAL_VAT_IMPORT` [659], `LIQANUAL_NoCurrentTypeBASE` [660],
-`LIQANUAL_NoCurrentTypeAMOUNT` [661], `COMMON_TERRITORY`/`ALAVA`/`GUIPUZCOA`/`VIZCAYA`/`NAVARRA`
+`LIQANUAL_NoCurrentTypeAMOUNT` [661], `390INVESTMENT_REGULARIZATION` [63], `COMMON_TERRITORY`/`ALAVA`/`GUIPUZCOA`/`VIZCAYA`/`NAVARRA`
 [87–91], `COMMON_TERRITORY_COMPENSATION` [93], `INGRESAR_01..12`, `DEVOLVER_01..12`,
 `TOTAL_LASTPERIOD` [97], `TOTAL_LASTPERIOD_DEVOLVER` [98], `LIQANUAL_ENDCOMPENSATION` [662],
 `390REAGYP` [101], `390USED_GOODS` [227], `390TRAVEL_AGENCY` [228],
@@ -104,7 +104,7 @@ the snapshot is taken before the PUT's `manualData` is applied.
 ### Server-side 303 preload (ETP-5716, AEAT PAR016)
 
 The block-9 inputs the year's 303s determine (`INGRESAR_xx`, `DEVOLVER_xx`, [97], [98], [662],
-[85]/[93], the territory percentages — `GET /fiscal390/preload` `inputs`) are applied **by the
+[85]/[93], the territory percentages — `GET /fiscal390/preload` `inputs`), plus [63] (Σ 303 [43]) are applied **by the
 backend** before computing anything — `boxes` (screen and list auto-compute), `generate`,
 `submit` (file and snapshot), `validate` / the guards (incidents) and the live snapshot payload —
 so none of them depends on the client having saved the preload, as the 303 / 349 compute from
@@ -163,7 +163,7 @@ Classic computes these on the bean or while writing TXT page 6
 
 ```
 [47] = [34] + Σ recargo-equivalencia cuotas + [44]   (only the RE cuotas when [34] is empty)
-[64] = Σ deductible cuotas (split element Total cuota, non-split element cuota) + [661]
+[64] = Σ deductible cuotas (split element Total cuota, non-split element cuota) + [63] + [661]
 [65] = [47] − [64]
 liquidation mode (no territory percentage):
   [84] = [65] + [658]
@@ -186,6 +186,16 @@ adds it to [64] and takes it off [65] while printing page 4 (`AEAT390Report2018.
 and takes it off the liquidation [84]/[86] while printing page 6
 (`AEAT390Report2021.generateTXTPage6`). The preview reproduces what the file prints, so in
 liquidation mode [84] = [65] + [658] holds.
+
+[63] (*regularización de bienes de inversión*, `390INVESTMENT_REGULARIZATION`) is a manual input:
+it depends on the prorrata of the acquisition years (arts. 107–110 LIVA), which Etendo does not
+keep, so it is never calculated. It can be negative. Unlike [661], classic puts it on the bean
+(`AEAT390Report2014.generateOperacionesRegimenGeneral` → `RegularizInversiones` and
+`SumDeducciones`), so it is part of `ResRegGeneral` and reaches [64], [65] and both the liquidation
+and the territory [84] with no quirk. The TXT prints it on page 4 (`AEAT390Report2018
+.generateTXTPage4`, [63]; position 625 of the 2025/2026 design). This key has no
+`TaxReportParameter` in the classic reference data: the classic launcher never sends it and
+classic keeps printing 0 there; GO sends it from `manualData.aeatInputs`.
 
 Classic quirks with [661] in territory mode:
 - the territory [84] (and so [92]/[94]) is printed from `Administraciones.SumResultados`, which
@@ -469,6 +479,7 @@ values to `manualData.aeatInputs` (only to the inputs the user did not change) a
 | `LIQANUAL_ENDCOMPENSATION` [662] | credits generated in a non-last period of the year and never applied | AEAT [662]: "cuotas a compensar generadas en el ejercicio en alguno de los períodos … distintos del último cuando no se hubiesen aplicado" |
 | `COMMON_TERRITORY` [87] | last 303 [65] (= [107], ETP-5391), default 100 | only when Σ last 303 [89]–[92] > 0; otherwise no territory key is sent |
 | `ALAVA` [88] / `GUIPUZCOA` [89] / `VIZCAYA` [90] / `NAVARRA` [91] | last 303 [89] / [90] / [91] / [92] | ETP-5391 last-period territorial boxes, same order |
+| `390INVESTMENT_REGULARIZATION` [63] | Σ [43] of the periods | AEAT [63]: the annual regularization of investment goods, which the 303s already declared in [43] (part of their [45]); preloading it keeps the 390 result equal to theirs |
 
 [85]/[662] come from one walk in period order: each [78] consumes the prior-year carry first —
 the first 303's [110] ("cuotas pendientes de compensación de periodos anteriores") — then the
