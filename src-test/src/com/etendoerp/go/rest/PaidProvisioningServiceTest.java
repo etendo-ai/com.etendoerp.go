@@ -40,7 +40,7 @@ import com.etendoerp.go.schemaforge.data.CheckoutRequest;
  * run is handed to the servlet's shared onboarding with the caller's context restored after.
  *
  * <p>The fenced claim and the run itself are {@link EtendoGoJwtServlet#provisionPaidPurchase}'s;
- * see {@code EtendoGoJwtServletCoverageTest}.
+ * see {@code EtendoGoJwtServletPaidOnboardingTest}.
  *
  * @covers com.etendoerp.go.rest.PaidProvisioningService
  */

@@ -1145,8 +1145,8 @@ public class GoSessionEndpointsTest {
   // buildSessionCapabilities(), so a brand-new account's very first session (the one onboarding's
   // CompanyStep reads) always saw capabilities as {} on the frontend even with the flag on. These
   // three tests exercise each creation path end to end (not buildSessionCapabilities() directly,
-  // already covered by EtendoGoJwtServletCoverageTest) and check the flag is targeted at the
-  // correct account email in each one.
+  // already covered by EtendoGoJwtServletOnboardingPreflightTest) and check the flag is targeted
+  // at the correct account email in each one.
 
   /** {@code POST /sws/go/session} (login): capabilities is evaluated for the authenticating account. */
   @Test
