@@ -53,6 +53,8 @@ import org.codehaus.jettison.json.JSONObject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -2886,6 +2888,50 @@ class BusinessPartnerHandlerTest {
     assertEquals("The phone number can only contain digits and the + ( ) - . characters, up to 15 characters.",
         errors.getString("etgoPhone"));
     assertEquals(errors.getString("etgoPhone"), result.getBody().getJSONObject("error").getString("message"));
+  }
+
+  /** ETP-6225: spaces never count against the 15-character cap and are not stored. */
+  @ParameterizedTest
+  @CsvSource({
+      "'+34 910 565 400', +34910565400",
+      "'912 345 678', 912345678",
+      "'+34 (910) 565-400', +34(910)565-400",
+      "' 653 120 012 ', 653120012",
+  })
+  void testHandlePostStoresThePhoneWithoutWhitespace(String typed, String stored) throws Exception {
+    JSONObject section = new JSONObject().put("name", "Cliente SL").put("etgoPhone", typed);
+    try (MockedStatic<GoFeatureFlags> flag = contactTypeFlag(false)) {
+      assertNull(handlePost(new JSONObject().put("data", section)));
+    }
+    assertEquals(stored, section.getString("etgoPhone"));
+  }
+
+  /** ETP-6225: the leading apostrophe survives the stripping, so the phone is still refused. */
+  @Test
+  void testStripPhoneWhitespaceKeepsTheApostropheAndIgnoresNonStrings() throws Exception {
+    JSONObject quoted = new JSONObject().put("etgoPhone", "'+34 910 565 400");
+    BusinessPartnerHandler.stripPhoneWhitespace(quoted);
+    assertEquals("'+34910565400", quoted.getString("etgoPhone"));
+
+    JSONObject cleared = new JSONObject().put("etgoPhone", JSONObject.NULL);
+    BusinessPartnerHandler.stripPhoneWhitespace(cleared);
+    assertTrue(cleared.isNull("etgoPhone"));
+
+    JSONObject untouched = new JSONObject().put("name", "x");
+    BusinessPartnerHandler.stripPhoneWhitespace(untouched);
+    assertFalse(untouched.has("etgoPhone"));
+  }
+
+  /**
+   * ETP-6225: still too long once the spaces are gone (16 characters). Note the ticket's CP7 value,
+   * "+34 910 565 400 123", is exactly 15 once stripped, so it is accepted.
+   */
+  @Test
+  void testPhoneOverFifteenCharactersWithoutSpacesIsRefused() throws Exception {
+    NeoResponse result = handlePost(new JSONObject().put("etgoPhone", "+34 910 565 400 1234"));
+
+    assertNotNull(result);
+    assertEquals(400, result.getHttpStatus());
   }
 
   @Test
