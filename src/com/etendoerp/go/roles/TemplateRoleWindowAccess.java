@@ -189,6 +189,11 @@ public final class TemplateRoleWindowAccess {
       return windowId;
     }
 
+    /**
+     * Returns the tier of the grant.
+     *
+     * @return {@code true} for read-only access, {@code false} for full access
+     */
     public boolean isReadOnly() {
       return readOnly;
     }
@@ -472,10 +477,20 @@ public final class TemplateRoleWindowAccess {
       this.readOnly = readOnly;
     }
 
+    /**
+     * Returns the granted feature.
+     *
+     * @return the feature
+     */
     public GoFeature getFeature() {
       return feature;
     }
 
+    /**
+     * Returns the tier of the grant.
+     *
+     * @return {@code true} for read-only access, {@code false} for full access
+     */
     public boolean isReadOnly() {
       return readOnly;
     }
@@ -486,9 +501,10 @@ public final class TemplateRoleWindowAccess {
    * standalone OBUIAPP process grants above that are a feature's legacy record
    * ({@link GoFeature#legacyId}), at the same tier. A template role gets, for each of these, both
    * the legacy grant and the GO Access row, so new and existing roles resolve the same way and
-   * nobody's access changes. {@code EnsureSystemRoleTemplatesScript} keeps its own literal copy of
-   * the feature to legacy-id table by design (it cannot import module classes);
-   * {@code SFSystemRoleTemplatesTest} asserts that both agree.
+   * nobody's access changes. this is only a declaration of the intended
+   * grants, covered by {@code TemplateRoleWindowAccessTest}; nothing reads it at runtime. The
+   * seeding script mirrors the classic grants themselves and keeps its own literal feature table,
+   * which {@code SeedGoAccessScriptTest} checks against {@link GoFeature}.
    *
    * @return a fresh, mutable {@link LinkedHashMap} from template role id to its feature grants
    */

@@ -21,6 +21,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -41,7 +42,6 @@ import java.util.Optional;
 import javax.tools.JavaCompiler;
 import javax.tools.ToolProvider;
 
-import org.junit.jupiter.api.Assumptions;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -73,10 +73,10 @@ class SeedGoAccessScriptTest {
     Optional<Path> root = List.of(here, here.resolve(Paths.get("modules", "com.etendoerp.go")))
         .stream().filter(candidate -> Files.isRegularFile(candidate.resolve(SCRIPT_RELATIVE)))
         .findFirst();
-    Assumptions.assumeTrue(root.isPresent(),
-        () -> "Skipping: com.etendoerp.go module root not found from " + here.toAbsolutePath());
+    assertTrue(root.isPresent(),
+        "com.etendoerp.go module root not found from " + here.toAbsolutePath());
     JavaCompiler compiler = ToolProvider.getSystemJavaCompiler();
-    Assumptions.assumeTrue(compiler != null, "Skipping: no system Java compiler (JRE only)");
+    assertTrue(compiler != null, "a JDK is required to compile SeedGoAccessScript");
     int status = compiler.run(null, null, null, "-proc:none", "-encoding", "UTF-8", "-classpath",
         System.getProperty("java.class.path"), "-d", classesDir.toString(),
         root.orElseThrow().resolve(SCRIPT_RELATIVE).toString());
@@ -151,6 +151,35 @@ class SeedGoAccessScriptTest {
         assertTrue(mirror.contains("'" + template + "'"),
             "the mirror is limited to the four system templates: " + mirror);
       }
+    }
+  }
+
+  /**
+   * The seed reproduces today's decisions: the row it inserts carries the legacy tier, so the
+   * decision before the seed (legacy grant) and after it (GO row) is the same for each case.
+   */
+  @Test
+  void theSeededRowReproducesTheLegacyDecisionForEveryCase() throws Exception {
+    String seed = field("SEED_SQL").replaceAll("\\s+", " ");
+
+    // read-only and read-write: the tier is copied from the legacy row, never widened
+    assertTrue(seed.contains("MAX(g.isreadwrite)"), seed);
+    // no legacy grant: the inner join inserts nothing for that role
+    assertTrue(seed.contains("FROM ad_role r JOIN {t} g ON g.ad_role_id = r.ad_role_id"), seed);
+    // an inactive legacy row, or an inactive role, never resolved: no row
+    assertTrue(seed.contains("g.isactive = 'Y'") && seed.contains("r.isactive = 'Y'"), seed);
+    // another client: the row belongs to the role's own client and organisation
+    assertTrue(seed.contains("r.ad_client_id, r.ad_org_id"), seed);
+    // the feature is matched on its own legacy record only
+    assertTrue(seed.contains("g.{c} = ?"), seed);
+
+    ConnectionProvider cp = mock(ConnectionProvider.class);
+    PreparedStatement ps = mock(PreparedStatement.class);
+    when(cp.getPreparedStatement(anyString())).thenReturn(ps);
+    seed(cp);
+    for (GoFeature feature : GoFeature.values()) {
+      verify(ps, atLeastOnce()).setString(1, feature.id);
+      verify(ps, atLeastOnce()).setString(2, feature.legacyId);
     }
   }
 

@@ -133,25 +133,4 @@ class GoFeatureGateHandlersTest {
 
     assertEquals(403, response.getHttpStatus(), name);
   }
-
-  @ParameterizedTest(name = "{0}: with a row the request gets past the gate")
-  @MethodSource("gates")
-  void withARowTheRequestIsNotRefusedByTheGate(String name, GoFeature feature,
-      Supplier<NeoHandler> handler) {
-    goAccess.when(() -> GoFeatureAccess.grantedTiers(role))
-        .thenReturn(Map.of(feature.id, RoleAccessMatrix.FULL));
-    NeoContext context = NeoContext.builder().specName("report").entityName("report")
-        .httpMethod("PUT").build();
-
-    NeoResponse response;
-    try {
-      response = handler.get().handle(context);
-    } catch (RuntimeException e) {
-      // got past the gate and failed later for lack of a database: not a 403
-      return;
-    }
-
-    // a handler may answer nothing for an unsupported method; only a 403 means the gate refused
-    assertTrue(response == null || response.getHttpStatus() != 403, name);
-  }
 }

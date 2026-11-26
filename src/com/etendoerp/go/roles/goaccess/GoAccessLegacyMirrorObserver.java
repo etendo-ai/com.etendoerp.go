@@ -73,6 +73,7 @@ public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver
    */
   public void onUpdate(@Observes EntityUpdateEvent event) {
     handle(event, false);
+    handlePreviousPair(event);
   }
 
   /**
@@ -114,5 +115,32 @@ public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver
         .equals(event.getCurrentState(entity.getProperty("editableField")));
     GoAccessLegacyMirror.onClassicGrantChange(role.getId(), legacyId, active, readWrite,
         (String) target.getId());
+  }
+
+  /**
+   * When an update moves a grant to another role or record, the pair it left no longer has this
+   * row: resync it without this row so a stale GO Access row cannot outlive the grant.
+   */
+  private void handlePreviousPair(EntityUpdateEvent event) {
+    if (!isValidEvent(event)) {
+      return;
+    }
+    BaseOBObject target = event.getTargetInstance();
+    Entity entity = target.getEntity();
+    boolean isWindow = target instanceof WindowAccess;
+    if (!isWindow && !(target instanceof ProcessAccess)) {
+      return;
+    }
+    Object previousRole = event.getPreviousState(entity.getProperty("role"));
+    Object previousRecord = event
+        .getPreviousState(entity.getProperty(isWindow ? "window" : "obuiappProcess"));
+    Object currentRole = event.getCurrentState(entity.getProperty("role"));
+    Object currentRecord = event
+        .getCurrentState(entity.getProperty(isWindow ? "window" : "obuiappProcess"));
+    if (previousRole instanceof Role && previousRecord instanceof BaseOBObject
+        && (!previousRole.equals(currentRole) || !previousRecord.equals(currentRecord))) {
+      GoAccessLegacyMirror.onClassicGrantChange(((Role) previousRole).getId(),
+          (String) ((BaseOBObject) previousRecord).getId(), false, false, (String) target.getId());
+    }
   }
 }

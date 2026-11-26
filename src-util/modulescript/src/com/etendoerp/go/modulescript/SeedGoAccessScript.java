@@ -18,6 +18,7 @@
 package com.etendoerp.go.modulescript;
 
 import java.sql.PreparedStatement;
+import java.sql.SQLException;
 
 import org.openbravo.database.ConnectionProvider;
 import org.openbravo.modulescript.ModuleScript;
@@ -109,9 +110,9 @@ public class SeedGoAccessScript extends ModuleScript {
    *
    * @param cp the connection provider
    * @return the number of rows inserted, updated or deleted
-   * @throws Exception when a statement fails
+   * @throws SQLException when a statement fails
    */
-  int seed(ConnectionProvider cp) throws Exception {
+  int seed(ConnectionProvider cp) throws SQLException {
     int changed = 0;
     for (String[] feature : FEATURES) {
       changed += run(cp, SEED_SQL, feature, feature[0], feature[2]);
@@ -122,7 +123,7 @@ public class SeedGoAccessScript extends ModuleScript {
   }
 
   private static int run(ConnectionProvider cp, String sql, String[] feature, String first,
-      String second) throws Exception {
+      String second) throws SQLException {
     boolean window = WINDOW.equals(feature[1]);
     String resolved = sql.replace("{t}", window ? "ad_window_access" : "obuiapp_process_access")
         .replace("{c}", window ? "ad_window_id" : "obuiapp_process_id");
@@ -130,6 +131,11 @@ public class SeedGoAccessScript extends ModuleScript {
       ps.setString(1, first);
       ps.setString(2, second);
       return ps.executeUpdate();
+    } catch (SQLException e) {
+      throw e;
+    } catch (Exception e) {
+      // ConnectionProvider#getPreparedStatement declares a bare Exception
+      throw new SQLException("Could not prepare the GO Access seeding statement", e);
     }
   }
 }

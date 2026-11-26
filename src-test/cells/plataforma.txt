@@ -310,7 +310,9 @@ com.etendoerp.go.roles.RoleWriteConflictsTest
 com.etendoerp.go.roles.TemplateRoleWindowAccessTest
 com.etendoerp.go.roles.UserRoleCompositionServiceSupportTest
 com.etendoerp.go.roles.UserRoleCompositionServiceTest
+com.etendoerp.go.roles.goaccess.GoAccessLegacyMirrorObserverTest
 com.etendoerp.go.roles.goaccess.GoAccessLegacyMirrorTest
+com.etendoerp.go.roles.goaccess.GoAccessNativeWritersTest
 com.etendoerp.go.roles.overlap.HigherPrecedenceSkipTest
 com.etendoerp.go.roles.overlap.OverlapReconciliationCoreTest
 com.etendoerp.go.roles.overlap.TemplateRemovalTrackerTest
