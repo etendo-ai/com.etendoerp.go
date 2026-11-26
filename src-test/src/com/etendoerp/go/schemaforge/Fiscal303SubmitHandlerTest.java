@@ -537,9 +537,9 @@ public class Fiscal303SubmitHandlerTest {
   @Test
   public void testHandleSubmit_noCertificateMessageIsInTheRequestLanguage() throws Exception {
     assertEquals("Esta organización no tiene un certificado configurado. Sube uno desde "
-        + "Configuración Fiscal antes de presentar en producción (el modo de prueba no requiere "
-        + "certificado).", noCertificateMessage("es_ES"));
-    assertEquals("This organization has no certificate configured. Upload one from Fiscal "
+        + "Impuestos → Configuración Fiscal antes de presentar en producción (el modo de "
+        + "prueba no requiere certificado).", noCertificateMessage("es_ES"));
+    assertEquals("This organization has no certificate configured. Upload one from Taxes → Fiscal "
         + "Configuration before submitting in production (test mode does not require a "
         + "certificate).", noCertificateMessage("en_US"));
   }
