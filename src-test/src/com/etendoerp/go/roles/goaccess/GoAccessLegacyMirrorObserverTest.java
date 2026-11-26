@@ -112,6 +112,25 @@ class GoAccessLegacyMirrorObserverTest {
   }
 
   @Test
+  void aResaveThatChangesNeitherTierNorRoleNorWindowLeavesTheGoRowUntouched() {
+    WindowAccess access = windowAccess("R1", WINDOW_FEATURE, "A1");
+    EntityUpdateEvent event = updateEvent(access, true, true);
+    when(event.getPreviousState(properties.get("active"))).thenReturn(true);
+    when(event.getPreviousState(properties.get("editableField"))).thenReturn(true);
+    when(event.getPreviousState(properties.get("role"))).thenReturn(access.getRole());
+    when(event.getPreviousState(properties.get("window"))).thenReturn(access.getWindow());
+    when(event.getCurrentState(properties.get("role"))).thenReturn(access.getRole());
+    when(event.getCurrentState(properties.get("window"))).thenReturn(access.getWindow());
+
+    observer.onUpdate(event);
+
+    mirror.verify(
+        () -> GoAccessLegacyMirror.onClassicGrantChange(anyString(), anyString(), anyBoolean(),
+            anyBoolean(), anyString()),
+        never());
+  }
+
+  @Test
   void aDeactivatedGrantIsMirroredAsInactive() {
     WindowAccess access = windowAccess("R1", WINDOW_FEATURE, "A1");
 

@@ -17,6 +17,8 @@
 
 package com.etendoerp.go.roles.goaccess;
 
+import java.util.Objects;
+
 import javax.enterprise.event.Observes;
 
 import org.openbravo.base.model.Entity;
@@ -72,8 +74,28 @@ public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver
    * @param event the persistence event
    */
   public void onUpdate(@Observes EntityUpdateEvent event) {
+    if (!isValidEvent(event) || !grantChanged(event)) {
+      return;
+    }
     handle(event, false);
     handlePreviousPair(event);
+  }
+
+  /**
+   * A re-save that changes none of the tier, the active flag, the role or the record is not a
+   * classic grant change: an administrator's direct GO Access edit must stand through it.
+   */
+  private boolean grantChanged(EntityUpdateEvent event) {
+    Entity entity = event.getTargetInstance().getEntity();
+    String recordProperty = event.getTargetInstance() instanceof WindowAccess ? "window"
+        : "obuiappProcess";
+    for (String name : new String[] { "active", "editableField", "role", recordProperty }) {
+      if (!Objects.equals(event.getPreviousState(entity.getProperty(name)),
+          event.getCurrentState(entity.getProperty(name)))) {
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
