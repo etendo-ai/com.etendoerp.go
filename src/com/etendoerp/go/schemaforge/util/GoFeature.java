@@ -60,7 +60,7 @@ public enum GoFeature {
   INVENTORY_STOCK_REPORT("inventory-stock-report", LegacyKind.WINDOW,
       "6346B88619F948F9A42224BDB0B239FA", false);
 
-  // TODO(ETP-4802: replace with the key of the tax-report follow-up issue; this issue will be closed).
+  // Pending: reference the tax-report follow-up issue here once it exists (ETP-4802 will be closed).
   // Open decision (needs a functional owner): "tax-report" is deliberately NOT a feature yet. It has no AD_Process and no
   // AD_Tab_ID, so NeoAccessHelper#hasAccessToConstituentWindows lets every authenticated role
   // through (permissive fallback). Keeping that behaviour here is intentional; its grant source

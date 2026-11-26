@@ -23,6 +23,7 @@ import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import org.openbravo.dal.service.OBDal;
@@ -59,9 +60,9 @@ public final class GoFeatureAccess {
    * @return whether the current role may use the feature with that method
    */
   public static boolean hasAccess(GoFeature feature, String httpMethod) {
-    Boolean decided = decideFromRole(NeoAccessHelper.resolveCurrentRole(), feature, httpMethod);
-    if (decided != null) {
-      return decided;
+    Optional<Boolean> decided = decideFromRole(NeoAccessHelper.resolveCurrentRole(), feature, httpMethod);
+    if (decided.isPresent()) {
+      return decided.get();
     }
     if (feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS) {
       return NeoAccessHelper.hasObuiappProcessAccess(feature.legacyId);
@@ -81,9 +82,9 @@ public final class GoFeatureAccess {
     if (role == null) {
       return false;
     }
-    Boolean decided = decideFromRole(role, feature, httpMethod);
-    if (decided != null) {
-      return decided;
+    Optional<Boolean> decided = decideFromRole(role, feature, httpMethod);
+    if (decided.isPresent()) {
+      return decided.get();
     }
     return feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS
         ? NeoAccessHelper.hasObuiappProcessAccess(role, feature.legacyId)
@@ -98,9 +99,9 @@ public final class GoFeatureAccess {
    * @return whether the current role may read the feature
    */
   public static boolean hasReadAccess(GoFeature feature) {
-    Boolean decided = decideFromRole(NeoAccessHelper.resolveCurrentRole(), feature, "GET");
-    if (decided != null) {
-      return decided;
+    Optional<Boolean> decided = decideFromRole(NeoAccessHelper.resolveCurrentRole(), feature, "GET");
+    if (decided.isPresent()) {
+      return decided.get();
     }
     return feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS
         ? NeoAccessHelper.hasObuiappProcessAccess(feature.legacyId)
@@ -110,22 +111,23 @@ public final class GoFeatureAccess {
   /**
    * The part of the decision that does not depend on the legacy grant.
    *
-   * @return {@code TRUE} for an admin role or when the role's GO Access row allows the method,
-   *     {@code FALSE} when the row denies it, {@code null} when the legacy grant must decide
+   * @return {@code true} for an admin role or when the role's GO Access row allows the method,
+   *     {@code false} when the row denies it, empty when the legacy grant must decide
    *     (no role, or no row)
    */
-  private static Boolean decideFromRole(Role role, GoFeature feature, String httpMethod) {
+  private static Optional<Boolean> decideFromRole(Role role, GoFeature feature, String httpMethod) {
     if (role == null) {
-      return null;
+      return Optional.empty();
     }
     if (NeoAccessHelper.isAdminOrClientAdmin(role)) {
-      return Boolean.TRUE;
+      return Optional.of(Boolean.TRUE);
     }
     String granted = grantedTier(role, feature);
     if (granted == null) {
-      return null;
+      return Optional.empty();
     }
-    return !NeoAccessHelper.isWriteMethod(httpMethod) || RoleAccessMatrix.FULL.equals(granted);
+    return Optional.of(
+        !NeoAccessHelper.isWriteMethod(httpMethod) || RoleAccessMatrix.FULL.equals(granted));
   }
 
   /**
