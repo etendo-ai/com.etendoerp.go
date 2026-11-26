@@ -24,6 +24,12 @@ import static com.etendoerp.go.schemaforge.ocr.InboxDocument.D_UNKNOWN;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_ADDRESS_STATE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CHECK;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_ID;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_RAW;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_SOURCE;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_UNAVAILABLE;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.CURRENCY_DEFAULT;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.CURRENCY_PRINTED;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.N_CURRENCY_SYMBOL_AMBIGUOUS;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_DOCUMENT_NO;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_DUPLICATE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_EXTRACTED;
@@ -121,7 +127,7 @@ public final class InboxMatcher {
     } else {
       lines = matchBody(extraction, extracted, header, notices);
     }
-    putHeaderScalars(header, extraction, lines);
+    putHeaderScalars(header, extraction, lines, notices);
     return new JSONObject().put(K_VERSION, VERSION).put(K_HEADER, header).put(K_LINES, lines)
         .put(K_NOTICES, new JSONArray(notices));
   }
@@ -217,8 +223,8 @@ public final class InboxMatcher {
     }
   }
 
-  private void putHeaderScalars(JSONObject header, JSONObject extraction, JSONArray lines)
-      throws JSONException {
+  private void putHeaderScalars(JSONObject header, JSONObject extraction, JSONArray lines,
+      List<String> notices) throws JSONException {
     BigDecimal printed = OcrJson.decimal(extraction, "total_amount");
     // A printed total is any non-zero number, whatever its sign: a purchase invoice can be a credit
     // document. Zero or absent means the document printed none.
@@ -227,7 +233,8 @@ public final class InboxMatcher {
     JSONObject vendor = header.optJSONObject(K_VENDOR);
     String vendorId = vendor != null && S_LINKED.equals(vendor.optString(K_STATE))
         ? vendor.optString(K_ID) : null;
-    Optional<OcrLookups.DocCurrency> currency = lookups.documentCurrency(vendorId);
+    Optional<OcrLookups.DocCurrency> currency = documentCurrency(header, extraction, vendorId,
+        notices);
     int scale = currency.map(OcrLookups.DocCurrency::scale).orElse(TWO_DECIMALS);
     if (currency.isPresent()) {
       header.put(K_CURRENCY_ID, currency.get().id());
@@ -249,6 +256,39 @@ public final class InboxMatcher {
       header.put(K_DUPLICATE, new JSONObject().put(K_STATE, D_NONE)
           .put(K_INVOICES, new JSONArray()));
     }
+  }
+
+  /**
+   * The currency of the document (ETP-6051), stamping {@code currencySource}, {@code currencyRaw}
+   * and, when the printed ISO code is not a currency of the tenant, {@code currencyUnavailable}.
+   * Precedence: (a) the printed ISO code when it is an active currency of the tenant; (b) the
+   * printed symbol when exactly one currency the document can use carries it (none or several
+   * add the {@value InboxDocument#N_CURRENCY_SYMBOL_AMBIGUOUS} notice); (c) the organization / client
+   * default (the vendor infers nothing). A printed code that does not resolve keeps the default currency, flagged.
+   */
+  private Optional<OcrLookups.DocCurrency> documentCurrency(JSONObject header,
+      JSONObject extraction, String vendorId, List<String> notices) throws JSONException {
+    String code = OcrJson.str(extraction, "currency").toUpperCase(java.util.Locale.ROOT);
+    String raw = OcrJson.str(extraction, "currency_raw");
+    if (OcrJson.filled(raw)) {
+      header.put(K_CURRENCY_RAW, raw);
+    }
+    Optional<OcrLookups.DocCurrency> printed = Optional.empty();
+    if (OcrJson.filled(code)) {
+      printed = lookups.currencyByCode(code);
+      if (printed.isEmpty()) {
+        header.put(K_CURRENCY_UNAVAILABLE, code);
+      }
+    } else if (OcrJson.filled(raw)) {
+      List<OcrLookups.DocCurrency> bySymbol = lookups.currenciesBySymbol(raw, organizationId);
+      if (bySymbol.size() == 1) {
+        printed = Optional.of(bySymbol.get(0));
+      } else {
+        notices.add(N_CURRENCY_SYMBOL_AMBIGUOUS);
+      }
+    }
+    header.put(K_CURRENCY_SOURCE, printed.isPresent() ? CURRENCY_PRINTED : CURRENCY_DEFAULT);
+    return printed.isPresent() ? printed : lookups.documentCurrency(vendorId, organizationId);
   }
 
   /**

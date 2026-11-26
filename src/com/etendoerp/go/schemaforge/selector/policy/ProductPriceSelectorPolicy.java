@@ -16,11 +16,13 @@
  */
 package com.etendoerp.go.schemaforge.selector.policy;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
@@ -99,6 +101,33 @@ public final class ProductPriceSelectorPolicy implements SelectorEnrichmentPolic
           priceListId, e.getMessage(), e);
     }
     return response;
+  }
+
+  /**
+   * The standard price the selector shows for a product (ETP-6051): the {@code pricestd} of the
+   * product in the latest ACTIVE version of the price list whose {@code validfrom} is not after
+   * NOW(), through the very query that enriches the selector rows ({@link #buildProductPriceSql}),
+   * so what the picker displays is what a caller applies. Note the version rule is the selector's
+   * (NOW()), not the one of {@code FinancialUtils.getProductPrice} (the document date).
+   *
+   * @param priceListId the price list
+   * @param productId   the product
+   * @return the standard price ({@code 0} when the row carries none), empty when the product has no
+   *         active row in that version, or the arguments are blank
+   */
+  public static Optional<BigDecimal> standardPrice(String priceListId, String productId) {
+    return priceRow(priceListId, productId);
+  }
+
+  private static Optional<BigDecimal> priceRow(String priceListId, String productId) {
+    if (StringUtils.isBlank(priceListId) || StringUtils.isBlank(productId)) {
+      return Optional.empty();
+    }
+    Object[] cols = loadProductPrices(priceListId, List.of(productId)).get(productId);
+    if (cols == null) {
+      return Optional.empty();
+    }
+    return Optional.of(cols[1] == null ? BigDecimal.ZERO : new BigDecimal(String.valueOf(cols[1])));
   }
 
   private static DeduplicatedItems deduplicateProductItems(JSONArray items) throws Exception {

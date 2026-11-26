@@ -495,15 +495,15 @@ class InboxMatcherTest {
   }
 
   @Test
-  @DisplayName("ETP-6050: the header stores the currency of the linked vendor and the computed total follows its decimals (3)")
-  void theComputedTotalFollowsTheScaleOfTheVendorCurrency() throws Exception {
+  @DisplayName("ETP-6050: the header stores the default currency and the computed total follows its decimals (3)")
+  void theComputedTotalFollowsTheScaleOfTheDefaultCurrency() throws Exception {
     lookups.currency = java.util.Optional.of(new OcrLookups.DocCurrency("KWD", "KWD", "K", 3));
 
     JSONObject header = header(build(withoutPrintedTotal(extraction(),
         line("Widget", 1, 0.12345, 21))));
 
     assertEquals("KWD", header.getString("currencyId"));
-    assertEquals(List.of("V1"), lookups.currencyAsks, "asked with the linked vendor");
+    assertEquals(List.of("V1"), lookups.currencyAsks, "asked once; the vendor is only passed along");
     // net 0.123, tax 21 % = 0.026
     assertEquals(0.149, header.getDouble(TOTAL_AMOUNT), 0.0);
   }
@@ -532,8 +532,8 @@ class InboxMatcherTest {
   }
 
   @Test
-  @DisplayName("ETP-6050: a vendor that is not linked asks the document currency with no vendor")
-  void anUnlinkedVendorAsksTheCurrencyWithoutAVendor() throws Exception {
+  @DisplayName("ETP-6050: a vendor that is not linked still asks the default currency, with no vendor")
+  void anUnlinkedVendorStillAsksTheDefaultCurrencyWithoutAVendor() throws Exception {
     lookups.byTaxId.clear();
     lookups.byName = List.of();
 
@@ -541,6 +541,38 @@ class InboxMatcherTest {
 
     assertEquals(1, lookups.currencyAsks.size());
     assertNull(lookups.currencyAsks.get(0));
+  }
+
+  @Test
+  @DisplayName("the default currency is asked with the matcher's organization, for a linked vendor")
+  void theDefaultCurrencyIsAskedWithTheMatchersOrganizationForALinkedVendor() throws Exception {
+    new InboxMatcher(lookups, "ROW-ORG").build(extraction());
+
+    assertEquals(List.of(java.util.Arrays.asList("V1", "ROW-ORG")), lookups.currencyOrgAsks);
+  }
+
+  @Test
+  @DisplayName("the default currency is asked with the matcher's organization, for an unlinked vendor")
+  void theDefaultCurrencyIsAskedWithTheMatchersOrganizationForAnUnlinkedVendor()
+      throws Exception {
+    lookups.byTaxId.clear();
+    lookups.byName = List.of();
+
+    new InboxMatcher(lookups, "ROW-ORG").build(extraction());
+
+    assertEquals(List.of(java.util.Arrays.asList(null, "ROW-ORG")), lookups.currencyOrgAsks);
+  }
+
+  @Test
+  @DisplayName("a printed currency that resolves never asks the default, whatever the organization")
+  void aResolvedPrintedCurrencyNeverAsksTheDefaultWithAnOrganization() throws Exception {
+    lookups.currenciesByCode.put("USD", USD);
+    JSONObject extraction = extraction();
+    extraction.put("currency", "USD").put("currency_raw", "US$");
+
+    new InboxMatcher(lookups, "ROW-ORG").build(extraction);
+
+    assertTrue(lookups.currencyOrgAsks.isEmpty());
   }
 
   @Test
@@ -666,5 +698,125 @@ class InboxMatcherTest {
 
     assertEquals("2026-10-30", lookups.taxDates.get(0));
     assertNull(lookups.taxDates.get(1));
+  }
+
+  // ---------------------------------------------------------------- printed currency (ETP-6051)
+
+  private static final OcrLookups.DocCurrency EUR = new OcrLookups.DocCurrency("EUR-ID", "EUR", "€", 2);
+  private static final OcrLookups.DocCurrency USD = new OcrLookups.DocCurrency("USD-ID", "USD", "$", 2);
+  private static final OcrLookups.DocCurrency CAD = new OcrLookups.DocCurrency("CAD-ID", "CAD", "$", 2);
+
+  private JSONObject withCurrency(Object code, Object raw) throws Exception {
+    JSONObject extraction = extraction();
+    if (code != null) {
+      extraction.put("currency", code);
+    }
+    if (raw != null) {
+      extraction.put("currency_raw", raw);
+    }
+    lookups.currency = java.util.Optional.of(EUR);
+    return header(new InboxMatcher(lookups, "ROW-ORG").build(extraction));
+  }
+
+  @Test
+  @DisplayName("a printed ISO code that resolves is the currency, source printed, vendor default not used")
+  void aPrintedResolvedCodeWins() throws Exception {
+    lookups.currenciesByCode.put("USD", USD);
+
+    JSONObject header = withCurrency("usd", "US$");
+
+    assertEquals("USD-ID", header.getString("currencyId"));
+    assertEquals("printed", header.getString("currencySource"));
+    assertEquals("US$", header.getString("currencyRaw"));
+    assertFalse(header.has("currencyUnavailable"));
+    assertEquals(List.of("USD"), lookups.codeAsks);
+    assertTrue(lookups.currencyAsks.isEmpty(), "the vendor default was not needed");
+  }
+
+  @Test
+  @DisplayName("a printed ISO code that is not a tenant currency keeps the default, flagged unavailable")
+  void anUnresolvedCodeFallsBackAndIsFlagged() throws Exception {
+    JSONObject header = withCurrency("CHF", "CHF");
+
+    assertEquals("EUR-ID", header.getString("currencyId"));
+    assertEquals("default", header.getString("currencySource"));
+    assertEquals("CHF", header.getString("currencyUnavailable"));
+  }
+
+  @Test
+  @DisplayName("an unresolved code wins over the symbol: the symbol is never asked")
+  void anUnresolvedCodeIsNotRescuedByTheSymbol() throws Exception {
+    lookups.currenciesBySymbolMap.put("$", List.of(USD));
+
+    JSONObject header = withCurrency("CHF", "$");
+
+    assertEquals("CHF", header.getString("currencyUnavailable"));
+    assertEquals("default", header.getString("currencySource"));
+    assertEquals("EUR-ID", header.getString("currencyId"));
+    assertTrue(lookups.symbolAsks.isEmpty());
+    assertFalse(notices(new InboxMatcher(lookups).build(extractionWith("CHF", "$")))
+        .contains("currency_symbol_ambiguous"));
+  }
+
+  private JSONObject extractionWith(String code, String raw) throws Exception {
+    return extraction().put("currency", code).put("currency_raw", raw);
+  }
+
+  @Test
+  @DisplayName("code and symbol both printed: the code wins and the symbol is not looked up")
+  void theCodeWinsOverTheSymbol() throws Exception {
+    lookups.currenciesByCode.put("USD", USD);
+    lookups.currenciesBySymbolMap.put("€", List.of(EUR));
+
+    JSONObject header = withCurrency("USD", "€");
+
+    assertEquals("USD-ID", header.getString("currencyId"));
+    assertEquals("€", header.getString("currencyRaw"));
+    assertTrue(lookups.symbolAsks.isEmpty());
+  }
+
+  @Test
+  @DisplayName("a symbol only: one match is printed, with the row organization asked")
+  void aUniqueSymbolIsPrinted() throws Exception {
+    lookups.currenciesBySymbolMap.put("$", List.of(USD));
+
+    JSONObject header = withCurrency(null, "$");
+
+    assertEquals("USD-ID", header.getString("currencyId"));
+    assertEquals("printed", header.getString("currencySource"));
+    assertEquals(List.of("ROW-ORG"), lookups.symbolOrganizations);
+    assertTrue(lookups.codeAsks.isEmpty());
+  }
+
+  @Test
+  @DisplayName("a symbol with several or no matches: notice, default currency, source default")
+  void anAmbiguousOrUnknownSymbolFallsBackWithANotice() throws Exception {
+    lookups.currenciesBySymbolMap.put("$", List.of(USD, CAD));
+    lookups.currency = java.util.Optional.of(EUR);
+    for (String symbol : new String[] { "$", "kr" }) {
+      JSONObject extraction = extraction().put("currency_raw", symbol);
+      JSONObject document = new InboxMatcher(lookups).build(extraction);
+
+      assertTrue(notices(document).contains("currency_symbol_ambiguous"), symbol);
+      assertEquals("EUR-ID", header(document).getString("currencyId"));
+      assertEquals("default", header(document).getString("currencySource"));
+      assertEquals(symbol, header(document).getString("currencyRaw"));
+    }
+  }
+
+  @Test
+  @DisplayName("no printed currency: source default, no raw, no notice, nothing asked")
+  void noPrintedCurrencyIsTheDefault() throws Exception {
+    JSONObject extraction = extraction();
+    lookups.currency = java.util.Optional.of(EUR);
+    JSONObject document = new InboxMatcher(lookups).build(extraction);
+
+    JSONObject header = header(document);
+    assertEquals("default", header.getString("currencySource"));
+    assertFalse(header.has("currencyRaw"));
+    assertFalse(header.has("currencyUnavailable"));
+    assertFalse(notices(document).contains("currency_symbol_ambiguous"));
+    assertTrue(lookups.codeAsks.isEmpty());
+    assertTrue(lookups.symbolAsks.isEmpty());
   }
 }

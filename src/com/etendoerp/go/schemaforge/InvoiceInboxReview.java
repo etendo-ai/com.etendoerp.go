@@ -20,7 +20,11 @@ package com.etendoerp.go.schemaforge;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.D_UNKNOWN;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CANDIDATES;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CATEGORY;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.CURRENCY_DEFAULT;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.CURRENCY_MANUAL;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.CURRENCY_PRINTED;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_ID;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_SOURCE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CATEGORY_ID;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CHECK;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_DOCUMENT_NO;
@@ -50,6 +54,8 @@ import static com.etendoerp.go.schemaforge.ocr.InboxDocument.S_NONE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.TOTAL_LINES;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.VERSION;
 
+import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -64,6 +70,8 @@ import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.dal.core.OBContext;
+import org.openbravo.dal.service.OBDal;
+import org.openbravo.erpCommon.utility.OBCurrencyUtils;
 import org.openbravo.model.ad.system.Client;
 import org.openbravo.model.common.currency.Currency;
 import org.openbravo.model.common.enterprise.Organization;
@@ -111,6 +119,7 @@ final class InvoiceInboxReview {
   private static final String K_TAX_ID = "taxId";
   private static final String K_NAME = "name";
 
+  private static final String KEY_SOURCE = "source";
   private static final Logger log = LogManager.getLogger(InvoiceInboxReview.class);
 
   private InvoiceInboxReview() {
@@ -196,7 +205,7 @@ final class InvoiceInboxReview {
     out.put("editable", isEditable(status, errorCode));
     out.put("fileName", StringUtils.defaultString(row.getFileName()));
     out.put("sender", StringUtils.defaultString(row.getSender()));
-    out.put("source", StringUtils.defaultString(row.getSource()));
+    out.put(KEY_SOURCE, StringUtils.defaultString(row.getSource()));
     out.put("created", orNull(NeoDateFormat.toAuditToken(row.getCreationDate())));
     out.put("invoice", invoice == null ? JSONObject.NULL
         : new JSONObject().put("id", invoice.getId())
@@ -205,7 +214,9 @@ final class InvoiceInboxReview {
             .put("grandTotal", grandTotal(invoice)));
     out.put("attachment", attachment(row.getId()));
     JSONObject document = document(row);
-    out.put("currency", currency(row, document));
+    JSONObject currency = currency(row, document);
+    out.put("currency", currency);
+    out.put("pricing", pricing(row, document, currency));
     out.put("totalMismatch", InvoiceInboxSummary.totalMismatch(document,
         InvoiceInboxLiveChecks.documentCurrency(document, row)));
     out.put("document", document);
@@ -255,8 +266,8 @@ final class InvoiceInboxReview {
 
   /**
    * The currency of the document with the decimals of its amounts ({@code scale}): the one stored in
-   * the header, else derived now from the vendor (its purchase price list currency) or the
-   * organization, without writing; the organization's, then the client's, when the lookups are not
+   * the header, else the organization's default derived now (the vendor and its price list infer
+   * nothing), without writing; the organization's, then the client's, when the lookups are not
    * available. Nulls when none can be established; {@code scale} is then 2.
    */
   private static JSONObject currency(IncomingDocument row, JSONObject document)
@@ -267,7 +278,82 @@ final class InvoiceInboxReview {
     }
     Object symbol = found.get().symbol() == null ? JSONObject.NULL : found.get().symbol();
     return new JSONObject().put("id", found.get().id()).put("isoCode", found.get().isoCode())
-        .put("symbol", symbol).put("scale", found.get().scale());
+        .put("symbol", symbol).put("scale", found.get().scale())
+        .put("rate", rateOf(row, document, found.get().id())).put(KEY_SOURCE, sourceOf(document));
+  }
+
+  /**
+   * What the SPA needs to price a manual line like the purchase invoice does (ETP-6051), computed
+   * at read time and never stored: {@code priceListId} (the document's purchase price list, see
+   * {@link InvoiceInboxPriceList}; null when none), {@code orgCurrencyId} / {@code orgCurrencyIsoCode}
+   * (the organization's currency, null when unknown) and {@code rate} (the org-to-document multiply
+   * rate on the invoice date, the {@code currency.rate} value: 1 when both currencies are the same,
+   * null when none is valid).
+   */
+  private static JSONObject pricing(IncomingDocument row, JSONObject document, JSONObject currency)
+      throws JSONException {
+    Object priceListId = JSONObject.NULL;
+    Object orgCurrencyId = JSONObject.NULL;
+    Object orgIso = JSONObject.NULL;
+    try {
+      Optional<OcrLookups> lookups = lookupsFor(row.getTargetType());
+      if (lookups.isPresent()) {
+        JSONObject header = document == null ? null : document.optJSONObject(K_HEADER);
+        priceListId = lookups.get().documentPriceList(linkedVendorId(header))
+            .map(list -> (Object) list.id()).orElse(JSONObject.NULL);
+      }
+      String orgId = row.getOrganization() == null ? null : row.getOrganization().getId();
+      String orgCurrency = orgId == null ? null : OBCurrencyUtils.getOrgCurrency(orgId);
+      Currency found = orgCurrency == null ? null
+          : OBDal.getInstance().get(Currency.class, orgCurrency);
+      if (found != null) {
+        orgCurrencyId = found.getId();
+        orgIso = found.getISOCode();
+      }
+    } catch (RuntimeException e) {
+      log.warn("Invoice inbox review: pricing lookup failed: {}", e.getClass().getSimpleName());
+    }
+    return new JSONObject().put("priceListId", priceListId).put("orgCurrencyId", orgCurrencyId)
+        .put("orgCurrencyIsoCode", orgIso)
+        .put("rate", currency.has("rate") ? currency.get("rate") : JSONObject.NULL);
+  }
+
+  /**
+   * Where the currency came from: {@code printed} on the document, {@code manual} when the user
+   * chose it, else {@code default}.
+   */
+  static String sourceOf(JSONObject document) {
+    JSONObject header = document == null ? null : document.optJSONObject(K_HEADER);
+    String source = header == null ? "" : header.optString(K_CURRENCY_SOURCE, "");
+    return CURRENCY_PRINTED.equals(source) || CURRENCY_MANUAL.equals(source) ? source
+        : CURRENCY_DEFAULT;
+  }
+
+  /**
+   * The org-to-document multiply rate valid on the invoice date: 1 for the organization's own
+   * currency, {@code null} when none is valid (or the date, organization or lookup is unknown).
+   */
+  private static Object rateOf(IncomingDocument row, JSONObject document, String currencyId) {
+    try {
+      String orgId = row.getOrganization() == null ? null : row.getOrganization().getId();
+      String orgCurrencyId = orgId == null ? null : OBCurrencyUtils.getOrgCurrency(orgId);
+      if (orgCurrencyId == null) {
+        return JSONObject.NULL;
+      }
+      if (orgCurrencyId.equals(currencyId)) {
+        return 1;
+      }
+      JSONObject header = document == null ? null : document.optJSONObject(K_HEADER);
+      String iso = header == null ? "" : header.optString(K_INVOICE_DATE, "");
+      LocalDate date = iso.isEmpty() ? null : LocalDate.parse(iso);
+      String clientId = row.getClient() == null ? null : row.getClient().getId();
+      BigDecimal rate = date == null ? null
+          : DocumentCurrencyRate.lookupRate(orgCurrencyId, currencyId, date, orgId, clientId);
+      return rate == null ? JSONObject.NULL : rate;
+    } catch (RuntimeException e) {
+      log.warn("Invoice inbox review: rate lookup failed: {}", e.getClass().getSimpleName());
+      return JSONObject.NULL;
+    }
   }
 
   /** The stored currency, else the one derived now; empty when unknown or the lookup failed. */
@@ -309,7 +395,8 @@ final class InvoiceInboxReview {
         .put("id", currency == null ? JSONObject.NULL : currency.getId())
         .put("isoCode", currency == null ? JSONObject.NULL : currency.getISOCode())
         .put("symbol", currency == null ? JSONObject.NULL : currency.getSymbol())
-        .put("scale", 2);
+        .put("scale", 2)
+        .put("rate", currency == null ? JSONObject.NULL : 1).put(KEY_SOURCE, CURRENCY_DEFAULT);
   }
 
   /** The stored document (or the skeleton) with the verdict recomputed and the read-time enrichment. */

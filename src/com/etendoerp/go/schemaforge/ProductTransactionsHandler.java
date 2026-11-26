@@ -65,10 +65,11 @@ import org.openbravo.dal.service.OBDal;
  * <ul>
  *   <li>{@code etgoStockAfter} &mdash; the stock of the product, across every warehouse, once that
  *       movement is applied. It is a running sum of {@code MovementQty} over the whole history of
- *       the product, in the order movement date, processing time, id, so it does not depend on the
+ *       the product, in the order process date (TrxProcessDate, date and time), id, so it does not depend on the
  *       filters, the sort or the page of the list. M_Transaction has no such column, and a field
  *       injected here cannot be filtered or sorted, which is why the tab does not offer to.</li>
- *   <li>{@code etgoProcessTime} &mdash; the time of day of the movement: {@code M_Transaction.TrxProcessDate}
+ *   <li>{@code etgoProcessTime} &mdash; the date and time of the movement, the one date the Movements tab and the
+ *       side panel use (the tab reads both its day and its time from here): {@code M_Transaction.TrxProcessDate}
  *       as the wall clock the database stores, with no time-zone conversion, as an ISO local date-time
  *       ({@code yyyy-MM-ddTHH:mm:ss}, fractions dropped). It is read by the same statement as the stock
  *       and is display only: it changes neither the order nor any other field. A row with no process date
@@ -134,8 +135,9 @@ public class ProductTransactionsHandler implements NeoHandler {
   // tx id -> stock of the product after that movement (all warehouses) and stock of the movement's own
   // warehouse after it; the caller picks one by whether the list is filtered by warehouse. The window runs over the history of the
   // products in the page up to the newest movement date of the page (a movement after every row of the
-  // page cannot change their running sum), then only the page rows are kept. The order key ends
-  // in the transaction id, so two movements never tie and the sum is deterministic.
+  // page cannot change their running sum), then only the page rows are kept. The order key is the process
+  // timestamp (M_Transaction.TrxProcessDate, NOT NULL, the date the Movements tab shows and sorts by) then the
+  // transaction id, so two movements never tie and the sum is deterministic.
   private static final String PROCESS_TIME_PATTERN = "yyyy-MM-dd'T'HH:mm:ss";
 
   // The same statement also returns the transaction's process timestamp (column 3): no extra round trip.
@@ -145,13 +147,13 @@ public class ProductTransactionsHandler implements NeoHandler {
       + "FROM ( "
       + "  SELECT t.m_transaction_id, t.trxprocessdate, "
       + "    SUM(t.movementqty) OVER (PARTITION BY t.m_product_id "
-      + "      ORDER BY t.movementdate, t.trxprocessdate, t.m_transaction_id) AS stock_after, "
+      + "      ORDER BY t.trxprocessdate, t.m_transaction_id) AS stock_after, "
       + "    SUM(t.movementqty) OVER (PARTITION BY t.m_product_id, t.em_etgo_warehouse_id "
-      + "      ORDER BY t.movementdate, t.trxprocessdate, t.m_transaction_id) AS stock_after_warehouse "
+      + "      ORDER BY t.trxprocessdate, t.m_transaction_id) AS stock_after_warehouse "
       + "  FROM m_transaction t "
       + "  WHERE t.m_product_id IN (SELECT p.m_product_id FROM m_transaction p WHERE p.m_transaction_id IN (:ids)) "
       + "    AND t.ad_org_id IN (:orgs) "
-      + "    AND t.movementdate <= (SELECT MAX(q.movementdate) FROM m_transaction q WHERE q.m_transaction_id IN (:ids)) "
+      + "    AND t.trxprocessdate <= (SELECT MAX(q.trxprocessdate) FROM m_transaction q WHERE q.m_transaction_id IN (:ids)) "
       + ") s "
       + "WHERE s.m_transaction_id IN (:ids)";
 

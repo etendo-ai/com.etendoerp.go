@@ -18,6 +18,7 @@
 package com.etendoerp.go.schemaforge.selector.policy;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -26,6 +27,7 @@ import static org.mockito.Mockito.when;
 import java.math.BigDecimal;
 import java.util.Collections;
 import java.util.List;
+import java.util.Optional;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
@@ -81,5 +83,48 @@ public class ProductPriceSelectorPolicyTest {
     assertEquals("1.50", enrichedAux.getString("_PSTD"));
     assertEquals("1.60", enrichedAux.getString("_PLIST"));
     assertEquals("1.45", enrichedAux.getString("_PLIM"));
+  }
+
+  @SuppressWarnings({ "unchecked", "rawtypes" })
+  private static Optional<BigDecimal> standardPriceOfRows(List<Object> rows, String... ids) {
+    NativeQuery query = mock(NativeQuery.class);
+    when(query.list()).thenReturn(rows);
+    Session session = mock(Session.class);
+    when(session.createNativeQuery(anyString())).thenReturn(query);
+    OBDal dal = mock(OBDal.class);
+    when(dal.getSession()).thenReturn(session);
+    try (MockedStatic<OBDal> dalMock = mockStatic(OBDal.class)) {
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      return ProductPriceSelectorPolicy.standardPrice(ids[0], ids[1]);
+    }
+  }
+
+  /** ETP-6051: the standard price is the column the selector shows, 0 when the row carries none. */
+  @Test
+  public void standardPrice_isThePstdOfTheRowOfTheProduct() {
+    Object[] row = { "P1", new BigDecimal("4.25"), new BigDecimal("5"), "N", new BigDecimal("3") };
+
+    assertEquals(0, new BigDecimal("4.25").compareTo(
+        standardPriceOfRows(Collections.singletonList(row), "PL1", "P1").orElseThrow()));
+  }
+
+  @Test
+  public void standardPrice_ofARowWithoutPriceIsZeroAndOfAnAbsentProductIsEmpty() {
+    Object[] nullPrice = { "P1", null, null, "N", null };
+
+    assertEquals(0, BigDecimal.ZERO.compareTo(
+        standardPriceOfRows(Collections.singletonList(nullPrice), "PL1", "P1").orElseThrow()));
+    assertTrue(standardPriceOfRows(Collections.emptyList(), "PL1", "P1").isEmpty());
+    assertTrue(standardPriceOfRows(Collections.singletonList(nullPrice), "PL1", "OTHER").isEmpty());
+  }
+
+  @Test
+  public void standardPrice_withABlankArgumentIsEmptyAndNeverQueries() {
+    try (MockedStatic<OBDal> dalMock = mockStatic(OBDal.class)) {
+      assertTrue(ProductPriceSelectorPolicy.standardPrice(null, "P1").isEmpty());
+      assertTrue(ProductPriceSelectorPolicy.standardPrice(" ", "P1").isEmpty());
+      assertTrue(ProductPriceSelectorPolicy.standardPrice("PL1", "").isEmpty());
+      dalMock.verifyNoInteractions();
+    }
   }
 }
