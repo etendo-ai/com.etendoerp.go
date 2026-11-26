@@ -115,12 +115,14 @@ class GoAccessLegacyMirrorObserverTest {
   void aResaveThatChangesNeitherTierNorRoleNorWindowLeavesTheGoRowUntouched() {
     WindowAccess access = windowAccess("R1", WINDOW_FEATURE, "A1");
     EntityUpdateEvent event = updateEvent(access, true, true);
+    Role role = access.getRole();
+    Window window = access.getWindow();
     when(event.getPreviousState(properties.get("active"))).thenReturn(true);
     when(event.getPreviousState(properties.get("editableField"))).thenReturn(true);
-    when(event.getPreviousState(properties.get("role"))).thenReturn(access.getRole());
-    when(event.getPreviousState(properties.get("window"))).thenReturn(access.getWindow());
-    when(event.getCurrentState(properties.get("role"))).thenReturn(access.getRole());
-    when(event.getCurrentState(properties.get("window"))).thenReturn(access.getWindow());
+    when(event.getPreviousState(properties.get("role"))).thenReturn(role);
+    when(event.getPreviousState(properties.get("window"))).thenReturn(window);
+    when(event.getCurrentState(properties.get("role"))).thenReturn(role);
+    when(event.getCurrentState(properties.get("window"))).thenReturn(window);
 
     observer.onUpdate(event);
 
