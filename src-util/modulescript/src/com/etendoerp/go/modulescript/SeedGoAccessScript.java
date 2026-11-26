@@ -127,7 +127,9 @@ public class SeedGoAccessScript extends ModuleScript {
     boolean window = WINDOW.equals(feature[1]);
     String resolved = sql.replace("{t}", window ? "ad_window_access" : "obuiapp_process_access")
         .replace("{c}", window ? "ad_window_id" : "obuiapp_process_id");
-    try (PreparedStatement ps = cp.getPreparedStatement(resolved)) {
+    PreparedStatement ps = null;
+    try {
+      ps = cp.getPreparedStatement(resolved);
       ps.setString(1, first);
       ps.setString(2, second);
       return ps.executeUpdate();
@@ -137,6 +139,19 @@ public class SeedGoAccessScript extends ModuleScript {
         throw (SQLException) e;
       }
       throw new SQLException("Could not prepare the GO Access seeding statement", e);
+    } finally {
+      release(cp, ps);
+    }
+  }
+
+  private static void release(ConnectionProvider cp, PreparedStatement ps) {
+    if (ps == null) {
+      return;
+    }
+    try {
+      cp.releasePreparedStatement(ps);
+    } catch (Exception e) {
+      // best effort: the statement already ran or failed
     }
   }
 }

@@ -129,6 +129,7 @@ class SeedGoAccessScriptTest {
     assertEquals(3 * GoFeature.values().length, changed);
     ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
     verify(cp, times(3 * GoFeature.values().length)).getPreparedStatement(sql.capture());
+    verify(cp, times(3 * GoFeature.values().length)).releasePreparedStatement(ps);
     List<String> statements = new ArrayList<>(sql.getAllValues());
     assertTrue(statements.stream().anyMatch(s -> s.contains("obuiapp_process_access")),
         "the not-posted process feature reads obuiapp_process_access");
