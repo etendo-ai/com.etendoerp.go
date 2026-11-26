@@ -48,6 +48,12 @@ import com.etendoerp.go.schemaforge.util.GoFeature;
  */
 public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver {
 
+  private static final String ROLE_PROPERTY = "role";
+  private static final String WINDOW_PROPERTY = "window";
+  private static final String PROCESS_PROPERTY = "obuiappProcess";
+  private static final String ACTIVE_PROPERTY = "active";
+  private static final String EDITABLE_PROPERTY = "editableField";
+
   private Entity[] entities;
 
   @Override
@@ -87,9 +93,9 @@ public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver
    */
   private boolean grantChanged(EntityUpdateEvent event) {
     Entity entity = event.getTargetInstance().getEntity();
-    String recordProperty = event.getTargetInstance() instanceof WindowAccess ? "window"
-        : "obuiappProcess";
-    for (String name : new String[] { "active", "editableField", "role", recordProperty }) {
+    String recordProperty = event.getTargetInstance() instanceof WindowAccess ? WINDOW_PROPERTY
+        : PROCESS_PROPERTY;
+    for (String name : new String[] { ACTIVE_PROPERTY, EDITABLE_PROPERTY, ROLE_PROPERTY, recordProperty }) {
       if (!Objects.equals(event.getPreviousState(entity.getProperty(name)),
           event.getCurrentState(entity.getProperty(name)))) {
         return true;
@@ -132,9 +138,9 @@ public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver
     }
     Entity entity = target.getEntity();
     boolean active = !deleted
-        && Boolean.TRUE.equals(event.getCurrentState(entity.getProperty("active")));
+        && Boolean.TRUE.equals(event.getCurrentState(entity.getProperty(ACTIVE_PROPERTY)));
     boolean readWrite = Boolean.TRUE
-        .equals(event.getCurrentState(entity.getProperty("editableField")));
+        .equals(event.getCurrentState(entity.getProperty(EDITABLE_PROPERTY)));
     GoAccessLegacyMirror.onClassicGrantChange(role.getId(), legacyId, active, readWrite,
         (String) target.getId());
   }
@@ -153,12 +159,12 @@ public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver
     if (!isWindow && !(target instanceof ProcessAccess)) {
       return;
     }
-    Object previousRole = event.getPreviousState(entity.getProperty("role"));
+    Object previousRole = event.getPreviousState(entity.getProperty(ROLE_PROPERTY));
     Object previousRecord = event
-        .getPreviousState(entity.getProperty(isWindow ? "window" : "obuiappProcess"));
-    Object currentRole = event.getCurrentState(entity.getProperty("role"));
+        .getPreviousState(entity.getProperty(isWindow ? WINDOW_PROPERTY : PROCESS_PROPERTY));
+    Object currentRole = event.getCurrentState(entity.getProperty(ROLE_PROPERTY));
     Object currentRecord = event
-        .getCurrentState(entity.getProperty(isWindow ? "window" : "obuiappProcess"));
+        .getCurrentState(entity.getProperty(isWindow ? WINDOW_PROPERTY : PROCESS_PROPERTY));
     if (previousRole instanceof Role && previousRecord instanceof BaseOBObject
         && (!previousRole.equals(currentRole) || !previousRecord.equals(currentRecord))) {
       GoAccessLegacyMirror.onClassicGrantChange(((Role) previousRole).getId(),

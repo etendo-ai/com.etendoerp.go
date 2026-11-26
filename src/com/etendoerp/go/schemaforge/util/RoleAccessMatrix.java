@@ -195,12 +195,9 @@ public final class RoleAccessMatrix {
    * matrix}, same windowless-page situation as {@link #FISCAL_MONITOR_PROXY_WINDOW_ID}. The
    * product owner chose the Tax Report window as this row's access proxy.
    *
-   * <p>ETP-5540 — the single backend source for "Modelos Fiscales is granted through Tax
-   * Report". Besides the roles matrices it is read by {@code NeoAttachmentAuthorizer} (the
-   * {@code ETGO_Fiscal_Decl} attachment proxy) and by the fiscal endpoint gates of ETP-5546
-   * ({@code AbstractFiscalHandler}, {@code NeoBuiltInEndpointHandler}). ETP-4802 moved the
-   * feature's declaration to {@link GoFeature#FISCAL_MODELS}; this constant remains the legacy
-   * grant id the matrices and {@link GoFeature} read. The
+   * <p>ETP-4802: only the matrices' legacy row id, derived from {@link GoFeature#FISCAL_MODELS}.
+   * The fiscal gates ({@code NeoAttachmentAuthorizer}, {@code AbstractFiscalHandler},
+   * {@code NeoBuiltInEndpointHandler}) decide through {@code GoFeatureAccess}. The
    * role-template grant data ({@code TemplateRoleWindowAccess} and its modulescript copy) keeps
    * the literal id by design.
    */
