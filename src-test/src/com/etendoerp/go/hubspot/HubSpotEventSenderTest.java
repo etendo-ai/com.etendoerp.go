@@ -1286,9 +1286,9 @@ class HubSpotEventSenderTest {
 
   @Test
   void theSignUpCarriesTheConsentAndTheCheckboxAsTheVisitorLeftIt() throws Exception {
-    HubSpotEventSender sender = consentSender(MARKETING_SUBSCRIPTION);
-    sender.send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(true), 0), NOW);
-    sender.send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(false), 0), NOW);
+    HubSpotEventSender consenting = consentSender(MARKETING_SUBSCRIPTION);
+    consenting.send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(true), 0), NOW);
+    consenting.send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(false), 0), NOW);
 
     JSONObject consent = formCalls.get(0).body().getJSONObject("legalConsentOptions")
         .getJSONObject("consent");

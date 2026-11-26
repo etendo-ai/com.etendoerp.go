@@ -42,7 +42,13 @@ import com.etendoerp.go.common.GoRuntimeProperties;
 public record HubSpotSignupForm(String baseUrl, String portalId, String formId,
     Long subscriptionTypeId) {
 
-  /** A form with no marketing subscription configured. */
+  /**
+   * A form with no marketing subscription configured.
+   *
+   * @param baseUrl  the Forms API root, without a trailing slash
+   * @param portalId the HubSpot portal
+   * @param formId   the form's {@code formGuid}, {@code null} when disabled
+   */
   public HubSpotSignupForm(String baseUrl, String portalId, String formId) {
     this(baseUrl, portalId, formId, null);
   }
