@@ -29,12 +29,11 @@ import org.apache.commons.lang3.StringUtils;
  * The markup lives in {@link EmailLayout}, like every other block.</p>
  *
  * <h2>Design (marketing / legal spec, ETP-6209 QA)</h2>
- * <p>One small, discreet line: «Creado con» followed by the brand «etendo.ai» as a plain link — no
- * button, no «Conoce más», no social links, no privacy link. The spec asks for the horizontal
- * etendo.ai logo after «Creado con»; no such asset is published anywhere an email can load it
- * (the app's public assets hold the square icon and the old "Etendo" wordmark only), so the brand
- * is text until marketing publishes one: then it becomes an image with {@value #BRAND} as its alt
- * text, in {@code EmailLayout#appendFooter} only.</p>
+ * <p>One small, discreet line: «Creado con» followed by the horizontal etendo.ai logo
+ * ({@value #LOGO_URL}, published by marketing, drawn at {@value #LOGO_WIDTH}×{@value #LOGO_HEIGHT})
+ * with {@value #BRAND} as its alt text, so the brand still reads in a client that blocks remote
+ * images. Words and logo are one link — no button, no «Conoce más», no social links, no privacy
+ * link. The markup lives in {@code EmailLayout#appendFooter} only.</p>
  *
  * <h2>Link</h2>
  * <p>The etendo.ai home page with the UTM of the email it goes out in. The UTM is declared per
@@ -43,10 +42,17 @@ import org.apache.commons.lang3.StringUtils;
  */
 public final class EmailFooter {
 
-  /** The brand as the footer writes it: lower case, the alt text of a future logo. */
+  /** The brand as the footer writes it: lower case, the alt text of the logo. */
   public static final String BRAND = "etendo.ai";
   /** The page the brand links to. */
   static final String HOME_URL = "https://etendo.ai/";
+  /** The horizontal etendo.ai logo, published by marketing for emails (200×30, drawn at half). */
+  public static final String LOGO_URL =
+      "https://etendo.ai/wp-content/uploads/2026/11/etendoai-logo-email-200.png";
+  /** The width the logo is drawn at, in pixels. */
+  public static final int LOGO_WIDTH = 100;
+  /** The height the logo is drawn at, in pixels. */
+  public static final int LOGO_HEIGHT = 15;
   /** The UTM every customer email shares; each piece adds its own {@code utm_content}. */
   static final String TRACKING_PREFIX =
       "utm_source=portal_clientes&utm_medium=email&utm_campaign=portal_clientes&utm_content=";
@@ -106,12 +112,17 @@ public final class EmailFooter {
     return prefix;
   }
 
-  /** @return the brand, {@value #BRAND} */
+  /** @return the logo drawn after the prefix, {@value #LOGO_URL} */
+  public String getLogoUrl() {
+    return LOGO_URL;
+  }
+
+  /** @return the brand, {@value #BRAND}: the logo's alt text */
   public String getBrand() {
     return BRAND;
   }
 
-  /** @return where the brand links to: the home page with the piece's UTM */
+  /** @return where the footer links to: the home page with the piece's UTM */
   public String getUrl() {
     return url;
   }

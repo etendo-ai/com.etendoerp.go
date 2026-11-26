@@ -264,7 +264,7 @@ public class McpToolRouterTest {
       JSONObject result = McpToolRouter.wrapAsErrorContent("Error: @TBAI_ConfigNotFound@");
 
       assertEquals("Error: There is no active TicketBAI configuration for this organization. "
-          + "Check it in Fiscal Configuration (TicketBAI tab).",
+          + "Check it in Taxes → Fiscal Configuration (TicketBAI tab).",
           result.getJSONArray(FIELD_CONTENT).getJSONObject(0).getString("text"));
     }
   }
@@ -288,7 +288,7 @@ public class McpToolRouterTest {
 
     JSONObject parsed = new JSONObject(rendered);
     String go = "No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración Fiscal (pestaña TicketBAI).";
+        + "Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI).";
     assertEquals("Error: " + go, parsed.getString("message"));
     assertFalse(parsed.has("messageKeys"));
     JSONObject error = parsed.getJSONArray("results").getJSONObject(0).getJSONObject("error");
@@ -1859,7 +1859,7 @@ public class McpToolRouterTest {
             .put("message", "No se pudo completar: @TBAI_ConfigNotFound@")
             .put("messageKeys", new JSONArray().put("APRM_PAYMENTMETHOD_MISSING")));
     String go = "No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración Fiscal (pestaña TicketBAI).";
+        + "Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI).";
 
     JSONObject first;
     JSONObject second;

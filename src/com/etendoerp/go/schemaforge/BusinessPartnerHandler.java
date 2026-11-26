@@ -205,7 +205,7 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
   // incoming value identical to what is already persisted is never re-validated either — so a
   // dirty legacy value does not block unrelated edits to the same record.
   private static final String FIELD_WEB = "etgoWeb";
-  private static final String FIELD_PHONE = "etgoPhone";
+  private static final String FIELD_PHONE = ContactPhoneText.FIELD_PHONE;
   private static final Pattern EMAIL_PATTERN =
       Pattern.compile("^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$", Pattern.CASE_INSENSITIVE);
   private static final Pattern DOMAIN_LABEL_PATTERN =
@@ -591,6 +591,7 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
     if (!touchesAny) {
       return null;
     }
+    ContactPhoneText.stripWhitespace(body);
     String[] persisted = null;
     if (!"POST".equals(method)) {
       String recordId = ctx.getRecordId();
@@ -608,8 +609,11 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
     if (webError != null) {
       return webError;
     }
-    return validateFormatField(body, FIELD_PHONE, persisted != null ? persisted[2] : null,
-        BusinessPartnerHandler::isPlausiblePhone, ERR_PHONE_FORMAT);
+    // The persisted phone is compared without whitespace too, so a legacy "+34 910 565 400"
+    // re-sent unchanged by an edit form still counts as unchanged once the incoming copy is stripped.
+    String persistedPhone = persisted != null ? ContactPhoneText.withoutWhitespace(persisted[2]) : null;
+    return validateFormatField(body, FIELD_PHONE, persistedPhone, BusinessPartnerHandler::isPlausiblePhone,
+        ERR_PHONE_FORMAT);
   }
 
   /**

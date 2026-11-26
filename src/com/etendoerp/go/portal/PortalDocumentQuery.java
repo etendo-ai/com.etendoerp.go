@@ -432,21 +432,67 @@ final class PortalDocumentQuery {
     return result;
   }
 
+  /** One kind's share of a header search: its newest matches and how many match in all. */
+  static final class KindMatches {
+    final PortalDocumentKind kind;
+    /** Every match of the kind, not only the ones in {@link #documents}. */
+    final long count;
+    /** The kind's newest matches, newest first. */
+    final List<BaseOBObject> documents;
+
+    KindMatches(PortalDocumentKind kind, long count, List<BaseOBObject> documents) {
+      this.kind = kind;
+      this.count = count;
+      this.documents = documents;
+    }
+  }
+
   /**
-   * Documents of every kind matching a search, newest first (the header search of the home).
-   * Each kind contributes at most {@code limit}; the merged list is cut to {@code limit}.
+   * A header search: the newest matches of every kind merged, and one {@link KindMatches} per
+   * kind with at least one match, in {@link PortalDocumentKind} order, so one kind with many
+   * matches cannot crowd the others out of the answer.
    */
-  static List<BaseOBObject> search(PortalSession session, String search, int limit) {
+  static final class SearchResult {
+    final List<BaseOBObject> documents;
+    final List<KindMatches> groups;
+
+    SearchResult(List<BaseOBObject> documents, List<KindMatches> groups) {
+      this.documents = documents;
+      this.groups = groups;
+    }
+  }
+
+  /**
+   * Documents of every kind matching a search (the header search of the home).
+   *
+   * <p>One page query per kind, of {@code max(limit, perKindLimit)} rows; a count query only for a
+   * kind whose page came back full (a shorter page is already the whole count). The merged
+   * {@code documents} are the {@code limit} newest across kinds, each kind contributing at most
+   * {@code limit}; each group holds the kind's {@code perKindLimit} newest.
+   *
+   * @return the merged list and the per-kind groups; both empty for a blank search
+   */
+  static SearchResult search(PortalSession session, String search, int limit, int perKindLimit) {
     if (StringUtils.isBlank(search)) {
-      return Collections.emptyList();
+      return new SearchResult(Collections.emptyList(), Collections.emptyList());
     }
     Filter filter = new Filter(null, null, null, search);
+    int pageSize = Math.max(limit, perKindLimit);
     List<BaseOBObject> all = new ArrayList<>();
+    List<KindMatches> groups = new ArrayList<>();
     for (PortalDocumentKind kind : PortalDocumentKind.values()) {
-      all.addAll(list(session, kind, filter, 0, limit));
+      List<BaseOBObject> page = list(session, kind, filter, 0, pageSize);
+      if (page.isEmpty()) {
+        continue;
+      }
+      all.addAll(page.subList(0, Math.min(limit, page.size())));
+      long count = page.size() < pageSize ? page.size() : count(session, kind, filter);
+      groups.add(new KindMatches(kind, count,
+          new ArrayList<>(page.subList(0, Math.min(perKindLimit, page.size())))));
     }
     sortNewestFirst(all);
-    return all.size() > limit ? new ArrayList<>(all.subList(0, limit)) : all;
+    return new SearchResult(all.size() > limit ? new ArrayList<>(all.subList(0, limit)) : all,
+        groups);
   }
 
   /** The {@code limit} newest visible documents of every kind, newest first. */
