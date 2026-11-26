@@ -501,7 +501,7 @@ public final class TemplateRoleWindowAccess {
    * standalone OBUIAPP process grants above that are a feature's legacy record
    * ({@link GoFeature#legacyId}), at the same tier. A template role gets, for each of these, both
    * the legacy grant and the GO Access row, so new and existing roles resolve the same way and
-   * nobody's access changes. this is only a declaration of the intended
+   * nobody's access changes. This is only a declaration of the intended
    * grants, covered by {@code TemplateRoleWindowAccessTest}; nothing reads it at runtime. The
    * seeding script mirrors the classic grants themselves and keeps its own literal feature table,
    * which {@code SeedGoAccessScriptTest} checks against {@link GoFeature}.

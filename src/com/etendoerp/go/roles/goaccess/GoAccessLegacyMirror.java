@@ -82,7 +82,7 @@ public final class GoAccessLegacyMirror {
       "DELETE FROM etgo_go_access WHERE ad_role_id = :role AND feature = :feature";
 
   /** System user id, used for rows written outside a request. */
-  static final String SYSTEM_USER_ID = "100";
+  static final String SYSTEM_USER_ID = "0";
 
   private GoAccessLegacyMirror() {
   }
