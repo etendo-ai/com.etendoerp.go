@@ -59,7 +59,7 @@ import org.junit.jupiter.api.Test;
  * @covers com.etendoerp.go.schemaforge.NeoExtensionDispatcher
  */
 @DisplayName("E4 (structural) — every MCP surface dispatches, and REST dispatches at all")
-class NeoExtensionSurfaceCoverageTest {
+class NeoExtensionSurfaceDispatchTest {
 
   private static final String MCP_ROUTER = "com/etendoerp/go/mcp/McpToolRouter.java";
   private static final String MCP_HOOKS = "com/etendoerp/go/mcp/McpHookExecutor.java";
