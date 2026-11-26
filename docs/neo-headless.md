@@ -1451,6 +1451,43 @@ compared ignoring case.
 `NeoReferenceOwnership` already does, so it cannot skip the selector check. A body sending both
 spellings with different ids (compared ignoring case) is refused, with a `detail` naming both.
 
+**Rule variables are read regardless of case (ETP-6452).** A selector whose validation rule is SQL
+runs through core's `ComboTableData`, which asks for each variable exactly as the rule spells it
+(`@FIN_Financial_Account_ID@`, `@FIN_PaymentMethod_ID@`, `@IsReceipt@`), while the context
+publishes a field under its AD column name (`Fin_Financial_Account_ID`, `Fin_Paymentmethod_ID`,
+`Isreceipt`). The lookup was exact, so the rule "Currency of Financial Account" resolved empty and
+the payment-out `currency` the form proposed (EUR for "Caja - EUR") was refused. The context now
+reaches `ComboTableData` through `ComboReferenceSelectorExecutor.contextFields`: exact name first,
+then any casing — what Classic does (the form sends `inp`+camelCase) and what the HQL route
+(`SelectorValidationResolver`) already did. Structural, no name is special; it applies to the
+selector endpoint (REST `…/selectors/{field}`, MCP `etendo_selectors`) and to this check alike. The
+window's direction no longer shadows a direction flag the record carries under another casing
+(`IsReceipt` is added only when no `isreceipt` of any casing is there), and each layer of the merged
+record (parent, stored row, request) drops the casings an earlier layer wrote for the same name, so a
+parent's `FIN_X` never competes with the record's `Fin_X`. Where two other casings still hold
+different values (a selector endpoint request), the first in natural order answers, never hash order.
+
+**What the base defaults propose is accepted on a create (ETP-6452).** A value the selector does
+not offer is still accepted on a **create** when it is exactly the value the **base defaults**
+propose for that field in the record's context — `NeoDefaultsService.resolveDefaults` with the
+other fields the request sets as the record context (`/defaults?field=value`, ETP-5852) and the parent, never the
+judged field itself (it would trivially "default" to what was sent). Case: purchase-order
+`salesRepresentative` defaults to the session user (`#SalesRep_ID`), whom the "AD_User SalesRep"
+selector does not list when that user has no business partner; a client echoing `/defaults` got a
+422. Narrow on purpose: computed only on the refusal path (an offered value pays nothing), exact id
+equality, updates unchanged, defaults that cannot be computed accept nothing. **Base defaults
+only:** a `DEFAULTS` customization (`handle`/`afterHandle`) is not consulted, so a value only such a
+customization proposes is still judged by the selector. REST (`NeoSubEndpointDispatcher` →
+`NeoHookDispatcher`) and MCP (`McpToolRouter` → `NeoExtensionDispatcher`) wire that dispatch
+separately, there is no shared entry point to call, and those handlers read the servlet request,
+which inside a write is the POST. Another request field's callout can derive the judged one, so two
+fields could vouch for each other; accepted, the form derives the same values from the same input.
+The callout cascade this runs puts the caller's `RequestContext` request and variables back when
+each callout ends (`NeoCalloutService.CalloutRequestSwap`); before, the synthetic callout request
+stayed installed for the rest of the request.
+It sits in `NeoReferenceSelectorValidation`, which REST single, `/batch` and MCP all reach, so the
+three channels behave the same; no divergence to declare in §4.12.9.
+
 **Stored-row reads are client-scoped.** The stored record and the parent are loaded only when they
 belong to a client the caller may read; otherwise they read as missing.
 With no session (no `OBContext`) the stored-row reads are unscoped, the same contract as
@@ -1496,7 +1533,9 @@ pick the currency from `currencyOptions` (`CurrencyRatePicker`, matched by the S
 selector, so the change is MCP-only and no screen changes.
 
 Tests: `NeoReferenceSelectorValidationTest` (including the customization answer that replaces or
-defers to the selector), `CurrencyOptionsHandlerTest` (`offersHeaderCurrency`).
+defers to the selector, and the echoed `/defaults` value on a create), `CurrencyOptionsHandlerTest`
+(`offersHeaderCurrency`), `ComboReferenceSelectorExecutorTest` (`contextFields`),
+`NeoCalloutServiceTest` (`CalloutRequestSwap`).
 
 #### 4.3.9 Document actions over REST: refusal and idempotency (ETP-5783)
 
