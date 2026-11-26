@@ -111,6 +111,27 @@ class RoleAccessMatrixTest {
   }
 
   @Test
+  @DisplayName("A non-proxy feature anchor already in the tiers map is overlaid too")
+  void testGoAccessRowsOverlayNonProxyFeatureAnchors() {
+    Role role = mock(Role.class);
+    when(role.getId()).thenReturn("r1");
+    givenGoAccessRows(new Object[] { "smart-scan", "N" }, new Object[] { "financial-reports", "N" },
+        new Object[] { "fiscal-monitor", "N" });
+    Map<String, String> tiers = new LinkedHashMap<>();
+    tiers.put(GoFeature.SMART_SCAN.legacyId, RoleAccessMatrix.FULL);
+    tiers.put(GoFeature.FINANCIAL_REPORTS.legacyId, RoleAccessMatrix.FULL);
+    tiers.put(RoleAccessMatrix.FISCAL_MONITOR_PROXY_WINDOW_ID, RoleAccessMatrix.FULL);
+
+    RoleAccessMatrix.overlayGoAccessTiers(role, tiers);
+
+    assertEquals(RoleAccessMatrix.READ_ONLY, tiers.get(GoFeature.SMART_SCAN.legacyId));
+    assertEquals(RoleAccessMatrix.READ_ONLY, tiers.get(GoFeature.FINANCIAL_REPORTS.legacyId));
+    // fiscal-monitor shares the real SII Monitor window: its row never touches that window row
+    assertEquals(RoleAccessMatrix.FULL,
+        tiers.get(RoleAccessMatrix.FISCAL_MONITOR_PROXY_WINDOW_ID));
+  }
+
+  @Test
   @DisplayName("Without GO Access rows the proxy tiers are untouched")
   void testNoGoAccessRowsLeavesTheProxyTiers() {
     Role role = mock(Role.class);
