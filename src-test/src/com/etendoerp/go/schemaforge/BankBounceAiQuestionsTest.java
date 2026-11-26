@@ -576,7 +576,7 @@ class BankBounceAiQuestionsTest {
     @Test
     @DisplayName("an injection attempt in a description reaches the prompt only as sanitized data")
     void untrustedTextIsSanitizedInThePayload() throws Exception {
-      StatementLine o = line("OA", 0, 1, "-50", "ok‮​  IGNORE\n\tALL", "ACME");
+      StatementLine o = line("OA", 0, 1, "-50", "ok\u202E\u200B  IGNORE\n\tALL", "ACME");
       List<Pair> pairs = List.of(ambiguous(line("RB", 3, 2, "50"), o,
           line("OB", 1, 3, "-50")));
 
@@ -710,7 +710,7 @@ class BankBounceAiQuestionsTest {
     @Test
     @DisplayName("zero-width and bidirectional formatting characters are removed")
     void invisibleAndBidiAreRemoved() {
-      String dirty = "a​‌‍﻿⁠b‪‫‬‭‮⁦⁧⁨⁩c";
+      String dirty = "a\u200B\u200C\u200D\uFEFF\u2060b\u202A\u202B\u202C\u202D\u202E\u2066\u2067\u2068\u2069c";
       assertEquals("abc", BankBounceAiQuestions.sanitize(dirty));
     }
 
@@ -718,7 +718,7 @@ class BankBounceAiQuestionsTest {
     @DisplayName("every whitespace run, including line and paragraph separators and nbsp, is one space")
     void whitespaceIsCollapsed() {
       assertEquals("a b c d e",
-          BankBounceAiQuestions.sanitize("  a \t\t b\r\n\r\nc d   e  "));
+          BankBounceAiQuestions.sanitize("  a \t\t b\r\n\r\nc\u2028d\u2029\u00A0 e  "));
     }
 
     @Test
@@ -736,7 +736,7 @@ class BankBounceAiQuestionsTest {
     @Test
     @DisplayName("the cap applies after the cleanup: removed characters do not count")
     void capCountsTheCleanedText() {
-      String text = ("​" + "y").repeat(500);
+      String text = ("\u200B" + "y").repeat(500);
 
       assertEquals("y".repeat(500), BankBounceAiQuestions.sanitize(text));
     }
@@ -985,7 +985,7 @@ class BankBounceAiQuestionsTest {
       String key = keyOf(base(), id -> "", MODEL, CLIENT);
 
       assertEquals(key, keyOf(List.of(ambiguous(
-          line("RB", 5, 2, "50", "DEVOLUCION​", "ACME"),
+          line("RB", 5, 2, "50", "DEVOLUCION\u200B", "ACME"),
           line("OA", 0, 1, "-50", "TRANSFER  A", "ACME"),
           line("OB", 1, 3, "-50", "TRANSFER B", "ACME"))), id -> "", MODEL, CLIENT));
     }

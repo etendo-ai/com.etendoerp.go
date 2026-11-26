@@ -247,16 +247,19 @@ final class BankBounceAi {
      * The cached raw answers of every rejection of a component; a component is a hit only when
      * all of its rejections are present (a negative entry counts as present).
      *
+     * <p>A component always has at least one question, so a hit always holds at least one key and
+     * an empty map can only mean a miss.</p>
+     *
      * @param c the component
-     * @return the raw answer by rejection id ({@code null} value: no assessment), or {@code null}
-     *         when any rejection is missing
+     * @return the raw answer by rejection id ({@code null} value: no assessment), or an empty map
+     *         when any rejection is missing (a miss)
      */
     Map<String, Raw> lookupComponent(Component c) {
       Map<String, Raw> raws = new HashMap<>();
       for (Question q : c.questions()) {
         Entry entry = lookup(q.key());
         if (entry == null) {
-          return null;
+          return Map.of();
         }
         raws.put(q.rejection().id(), entry.raw());
       }
@@ -559,7 +562,7 @@ final class BankBounceAi {
     List<Component> misses = new ArrayList<>();
     for (Component c : components) {
       Map<String, Raw> hit = st.lookupComponent(c);
-      if (hit == null) {
+      if (hit.isEmpty()) {
         misses.add(c);
       } else {
         raws.put(c.key(), hit);
@@ -648,7 +651,7 @@ final class BankBounceAi {
       owned.put(c.key(), mine);
       // Another request may have finished this very call between our lookup and our claim.
       Map<String, Raw> already = st.lookupComponent(c);
-      if (already != null) {
+      if (!already.isEmpty()) {
         mine.complete(already);
       } else {
         ownedComponents.add(c);
