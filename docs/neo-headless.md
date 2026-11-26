@@ -1482,9 +1482,10 @@ customization proposes is still judged by the selector. REST (`NeoSubEndpointDis
 separately, there is no shared entry point to call, and those handlers read the servlet request,
 which inside a write is the POST. Another request field's callout can derive the judged one, so two
 fields could vouch for each other; accepted, the form derives the same values from the same input.
-The callout cascade this runs puts the caller's `RequestContext` request and variables back when
-each callout ends (`NeoCalloutService.CalloutRequestSwap`); before, the synthetic callout request
-stayed installed for the rest of the request.
+The callout cascade this runs leaves its synthetic callout request installed in `RequestContext`
+for the rest of the request, as every callout does. Restoring the caller's request after each
+callout was tried and withdrawn while a 412 on a contacts PATCH (Public API E2E) is investigated
+under ETP-6452.
 It sits in `NeoReferenceSelectorValidation`, which REST single, `/batch` and MCP all reach, so the
 three channels behave the same; no divergence to declare in §4.12.9.
 
@@ -1534,8 +1535,7 @@ selector, so the change is MCP-only and no screen changes.
 
 Tests: `NeoReferenceSelectorValidationTest` (including the customization answer that replaces or
 defers to the selector, and the echoed `/defaults` value on a create), `CurrencyOptionsHandlerTest`
-(`offersHeaderCurrency`), `ComboReferenceSelectorExecutorTest` (`contextFields`),
-`NeoCalloutServiceTest` (`CalloutRequestSwap`).
+(`offersHeaderCurrency`), `ComboReferenceSelectorExecutorTest` (`contextFields`).
 
 #### 4.3.9 Document actions over REST: refusal and idempotency (ETP-5783)
 
