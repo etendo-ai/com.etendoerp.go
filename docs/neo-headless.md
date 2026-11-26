@@ -5559,7 +5559,7 @@ The `GET` form exists for roles with **read-only** access to the Financial Accou
   "<financialAccountId>": {
     "inProgress": true,
     "lastSyncDate": "2026-11-05T10:15:00Z",
-    "lastResult": {"status": "OK | ERROR | null", "message": "... | null", "at": "2026-11-05T10:15:00Z | null"}
+    "lastResult": {"status": "OK | WARNING | ERROR | null", "message": "... | null", "at": "2026-11-05T10:15:00Z | null"}
   }
 }}}}
 ```
@@ -5574,13 +5574,19 @@ The `GET` form exists for roles with **read-only** access to the Financial Accou
 - **`inProgress`** comes from `AccountSyncLock.heldAmong` (a `pg_locks` probe on its own pooled
   connection). It sees syncs running on any node that shares the database. A failed probe answers
   `false`, which is safe: a sync started on that answer still runs into the lock.
-- **`lastResult` is the Salt Edge fetch health, not the outcome of our import.** It is read from the
-  account's latest `PSD2_FINACC_CONNECTION` (`LAST_SUCCESS_AT`, `LAST_FAIL_AT`,
-  `LAST_FAIL_MESSAGE`, ETP-5089), and the newer of the two dates wins: `ERROR` with the bank's
-  message, or `OK` with a null message. Every field is `null` when there is no connection or no
-  recorded attempt. It can describe an older fetch than the sync the caller is waiting for. To tell
-  whether the import itself ran, compare `lastSyncDate` with the moment the sync started (the SPA's
-  `resultOfFinishedSync` does exactly that).
+- **`lastResult` is the outcome of the last sync that ran on this node** (UI or MCP, the same
+  `{status, message}` that `sync` answered, `status` `OK | WARNING | ERROR`, `at` = when it
+  finished), kept per account by `BankSyncResultStore` (ETP-6154). It is recorded on success,
+  warning and error (an exception also records `ERROR` with the generic translated message
+  `psd2BankSyncUnexpectedError`, never the exception text; the lock is always released), and never
+  for `IN_PROGRESS`. A recorded result older than the connection's newest `LAST_SUCCESS_AT` /
+  `LAST_FAIL_AT` is stale (a sync that bypassed `handleSync`: scheduled process, Classic button,
+  another node) and the connection health wins instead. The store is **in memory**: after a restart, or when the sync ran on another node,
+  `lastResult` falls back to the Salt Edge fetch health read from the account's latest
+  `PSD2_FINACC_CONNECTION` (`LAST_SUCCESS_AT`, `LAST_FAIL_AT`, `LAST_FAIL_MESSAGE`, ETP-5089; the
+  newer date wins: `ERROR` with the bank's message, or `OK` with a null message). Every field is
+  `null` when neither exists. To tell whether the import itself ran, compare `lastSyncDate` with
+  the moment the sync started (the SPA's `resultOfFinishedSync` does exactly that).
 
 *MCP.* `syncBank` sends `{financialAccountId}` to `?action=sync` and passes its answer through
 unchanged, `IN_PROGRESS` included, re-wrapped in `{"response":{"data":...}}`. `bankSyncStatus`
@@ -14673,23 +14679,16 @@ Why missing headers are lenient by default: a dual-era client reads a `400` with
 modern error as "modern server, fix and retry", not "fall back" — refusing a client that omits a
 newly required header would loop it forever. A mismatch is always refused.
 
-**Kill switch.** Backend feature flag `mcp-modern-era-disabled`
-(`GoFeatureFlags.FLAG_MCP_MODERN_ERA_DISABLED`), environment level, never per account (clients cache
-the era per origin, and one origin serves every tenant). `true` restores the pre-ETP-5640
-behaviour: `server/discover` gets `200` + `-32601`, `_meta` is ignored, everything is legacy. Unset,
-`false` or an unreachable control plane keep the server dual-era. Live without a restart on a hosted
-control plane (Datadog Feature Flags, or ConfigCat where it is still the selected arm — see
-`docs/feature-flags-and-tenant-upgrade.md` §1); a restart where the flag comes from
-`etendo.go.flags.mcp-modern-era-disabled`. A client that already cached "modern" keeps working
-after a rollback, because tool calls never needed `initialize`.
+**No kill switch.** The modern era is always served. Its environment-level rollback flag
+`mcp-modern-era-disabled` was retired in ETP-6461 after a month in production without failures;
+rolling back to legacy-only `/sws/mcp` now takes a deploy. A client that cached "modern" never
+needed `initialize` for tool calls, and a legacy client still negotiates as before.
 
 **Telemetry.** A modern request's client name comes from its own `_meta` clientInfo and its session
 key is derived per (user, token client, role) — never per client name, which the client controls —
 with an `m-` prefix, renewed after 30 min idle; see `docs/mcp-usage-telemetry.md`
 §*Modern clients*. One `INFO MCP modern session started: session=m-… client=<name>/<version>
-protocol=2026-07-28 traceparent=yes|no` per derived session is the rollout's evidence. The client name
-is read whatever the kill switch says; with the switch on, no `m-` session is derived and no such line
-is logged.
+protocol=2026-07-28 traceparent=yes|no` per derived session is the rollout's evidence.
 
 **CORS**: `Mcp-Method` and `Mcp-Name` are in `Access-Control-Allow-Headers`.
 

@@ -134,7 +134,6 @@ public class McpServletTest {
 
   @After
   public void tearDown() {
-    System.clearProperty(KILL_SWITCH_PROPERTY);
     System.clearProperty(PublicUrlResolver.MCP_PUBLIC_URL_PROPERTY);
     System.clearProperty(PublicUrlResolver.OAUTH2_PUBLIC_URL_PROPERTY);
     System.clearProperty(ENFORCEMENT_OFF_PROPERTY);
@@ -1155,9 +1154,6 @@ public class McpServletTest {
   // ── Dual era (ETP-5640) ─────────────────────────────────────────────────
 
   private static final String MODERN = McpProtocolVersion.MODERN_LATEST;
-  private static final String KILL_SWITCH_PROPERTY =
-      "etendo.go.flags."
-          + com.etendoerp.go.featureflags.GoFeatureFlags.FLAG_MCP_MODERN_ERA_DISABLED;
 
   private static JSONObject modernMeta(String version) throws Exception {
     return new JSONObject()
@@ -1419,27 +1415,6 @@ public class McpServletTest {
         .getJSONObject(McpModernResults.META_SERVER_INFO).getString("title"));
   }
 
-  /** K1: with the kill switch on, a modern request is served exactly as before the modern era. */
-  @Test
-  public void killSwitchServesModernRequestsUnderTheLegacyEra() throws Exception {
-    System.setProperty(KILL_SWITCH_PROPERTY, "true");
-
-    JSONObject answer = postModern("ping", null, MODERN);
-
-    verify(response).setStatus(HttpServletResponse.SC_OK);
-    assertEquals(0, answer.getJSONObject("result").length());
-  }
-
-  @Test
-  public void killSwitchKeepsAnUnsupportedModernVersionServed() throws Exception {
-    System.setProperty(KILL_SWITCH_PROPERTY, "true");
-
-    JSONObject answer = postModern("ping", null, "2027-01-01");
-
-    verify(response).setStatus(HttpServletResponse.SC_OK);
-    assertTrue(answer.has("result"));
-  }
-
   // ── server/discover and the compatibility matrix (ETP-5640) ─────────────
 
   @Test
@@ -1501,42 +1476,6 @@ public class McpServletTest {
     verify(response).setStatus(HttpServletResponse.SC_OK);
     assertTrue(new JSONObject(getResponseBody()).getJSONObject("result")
         .has("supportedVersions"));
-  }
-
-  /** K1: with the kill switch on, the probe gets exactly today's answer, so clients fall back. */
-  @Test
-  public void killSwitchAnswersDiscoverAsBefore() throws Exception {
-    System.setProperty(KILL_SWITCH_PROPERTY, "true");
-
-    try (LogCapture logs = LogCapture.of(McpServlet.class)) {
-      JSONObject answer = postModern(McpRequestEra.SERVER_DISCOVER, null, MODERN);
-
-      verify(response).setStatus(HttpServletResponse.SC_OK);
-      assertEquals(-32601, answer.getJSONObject("error").getInt("code"));
-      assertTrue(logs.messages(Level.ERROR).isEmpty());
-      assertTrue(logs.messages(Level.WARN).get(0).contains("'server/discover'"));
-    }
-  }
-
-  /**
-   * K1: with the kill switch on, the probe derives no modern session — an m- key that nothing
-   * uses afterwards would pollute the rollout evidence exactly when the era is rolled back — but
-   * the WARN still names the client from its _meta.
-   */
-  @Test
-  public void killSwitchProbeOpensNoModernSessionButNamesTheClient() throws Exception {
-    System.setProperty(KILL_SWITCH_PROPERTY, "true");
-
-    try (LogCapture servletLogs = LogCapture.of(McpServlet.class);
-        LogCapture telemetryLogs = LogCapture.of(McpUsageTelemetry.class)) {
-      postModern(McpRequestEra.SERVER_DISCOVER, null, MODERN);
-
-      assertTrue(telemetryLogs.messages(Level.INFO).toString(), telemetryLogs
-          .messages(Level.INFO).stream().noneMatch(line -> line.contains("modern session")));
-      String warn = servletLogs.messages(Level.WARN).get(0);
-      assertTrue(warn, warn.contains("client=claude-code"));
-      assertTrue(warn, warn.contains("session=none"));
-    }
   }
 
   /** Matrix — legacy client: initialize mints a session and the answer carries no modern field. */
@@ -1750,7 +1689,7 @@ public class McpServletTest {
    * A client asking for a method we do not offer is not a server failure: no ERROR, no stack
    * trace, one WARN naming the method and the client, whose name comes from {@code params._meta}
    * when the client never ran {@code initialize}. (This used to be the {@code server/discover}
-   * probe; since ETP-5640 that is answered — see {@code killSwitchAnswersDiscoverAsBefore}.)
+   * probe; since ETP-5640 that is answered.)
    */
   @Test
   public void unknownMethodLogsOneWarnWithClientFromMetaAndNoError() throws Exception {
@@ -2212,20 +2151,6 @@ public class McpServletTest {
     String second = recordedModernRow("claude-code-qa-2").sessionKey();
 
     assertEquals(first, second);
-  }
-
-  /**
-   * With the kill switch on, the protocol is legacy: the row keeps the _meta client name, but no
-   * m- session is derived — the request carries no Mcp-Session-Id, so it has none.
-   */
-  @Test
-  public void killSwitchKeepsTheModernClientNameOnTheRow() throws Exception {
-    System.setProperty(KILL_SWITCH_PROPERTY, "true");
-
-    McpUsageRow row = recordedModernRow("claude-code-qa-3");
-
-    assertEquals("claude-code-qa-3", row.clientName());
-    assertNull(row.sessionKey());
   }
 
   @Test

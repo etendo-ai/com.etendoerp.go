@@ -57,7 +57,7 @@ CRUD engine), reachable with no Etendo session. Every response is `no-store`, ex
 | `GET /logo` | The issuing company's logo, resolved from the link's organization; served for any sent link, so the expired page keeps the branding |
 | `GET /public-logo/{reference}` | **No portal token** (ETP-6209). The same logo, for the header of the portal emails, where the portal token must never appear in an image URL. Details below |
 | `GET /home?months=` | Pending-payment balances, one tile per kind (count + highlight: quotations awaiting an answer, overdue invoices, orders in progress, shipments this month), recent documents, `paidThisYear` (per currency, `Invoice.totalPaid` of this year's completed/closed invoices), `invoicesThisYear` (`total`, `upToDate`) and `chart` (invoiced per month over `months` = 3, 6 or 12, default 12, in the currency invoiced in most months) — server-side aggregates |
-| `GET /search?q=` | Documents of every kind matching `q` (number, reference, description), newest first, 8 at most; blank `q` answers an empty list |
+| `GET /search?q=` | Documents of every kind matching `q` (number, reference, description). `documents`: newest first across kinds, 8 at most. `groups`: `[{kind, count, documents}]`, one entry per kind with at least one match, in kind order (`QUOTATION`, `ORDER`, `SHIPMENT`, `INVOICE`), so one kind cannot crowd the others out — `documents` is the kind's 5 newest, `count` every match of the kind in the same scope (a count query, not capped by either limit). Rows are the usual list rows. Blank `q` answers both empty. Details below |
 | `GET /documents?type=&group=&status=&dateFrom=&dateTo=&q=&limit=&offset=` | One kind's list, filtered and paged (default 50, max 200), with invoice payment fields, a quotation's generated order (`orderId`, `orderNo`) and the kind's `groups`; `group` (one of the kind's status groups, below) replaces `status` |
 | `GET /documents/{kind}/{id}` | Read-only detail, related documents (each re-checked against the scope), `hasPdf` |
 | `GET /documents/{kind}/{id}/pdf` | The document's printable (§5) |
@@ -67,6 +67,28 @@ CRUD engine), reachable with no Etendo session. Every response is `no-store`, ex
 `expired` or `unavailable`. On an expired or unavailable link the data reads (`/home`, `/search`,
 `/documents*`) answer that same 401; the page then re-checks `/me` once. A document outside the
 scope, of the wrong kind or in a hidden status is **404, never 403**.
+
+### Header search
+
+`GET /search?q=` runs, per kind, one page query of 8 rows (the larger of the two limits) with the
+same scope as every portal read (tenant, Business Partner, active, sales side, the kind's
+discriminator and status allow-list) plus a case-insensitive substring match on `documentNo`,
+`orderReference` and `description` (`%` and `_` match themselves). A count query runs only for a
+kind whose page came back full; a shorter page is already the whole count. So the search costs
+4 page queries, at most 4 count queries and one grouped instalment query for every invoice shown.
+
+```json
+{
+  "documents": [ /* the 8 newest across kinds, unchanged from before groups existed */ ],
+  "groups": [
+    { "kind": "ORDER",   "count": 1,  "documents": [ /* 1 row */ ] },
+    { "kind": "INVOICE", "count": 37, "documents": [ /* the 5 newest */ ] }
+  ]
+}
+```
+
+A kind with no match has no entry. `count` can exceed the rows of its group; the rest is reachable
+through `GET /documents?type=<kind>&q=` with the same `q`, which applies the same match.
 
 ### Visible documents
 
