@@ -361,7 +361,8 @@
       "flagKey": "fiscal-model-390",
       "symbols": [
         "FLAG_FISCAL_MODEL_390",
-        "ETGO_FLAG_FISCAL_MODEL_390"
+        "ETGO_FLAG_FISCAL_MODEL_390",
+        "FiscalModel390Flag"
       ],
       "paths": [
         "src/com/etendoerp/go/schemaforge/FiscalModel390Flag.java"
