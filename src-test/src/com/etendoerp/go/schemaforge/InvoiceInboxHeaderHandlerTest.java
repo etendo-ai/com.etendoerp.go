@@ -352,9 +352,9 @@ class InvoiceInboxHeaderHandlerTest {
   @Test
   void itServesActionsAndHidesTheInboxActionsFromAgents() {
     assertTrue(handler.servesActions());
-    assertEquals(Set.of("discard", "review", "apply", "mark-reviewed", "confirm"),
-        handler.agentExcludedActions());
-    assertEquals(5, handler.agentExcludedActions().size());
+    assertEquals(Set.of("discard", "review", "apply", "mark-reviewed", "confirm",
+        "currencyOptions"), handler.agentExcludedActions());
+    assertEquals(6,handler.agentExcludedActions().size());
   }
 
   @Test
@@ -368,5 +368,145 @@ class InvoiceInboxHeaderHandlerTest {
     assertNull(type.getAnnotation(Named.class));
     assertNull(type.getAnnotation(ApplicationScoped.class));
     assertTrue(Modifier.isPublic(type.getModifiers()));
+  }
+
+  // ---------------------------------------------------------------- currencyOptions (ETP-6051)
+
+  private static final String SESSION_ORG = "SESSION-ORG";
+  private static final String SESSION_CLIENT = "SESSION-CLIENT";
+
+  /** One currencyOptions run through the handler, with the DAL, tenant fence and session mocked. */
+  private final class OptionsRun {
+    final org.openbravo.dal.service.OBDal dal = org.mockito.Mockito.mock(
+        org.openbravo.dal.service.OBDal.class);
+    final java.sql.PreparedStatement ps = org.mockito.Mockito.mock(java.sql.PreparedStatement.class);
+    boolean visible = true;
+    com.etendoerp.go.schemaforge.data.IncomingDocument row;
+
+    OptionsRun(java.sql.Date storedDate) throws Exception {
+      org.openbravo.model.common.enterprise.Organization rowOrg = org.mockito.Mockito.mock(
+          org.openbravo.model.common.enterprise.Organization.class);
+      org.mockito.Mockito.when(rowOrg.getId()).thenReturn("ROW-ORG");
+      org.openbravo.model.ad.system.Client client = org.mockito.Mockito.mock(
+          org.openbravo.model.ad.system.Client.class);
+      org.mockito.Mockito.when(client.getId()).thenReturn("ROW-CLIENT");
+      row = org.mockito.Mockito.mock(com.etendoerp.go.schemaforge.data.IncomingDocument.class);
+      org.mockito.Mockito.when(row.get("organization")).thenReturn(rowOrg);
+      org.mockito.Mockito.when(row.get("client")).thenReturn(client);
+      org.mockito.Mockito.when(row.get(
+          com.etendoerp.go.schemaforge.data.IncomingDocument.PROPERTY_INVOICEDATE))
+          .thenReturn(storedDate);
+      org.mockito.Mockito.when(dal.get(
+          com.etendoerp.go.schemaforge.data.IncomingDocument.ENTITY_NAME, "ROW-1")).thenReturn(row);
+      java.sql.ResultSet empty = org.mockito.Mockito.mock(java.sql.ResultSet.class);
+      org.mockito.Mockito.when(empty.next()).thenReturn(false);
+      org.mockito.Mockito.when(ps.executeQuery()).thenReturn(empty);
+      java.sql.Connection conn = org.mockito.Mockito.mock(java.sql.Connection.class);
+      org.mockito.Mockito.when(conn.prepareStatement(org.mockito.ArgumentMatchers.anyString()))
+          .thenReturn(ps);
+      org.mockito.Mockito.when(dal.getConnection()).thenReturn(conn);
+    }
+
+    NeoResponse run(String id, java.util.Map<String, String> query) {
+      org.openbravo.dal.core.OBContext session = org.mockito.Mockito.mock(
+          org.openbravo.dal.core.OBContext.class);
+      org.openbravo.model.common.enterprise.Organization sessionOrg = org.mockito.Mockito.mock(
+          org.openbravo.model.common.enterprise.Organization.class);
+      org.mockito.Mockito.when(sessionOrg.getId()).thenReturn(SESSION_ORG);
+      org.openbravo.model.ad.system.Client sessionClient = org.mockito.Mockito.mock(
+          org.openbravo.model.ad.system.Client.class);
+      org.mockito.Mockito.when(sessionClient.getId()).thenReturn(SESSION_CLIENT);
+      org.mockito.Mockito.when(session.getCurrentOrganization()).thenReturn(sessionOrg);
+      org.mockito.Mockito.when(session.getCurrentClient()).thenReturn(sessionClient);
+      NeoContext context = NeoContext.builder().specName("invoice-inbox").entityName("header")
+          .httpMethod("GET").endpointType(NeoEndpointType.ACTION).recordId(id)
+          .fieldName("currencyOptions").queryParams(query).build();
+      try (MockedStatic<org.openbravo.dal.core.OBContext> obContext = mockStatic(
+          org.openbravo.dal.core.OBContext.class);
+          MockedStatic<org.openbravo.dal.service.OBDal> obDal = mockStatic(
+              org.openbravo.dal.service.OBDal.class);
+          MockedStatic<TenantOwnership> tenant = mockStatic(TenantOwnership.class);
+          MockedStatic<org.openbravo.erpCommon.utility.OBCurrencyUtils> currencies = mockStatic(
+              org.openbravo.erpCommon.utility.OBCurrencyUtils.class)) {
+        obContext.when(org.openbravo.dal.core.OBContext::getOBContext).thenReturn(session);
+        obDal.when(org.openbravo.dal.service.OBDal::getInstance).thenReturn(dal);
+        tenant.when(() -> TenantOwnership.isVisibleToCurrentTenant(
+            org.mockito.ArgumentMatchers.any())).thenReturn(visible);
+        currencies.when(() -> org.openbravo.erpCommon.utility.OBCurrencyUtils.getOrgCurrency(
+            org.mockito.ArgumentMatchers.anyString())).thenReturn("EUR-ID");
+        return handler.handle(context);
+      }
+    }
+  }
+
+  @Test
+  void flagOffRefusesCurrencyOptions() throws Exception {
+    flag(false);
+
+    assertDisabled(handler.handle(ctx("GET", NeoEndpointType.ACTION, "ID-1", "currencyOptions")));
+  }
+
+  @Test
+  void currencyOptionsIsScopedByTheRowsOrganizationAndClientNotTheSessions() throws Exception {
+    flag(true);
+    OptionsRun run = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
+
+    NeoResponse response = run.run("ROW-1", null);
+
+    assertEquals(200, response.getHttpStatus());
+    org.codehaus.jettison.json.JSONArray data = response.getBody().getJSONObject("response")
+        .getJSONArray("data");
+    assertTrue(data.getJSONObject(0).getBoolean("isOrgCurrency"));
+    verify(run.ps, org.mockito.Mockito.atLeastOnce()).setString(
+        org.mockito.ArgumentMatchers.anyInt(), org.mockito.ArgumentMatchers.eq("ROW-CLIENT"));
+    verify(run.ps, never()).setString(org.mockito.ArgumentMatchers.anyInt(),
+        org.mockito.ArgumentMatchers.eq(SESSION_CLIENT));
+    verify(run.ps, never()).setString(org.mockito.ArgumentMatchers.anyInt(),
+        org.mockito.ArgumentMatchers.eq(SESSION_ORG));
+  }
+
+  @Test
+  void currencyOptionsUsesTheStoredInvoiceDateAndTheDateParameterOverridesIt() throws Exception {
+    flag(true);
+    OptionsRun stored = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
+    assertEquals(200, stored.run("ROW-1", null).getHttpStatus());
+    verify(stored.ps, org.mockito.Mockito.atLeastOnce()).setDate(
+        org.mockito.ArgumentMatchers.anyInt(),
+        org.mockito.ArgumentMatchers.eq(java.sql.Date.valueOf("2026-03-15")));
+
+    OptionsRun override = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
+    assertEquals(200, override.run("ROW-1", java.util.Map.of("date", "2026-06-30")).getHttpStatus());
+    verify(override.ps, org.mockito.Mockito.atLeastOnce()).setDate(
+        org.mockito.ArgumentMatchers.anyInt(),
+        org.mockito.ArgumentMatchers.eq(java.sql.Date.valueOf("2026-06-30")));
+    verify(override.ps, never()).setDate(org.mockito.ArgumentMatchers.anyInt(),
+        org.mockito.ArgumentMatchers.eq(java.sql.Date.valueOf("2026-03-15")));
+  }
+
+  @Test
+  void currencyOptionsOfAnotherTenantsRowOrAMissingOneIs404() throws Exception {
+    flag(true);
+    OptionsRun foreign = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
+    foreign.visible = false;
+    assertEquals(404, foreign.run("ROW-1", null).getHttpStatus());
+
+    OptionsRun missing = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
+    assertEquals(404, missing.run("ROW-404", null).getHttpStatus());
+  }
+
+  @Test
+  void currencyOptionsWithABadDateIs400() throws Exception {
+    flag(true);
+    OptionsRun run = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
+
+    assertEquals(400, run.run("ROW-1", java.util.Map.of("date", "15/03/2026")).getHttpStatus());
+  }
+
+  @Test
+  void currencyOptionsOnAnyVerbButGetIs405() {
+    flag(true);
+
+    assertEquals(405, handler.handle(ctx("POST", NeoEndpointType.ACTION, "ID-1",
+        "currencyOptions")).getHttpStatus());
   }
 }

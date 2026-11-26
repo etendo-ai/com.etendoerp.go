@@ -463,6 +463,20 @@ final class InvoiceInboxConfirmWork {
   private static InvoiceInboxFailureDetail.Detail stepFailure(Map<String, Object> step,
       JSONObject result) {
     String reason = reasonOf(result);
+    int refusedStatus = noMessageStatus(result);
+    if (refusedStatus > 0) {
+      log.warn("Inbox confirm: operation '{}' was refused with status {} and no message; body: {}",
+          failedId(result), refusedStatus, bodyForLog(result));
+      Object[] refused = new Object[step.size() * 2 + 2];
+      int r = 0;
+      for (Map.Entry<String, Object> entry : step.entrySet()) {
+        refused[r++] = entry.getKey();
+        refused[r++] = entry.getValue();
+      }
+      refused[r++] = InvoiceInboxFailureDetail.P_STATUS;
+      refused[r] = refusedStatus;
+      return InvoiceInboxFailureDetail.of(InvoiceInboxFailureDetail.STEP_REFUSED_STATUS, refused);
+    }
     Object[] params = new Object[step.size() * 2 + 4];
     int i = 0;
     for (Map.Entry<String, Object> entry : step.entrySet()) {
@@ -510,6 +524,16 @@ final class InvoiceInboxConfirmWork {
 
   /** The reason a batch failure carries: the detail of the operation, else the batch's own. */
   static String reasonOf(JSONObject failure) {
+    String reason = operationReason(failure);
+    JSONObject error = failure.optJSONObject(K_ERROR);
+    if (reason.isEmpty() && error != null) {
+      reason = error.optString(K_MESSAGE, "");
+    }
+    return reason.isEmpty() ? "The creation was refused" : reason;
+  }
+
+  /** The message the refused operation itself gave; empty when it gave none. */
+  private static String operationReason(JSONObject failure) {
     JSONObject error = failure.optJSONObject(K_ERROR);
     JSONObject detail = error == null ? null : error.optJSONObject("detail");
     JSONObject nested = detail == null ? null : detail.optJSONObject(K_ERROR);
@@ -517,9 +541,45 @@ final class InvoiceInboxConfirmWork {
     if (reason.isEmpty() && detail != null) {
       reason = detail.optString(K_MESSAGE, "");
     }
-    if (reason.isEmpty() && error != null) {
-      reason = error.optString(K_MESSAGE, "");
+    return reason;
+  }
+
+  /**
+   * The HTTP status of a refused operation that gave no message of its own, so the only text left
+   * is the batch's generic "Operation 'x' rejected by server"; 0 when there is a real message or no
+   * status to report.
+   */
+  static int noMessageStatus(JSONObject failure) {
+    if (!operationReason(failure).isEmpty()) {
+      return 0;
     }
-    return reason.isEmpty() ? "The creation was refused" : reason;
+    JSONObject error = failure.optJSONObject(K_ERROR);
+    if (error == null) {
+      return 0;
+    }
+    String message = error.optString(K_MESSAGE, "");
+    boolean generic = message.startsWith(BatchService.OPERATION_PREFIX)
+        && message.endsWith(BatchService.REJECTED_SUFFIX);
+    return generic ? Math.max(0, error.optInt("status", 0)) : 0;
+  }
+
+  private static String failedId(JSONObject failure) {
+    JSONObject failedAt = failure.optJSONObject("failedAt");
+    return failedAt == null ? "" : failedAt.optString("id", "");
+  }
+
+  /** The refused body for the support log: its keys and size only, never its values. */
+  private static String bodyForLog(JSONObject failure) {
+    JSONObject error = failure.optJSONObject(K_ERROR);
+    Object detail = error == null ? null : error.opt("detail");
+    if (!(detail instanceof JSONObject)) {
+      return detail == null ? "none" : "non-object, length " + String.valueOf(detail).length();
+    }
+    List<String> keys = new ArrayList<>();
+    java.util.Iterator<?> names = ((JSONObject) detail).keys();
+    while (names.hasNext()) {
+      keys.add(String.valueOf(names.next()));
+    }
+    return "keys " + keys + ", length " + detail.toString().length();
   }
 }

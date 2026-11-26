@@ -91,4 +91,15 @@ final class InvoiceInboxAdjustedPolicy {
       boolean choiceDiffers) {
     return changed && (previouslyLinked || nameDiffers || choiceDiffers);
   }
+
+  /**
+   * Choosing the document currency in the review panel (ETP-6051). A currency different from the
+   * stored one is a header change since the scan; choosing the stored one is a no-op.
+   *
+   * @param alreadyTheStoredOne whether that very currency is already the stored one
+   * @return whether it marks
+   */
+  static boolean currencyChanged(boolean alreadyTheStoredOne) {
+    return !alreadyTheStoredOne;
+  }
 }

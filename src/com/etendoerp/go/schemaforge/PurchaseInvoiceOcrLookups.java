@@ -40,6 +40,7 @@ import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.dal.service.OBQuery;
+import org.openbravo.erpCommon.utility.OBCurrencyUtils;
 import org.openbravo.model.common.businesspartner.BusinessPartner;
 import org.openbravo.model.common.businesspartner.Location;
 import org.openbravo.model.common.currency.Currency;
@@ -55,6 +56,7 @@ import com.etendoerp.go.schemaforge.data.SFSpec;
 import com.etendoerp.go.schemaforge.ocr.OcrLookups;
 import com.etendoerp.go.schemaforge.ocr.OcrUnitMatcher;
 import com.etendoerp.go.schemaforge.ocr.TaxIdNormalizer;
+import com.etendoerp.go.schemaforge.selector.policy.ProductPriceSelectorPolicy;
 import com.etendoerp.go.schemaforge.util.NeoLanguage;
 import com.etendoerp.go.schemaforge.util.NeoTrl;
 
@@ -84,6 +86,7 @@ public final class PurchaseInvoiceOcrLookups implements OcrLookups {
   /** The name the OCR configuration uses to bind a document type to these lookups. */
   public static final String RESOLVER = "purchase-invoice";
 
+  private static final String SYSTEM_CLIENT = "0";
   private static final Logger log = LogManager.getLogger(PurchaseInvoiceOcrLookups.class);
 
   private static final String SPEC = "purchase-invoice";
@@ -299,9 +302,12 @@ public final class PurchaseInvoiceOcrLookups implements OcrLookups {
   }
 
   /**
-   * The currency of a purchase invoice for this vendor: the vendor's purchase price list currency
-   * (what the invoice header takes from the business partner), else the organization's, else the
-   * client's. The scale is {@link NeoCurrencyPrecision}, the one every document line of GO rounds to.
+   * The default currency of a new purchase invoice: the organization's, else the client's (the AD
+   * default {@code @C_Currency_ID@} of {@code C_Invoice}). The vendor and its price list infer
+   * NOTHING: in Etendo GO a price list's own currency is a Classic leftover (a list only dictates a
+   * price in the organization currency) and the invoice header never moves its currency on a
+   * business-partner or price-list change (ETP-4029, {@code blockCalloutCurrencyUpdate}); the user
+   * changes it directly. {@code vendorId} is kept for the interface and ignored. The scale is {@link NeoCurrencyPrecision}, the one every document line of GO rounds to.
    */
   @Override
   public Optional<DocCurrency> documentCurrency(String vendorId) {
@@ -309,30 +315,85 @@ public final class PurchaseInvoiceOcrLookups implements OcrLookups {
   }
 
   /**
-   * As {@link #documentCurrency(String)}; the organization fallback is the one of the document
+   * As {@link #documentCurrency(String)}; the organization is the one of the document
    * ({@code organizationId}, tenant-checked), the session's when it is {@code null} or not visible.
    */
   @Override
   public Optional<DocCurrency> documentCurrency(String vendorId, String organizationId) {
     try {
-      Currency currency = null;
-      BusinessPartner vendor = StringUtils.isBlank(vendorId) ? null
-          : OBDal.getInstance().get(BusinessPartner.class, vendorId);
-      if (vendor != null && TenantOwnership.isVisibleToCurrentTenant(vendor)
-          && vendor.getPurchasePricelist() != null) {
-        currency = vendor.getPurchasePricelist().getCurrency();
-      }
-      if (currency == null) {
-        OBContext context = OBContext.getOBContext();
-        Organization organization = documentOrganization(organizationId, context);
-        currency = organization == null ? null : organization.getCurrency();
-        if (currency == null && context.getCurrentClient() != null) {
-          currency = context.getCurrentClient().getCurrency();
-        }
+      OBContext context = OBContext.getOBContext();
+      Organization organization = documentOrganization(organizationId, context);
+      Currency currency = organization == null ? null : organization.getCurrency();
+      if (currency == null && context.getCurrentClient() != null) {
+        currency = context.getCurrentClient().getCurrency();
       }
       return Optional.ofNullable(currency).map(PurchaseInvoiceOcrLookups::describe);
     } catch (RuntimeException e) {
       log.warn("OCR document currency lookup failed: {}", e.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
+  @Override
+  public Optional<PurchasePriceList> documentPriceList(String vendorId) {
+    try {
+      InvoiceInboxPriceList.Resolved list = InvoiceInboxPriceList.forVendor(vendorId);
+      return list == null ? Optional.empty()
+          : Optional.of(new PurchasePriceList(list.id(), list.includesTax()));
+    } catch (RuntimeException e) {
+      log.warn("OCR document price list lookup failed: {}", e.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
+  /** Same version rule as the product selector: see {@link ProductPriceSelectorPolicy}. */
+  @Override
+  public Optional<BigDecimal> productStandardPrice(String priceListId, String productId) {
+    try {
+      return ProductPriceSelectorPolicy.standardPrice(priceListId, productId);
+    } catch (RuntimeException e) {
+      log.warn("OCR product price lookup failed: {}", e.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
+  @Override
+  public Optional<String> organizationCurrencyId(String organizationId) {
+    try {
+      return Optional.ofNullable(StringUtils.isBlank(organizationId) ? null
+          : OBCurrencyUtils.getOrgCurrency(organizationId));
+    } catch (RuntimeException e) {
+      log.warn("OCR organization currency lookup failed: {}", e.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
+  @Override
+  public Optional<Integer> priceScale(String currencyId) {
+    try {
+      Currency currency = StringUtils.isBlank(currencyId) ? null
+          : OBDal.getInstance().get(Currency.class, currencyId);
+      Long precision = currency == null ? null : currency.getPricePrecision();
+      return precision == null || precision < 0 ? Optional.empty()
+          : Optional.of(precision.intValue());
+    } catch (RuntimeException e) {
+      log.warn("OCR currency price scale lookup failed: {}", e.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
+  @Override
+  public Optional<BigDecimal> conversionRate(String organizationId, String clientId,
+      String toCurrencyId, LocalDate date) {
+    try {
+      Optional<String> from = organizationCurrencyId(organizationId);
+      if (from.isEmpty() || date == null || StringUtils.isBlank(toCurrencyId)) {
+        return Optional.empty();
+      }
+      return Optional.ofNullable(DocumentCurrencyRate.lookupRate(from.get(), toCurrencyId, date,
+          organizationId, clientId));
+    } catch (RuntimeException e) {
+      log.warn("OCR conversion rate lookup failed: {}", e.getClass().getSimpleName());
       return Optional.empty();
     }
   }
@@ -349,19 +410,87 @@ public final class PurchaseInvoiceOcrLookups implements OcrLookups {
   }
 
   /**
-   * A currency by id, with its scale. Currencies are shared reference data with no tenant of their
-   * own, so there is no tenant fence here; the id only ever comes from the server-stored
-   * {@code header.currencyId}, never from a request.
+   * A currency by id, with its scale. A currency belongs to the System client or to a tenant, so it
+   * must be visible to the current tenant ({@link TenantOwnership#isVisibleToCurrentTenant}); the id
+   * only ever comes from the server-stored {@code header.currencyId}, never from a request.
    */
   @Override
   public Optional<DocCurrency> currencyById(String currencyId) {
     try {
       Currency currency = StringUtils.isBlank(currencyId) ? null
           : OBDal.getInstance().get(Currency.class, currencyId);
-      return Optional.ofNullable(currency).map(PurchaseInvoiceOcrLookups::describe);
+      return Optional.ofNullable(currency).filter(TenantOwnership::isVisibleToCurrentTenant)
+          .map(PurchaseInvoiceOcrLookups::describe);
     } catch (RuntimeException e) {
       log.warn("OCR currency lookup failed: {}", e.getClass().getSimpleName());
       return Optional.empty();
+    }
+  }
+
+  /**
+   * The active currency with this ISO code, among those of the current client and of System
+   * ({@code 0}) only: in admin mode the DAL filter can be wider than the tenant, so the clients are
+   * named in the query and each row is checked with {@link TenantOwnership}. When both the tenant
+   * and System define the code, the tenant's own wins, then the lowest id: deterministic.
+   */
+  @Override
+  public Optional<DocCurrency> currencyByCode(String isoCode) {
+    if (StringUtils.isBlank(isoCode)) {
+      return Optional.empty();
+    }
+    try {
+      String ownClient = OBContext.getOBContext().getCurrentClient().getId();
+      OBQuery<Currency> query = OBDal.getInstance().createQuery(Currency.class,
+          "as c where c.iSOCode = :iso and c.active = true and c.client.id in (:clients)");
+      query.setNamedParameter("iso", isoCode);
+      query.setNamedParameter("clients", List.of(ownClient, SYSTEM_CLIENT));
+      return query.list().stream().filter(TenantOwnership::isVisibleToCurrentTenant)
+          .min(java.util.Comparator
+              .comparingInt((Currency c) -> ownClient.equals(c.getClient().getId()) ? 0 : 1)
+              .thenComparing(Currency::getId))
+          .map(PurchaseInvoiceOcrLookups::describe);
+    } catch (RuntimeException e) {
+      log.warn("OCR currency by code lookup failed: {}", e.getClass().getSimpleName());
+      return Optional.empty();
+    }
+  }
+
+  /**
+   * The active currencies whose symbol is {@code symbol}, among the ones the invoice currency
+   * selector offers ({@link CurrencyOptionsHandler#selectableCurrencies}) plus the organization's
+   * own currency.
+   */
+  @Override
+  public List<DocCurrency> currenciesBySymbol(String symbol, String organizationId) {
+    if (StringUtils.isBlank(symbol)) {
+      return List.of();
+    }
+    try {
+      OBContext context = OBContext.getOBContext();
+      Organization organization = documentOrganization(organizationId, context);
+      String orgId = organization == null ? null : organization.getId();
+      String orgCurrencyId = orgId == null ? null : OBCurrencyUtils.getOrgCurrency(orgId);
+      if (orgCurrencyId == null) {
+        return List.of();
+      }
+      String clientId = organization.getClient().getId();
+      Map<String, String> offered = new java.util.LinkedHashMap<>();
+      offered.put(orgCurrencyId, null);
+      offered.putAll(CurrencyOptionsHandler.selectableCurrencies(
+          OBDal.getInstance().getConnection(), orgCurrencyId, clientId, orgId));
+      List<DocCurrency> out = new ArrayList<>();
+      for (String currencyId : offered.keySet()) {
+        Currency currency = OBDal.getInstance().get(Currency.class, currencyId);
+        if (currency != null && Boolean.TRUE.equals(currency.isActive())
+            && TenantOwnership.isVisibleToCurrentTenant(currency)
+            && symbol.equals(currency.getSymbol())) {
+          out.add(describe(currency));
+        }
+      }
+      return out;
+    } catch (java.sql.SQLException | RuntimeException e) {
+      log.warn("OCR currency by symbol lookup failed: {}", e.getClass().getSimpleName());
+      return List.of();
     }
   }
 

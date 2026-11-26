@@ -24,8 +24,10 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.ArgumentMatchers.notNull;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -46,7 +48,11 @@ import org.mockito.MockedStatic;
 import org.mockito.stubbing.Answer;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.erpCommon.utility.OBCurrencyUtils;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
+import org.openbravo.model.common.currency.Currency;
+import org.openbravo.model.common.enterprise.Organization;
+import org.openbravo.model.ad.system.Client;
 
 import com.etendoerp.go.schemaforge.data.IncomingDocument;
 import com.etendoerp.go.schemaforge.ocr.OcrLookups;
@@ -602,20 +608,84 @@ class InvoiceInboxApplyTest {
   }
 
   @Test
-  void theCurrencyIsDerivedFromTheVendorWhenMissingAndOnAVendorChange() throws Exception {
+  void theMissingCurrencyIsDerivedOnceAndAVendorChangeDoesNotMoveIt() throws Exception {
+    rowOwnedByRowOrgAndClient();
     when(lookups.documentCurrency(any(), any())).thenReturn(Optional.of(
         new OcrLookups.DocCurrency("JPY", "JPY", "Y", 0)));
-    when(lookups.documentCurrency(eq("V2"), any())).thenReturn(Optional.of(
-        new OcrLookups.DocCurrency("USD", "USD", "$", 2)));
+    when(lookups.currencyById("JPY")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("JPY", "JPY", "Y", 0)));
 
     apply("{op:'setLine',index:0,quantity:3}");
     assertEquals("JPY", header().getString("currencyId"));
     // 3 x 10 + 2 x 20 = 70 at 21 % -> scale 0: tax round0(14.7) = 15, total 85
     assertEquals(85, header().getDouble("totalAmount"), 0);
+    verify(lookups, times(1)).documentCurrency(isNull(), eq("ROW-ORG"));
 
     apply("{op:'selectVendor',id:'V2'}");
-    assertEquals("USD", header().getString("currencyId"));
-    assertEquals(84.7, header().getDouble("totalAmount"), 0.0001);
+    assertEquals("JPY", header().getString("currencyId"), "the vendor infers no currency");
+    assertEquals(85, header().getDouble("totalAmount"), 0);
+    verify(lookups, times(1)).documentCurrency(any(), any());
+    verify(lookups, never()).documentCurrency(eq("V2"), any());
+  }
+
+  /**
+   * Stores a JPY document whose header carries the given source/unavailable marks, then switches
+   * vendor. The lookups would answer USD for any vendor: the stored currency must win.
+   */
+  private void switchVendorWith(String source, String unavailable) throws Exception {
+    when(lookups.documentCurrency(any(), any())).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("USD", "USD", "$", 2)));
+    when(lookups.currencyById("JPY")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("JPY", "JPY", "Y", 0)));
+    JSONObject head = use(doc()).getJSONObject("header").put("currencyId", "JPY");
+    if (source != null) {
+      head.put("currencySource", source);
+    }
+    if (unavailable != null) {
+      head.put("currencyUnavailable", unavailable);
+    }
+    apply("{op:'selectVendor',id:'V2'}");
+  }
+
+  @Test
+  void aPrintedCurrencySurvivesAVendorChange() throws Exception {
+    switchVendorWith("printed", null);
+
+    assertEquals("JPY", header().getString("currencyId"));
+    assertEquals("printed", header().getString("currencySource"));
+  }
+
+  @Test
+  void aChosenCurrencySurvivesAVendorChange() throws Exception {
+    switchVendorWith("manual", null);
+
+    assertEquals("JPY", header().getString("currencyId"));
+    assertEquals("manual", header().getString("currencySource"));
+  }
+
+  @Test
+  void aDefaultedCurrencyIsKeptOnAVendorChange() throws Exception {
+    switchVendorWith("default", null);
+
+    assertEquals("JPY", header().getString("currencyId"));
+    assertEquals("default", header().getString("currencySource"));
+    verify(lookups, never()).documentCurrency(any(), any());
+  }
+
+  @Test
+  void aCurrencyWithNoSourceIsKeptOnAVendorChange() throws Exception {
+    switchVendorWith(null, null);
+
+    assertEquals("JPY", header().getString("currencyId"));
+    assertFalse(header().has("currencySource"));
+    verify(lookups, never()).documentCurrency(any(), any());
+  }
+
+  @Test
+  void anUnavailablePrintedCurrencyIsKeptOnAVendorChange() throws Exception {
+    switchVendorWith("default", "XYZ");
+
+    assertEquals("XYZ", header().getString("currencyUnavailable"));
   }
 
   @Test
@@ -643,28 +713,31 @@ class InvoiceInboxApplyTest {
   }
 
   @Test
-  void aVendorChangeThatCannotDeriveACurrencyDropsTheStoredOneAndRoundsToCents()
-      throws Exception {
+  void aVendorChangeKeepsTheStoredCurrencyEvenWhenItsScaleCannotBeRead() throws Exception {
     use(doc()).getJSONObject("header").put("currencyId", "JPY");
 
     apply("{op:'selectVendor',id:'V2'}");
 
-    assertFalse(header().has("currencyId"));
-    assertEquals(169.4, header().getDouble("totalAmount"), 0.0001);
+    assertEquals("JPY", header().getString("currencyId"));
+    assertEquals(169.4, header().getDouble("totalAmount"), 0.0001, "unknown scale: cents");
+    verify(lookups, never()).documentCurrency(any(), any());
   }
 
   @Test
-  void aVendorChangeAsksTheCurrencyOfTheNewVendorAndANonLinkedVendorAsksWithNone()
+  void aVendorChangeOnADocumentWithNoCurrencyStoresTheDefaultWhateverTheVendor()
       throws Exception {
+    rowOwnedByRowOrgAndClient();
     when(lookups.documentCurrency(any(), any())).thenReturn(Optional.of(
         new OcrLookups.DocCurrency("EUR", "EUR", "E", 2)));
 
     apply("{op:'selectVendor',id:'V2'}");
-    verify(lookups).documentCurrency(eq("V2"), any());
+    assertEquals("EUR", header().getString("currencyId"));
 
     state = new RowState();
     apply("{op:'newVendor'}");
-    verify(lookups).documentCurrency(isNull(), any());
+    assertEquals("EUR", header().getString("currencyId"), "a non-linked vendor gets it too");
+    verify(lookups, times(2)).documentCurrency(isNull(), eq("ROW-ORG"));
+    verify(lookups, never()).documentCurrency(notNull(), any());
   }
 
   @Test
@@ -1728,6 +1801,300 @@ class InvoiceInboxApplyTest {
     assertRefusal(apply("{op:'newProduct',index:9}"), 422, "line_not_found");
   }
 
+  // ------------------------------------------------------------------ manual line pricing (ETP-6051)
+
+  /** Line 0 is a manual line (as {@code addLine} writes it) of a EUR document, price as given. */
+  private void manualLine(double unitPrice, String productJson) throws Exception {
+    JSONObject document = use(doc());
+    document.getJSONObject("header").put("currencyId", "EUR").put("currencySource", "printed");
+    document.getJSONArray("lines").getJSONObject(0).put("manual", true)
+        .put("unitPrice", unitPrice).put("product", op(productJson));
+    when(lookups.currencyById("EUR")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("EUR", "EUR", "E", 2)));
+  }
+
+  private void priceListOf(String vendorId, String listId, boolean includesTax) {
+    when(lookups.documentPriceList(vendorId)).thenReturn(Optional.of(
+        new OcrLookups.PurchasePriceList(listId, includesTax)));
+  }
+
+  /** The organization currency every list price is read in, whatever the list's own currency. */
+  private void organizationCurrencyIs(String currencyId) {
+    when(lookups.organizationCurrencyId(any())).thenReturn(Optional.of(currencyId));
+  }
+
+  @Test
+  void aManualLineWithNoPriceYetGetsThePriceOfTheDocumentList() throws Exception {
+    manualLine(0, "{state:'none',candidates:[]}");
+    organizationCurrencyIs("EUR");
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("12.5")));
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(12.5, lineAt(0).getDouble("unitPrice"), 0);
+    assertEquals("P2", lineAt(0).getJSONObject("product").getString("id"));
+    assertTrue(lineAt(0).getBoolean("manual"), "the marker stays");
+    // the pricing itself adds no user mark: the flag is the selection's own, as without a price
+    assertEquals(InvoiceInboxAdjustedPolicy.selection(false), state.adjusted);
+  }
+
+  @Test
+  void theSameSelectionOnAListWithoutAPriceMarksExactlyTheSame() throws Exception {
+    manualLine(0, "{state:'none',candidates:[]}");
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.empty());
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(0, lineAt(0).getDouble("unitPrice"), 0);
+    assertEquals(InvoiceInboxAdjustedPolicy.selection(false), state.adjusted);
+  }
+
+  @Test
+  void aManualLineAlwaysTakesTheListPriceOverATypedOne() throws Exception {
+    manualLine(7, "{state:'none',candidates:[]}");
+    organizationCurrencyIs("EUR");
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("12.5")));
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(12.5, lineAt(0).getDouble("unitPrice"), 0);
+    assertTrue(lineAt(0).getBoolean("manual"), "the marker stays");
+  }
+
+  @Test
+  void changingTheProductOfAManualLineRewritesThePriceOfThePreviousOne() throws Exception {
+    manualLine(12.5, "{state:'linked',id:'P2',name:'Prod2',matchedBy:'manual',candidates:[]}");
+    organizationCurrencyIs("EUR");
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P1")).thenReturn(Optional.of(new BigDecimal("4.25")));
+    when(lookups.productById("P1")).thenReturn(Optional.of(new Party("P1", "Prod1")));
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P1'}"));
+
+    assertEquals("P1", lineAt(0).getJSONObject("product").getString("id"));
+    assertEquals(4.25, lineAt(0).getDouble("unitPrice"), 0);
+  }
+
+  @Test
+  void aManualLineKeepsItsNonZeroPriceWhenTheListCannotGiveOne() throws Exception {
+    // no price list at all
+    manualLine(7, "{state:'none',candidates:[]}");
+    when(lookups.documentPriceList("V1")).thenReturn(Optional.empty());
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+    assertEquals(7, lineAt(0).getDouble("unitPrice"), 0);
+
+    // product absent from the list
+    manualLine(7, "{state:'none',candidates:[]}");
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.empty());
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+    assertEquals(7, lineAt(0).getDouble("unitPrice"), 0);
+
+    // list price 0
+    manualLine(7, "{state:'none',candidates:[]}");
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(BigDecimal.ZERO));
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+    assertEquals(7, lineAt(0).getDouble("unitPrice"), 0);
+
+    // tax-included list
+    manualLine(7, "{state:'none',candidates:[]}");
+    priceListOf("V1", "PL1", true);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("12.5")));
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+    assertEquals(7, lineAt(0).getDouble("unitPrice"), 0);
+  }
+
+  @Test
+  void aManualLineKeepsItsPriceWhenTheConversionHasNoUsableRateOrTheOrganizationCurrencyIsUnknown()
+      throws Exception {
+    manualLine(7, "{state:'none',candidates:[]}");
+    pending.getJSONObject("header").put("currencyId", "USD");
+    when(lookups.currencyById("USD")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("USD", "USD", "$", 2)));
+    rowOwnedByRowOrgAndClient();
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("10")));
+    when(lookups.organizationCurrencyId("ROW-ORG")).thenReturn(Optional.of("EUR"));
+    when(lookups.conversionRate(any(), any(), eq("USD"), any())).thenReturn(Optional.empty());
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+    assertEquals(7, lineAt(0).getDouble("unitPrice"), 0);
+
+    // unknown organization currency: nothing to read the list price in
+    manualLine(7, "{state:'none',candidates:[]}");
+    pending.getJSONObject("header").put("currencyId", "USD");
+    when(lookups.organizationCurrencyId("ROW-ORG")).thenReturn(Optional.empty());
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+    assertEquals(7, lineAt(0).getDouble("unitPrice"), 0);
+  }
+
+  @Test
+  void anOcrLineWithoutTheMarkerIsNeverPricedAndNeitherIsALegacyLine() throws Exception {
+    JSONObject withoutMarker = doc();
+    withoutMarker.getJSONObject("header").put("currencyId", "EUR");
+    withoutMarker.getJSONArray("lines").getJSONObject(0).put("unitPrice", 7)
+        .put("product", op("{state:'ambiguous',candidates:[{id:'P2',name:'Prod2'}]}"));
+    use(withoutMarker);
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("12.5")));
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(7, lineAt(0).getDouble("unitPrice"), 0);
+    assertFalse(lineAt(0).has("manual"));
+    verify(lookups, never()).documentPriceList(any());
+    verify(lookups, never()).productStandardPrice(anyString(), anyString());
+  }
+
+  @Test
+  void repickingTheSameProductOfAManualLineIsANoOpThatDoesNotPriceIt() throws Exception {
+    manualLine(0, "{state:'linked',id:'P2',name:'Prod2',matchedBy:'manual',candidates:[]}");
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("12.5")));
+    String before = commit();
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertNothingWritten(before);
+    verify(lookups, never()).productStandardPrice(anyString(), anyString());
+  }
+
+  @Test
+  void aVendorChangedAndAProductPickedInTheSameRequestAreWorkedOutWithTheNewVendor()
+      throws Exception {
+    manualLine(0, "{state:'none',candidates:[]}");
+    // the new vendor's list may be in any currency: the document keeps EUR, the lists price in
+    // the organization currency
+    pending.getJSONObject("header").put("currencySource", "default");
+    priceListOf("V2", "PL2", false);
+    priceListOf("V1", "PL1", false);
+    organizationCurrencyIs("EUR");
+    when(lookups.productStandardPrice("PL2", "P2")).thenReturn(Optional.of(new BigDecimal("3")));
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("99")));
+
+    assertSaved(apply("{op:'selectVendor',id:'V2'}", "{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(3, lineAt(0).getDouble("unitPrice"), 0);
+    assertEquals("EUR", header().getString("currencyId"));
+    verify(lookups).documentPriceList("V2");
+    verify(lookups, never()).productStandardPrice(eq("PL1"), anyString());
+    verify(lookups, never()).documentCurrency(any(), any());
+  }
+
+  @Test
+  void aManualLinePricedWithNoStoredCurrencyAsksTheDefaultWithTheRowOrganizationAndNoVendor()
+      throws Exception {
+    manualLine(0, "{state:'none',candidates:[]}");
+    pending.getJSONObject("header").remove("currencyId");
+    rowOwnedByRowOrgAndClient();
+    when(lookups.documentCurrency(any(), any())).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("EUR", "EUR", "E", 2)));
+    priceListOf("V2", "PL2", false);
+    organizationCurrencyIs("EUR");
+    when(lookups.productStandardPrice("PL2", "P2")).thenReturn(Optional.of(new BigDecimal("3")));
+
+    assertSaved(apply("{op:'selectVendor',id:'V2'}", "{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(3, lineAt(0).getDouble("unitPrice"), 0);
+    verify(lookups, atLeastOnce()).documentCurrency(isNull(), eq("ROW-ORG"));
+    verify(lookups, never()).documentCurrency(notNull(), any());
+  }
+
+  @Test
+  void aListInTheOrganizationCurrencyIsConvertedToTheDocumentCurrencyWithThePricePrecision()
+      throws Exception {
+    manualLine(0, "{state:'none',candidates:[]}");
+    pending.getJSONObject("header").put("currencyId", "USD");
+    when(lookups.currencyById("USD")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("USD", "USD", "$", 2)));
+    rowOwnedByRowOrgAndClient();
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("10")));
+    when(lookups.organizationCurrencyId("ROW-ORG")).thenReturn(Optional.of("EUR"));
+    when(lookups.priceScale("USD")).thenReturn(Optional.of(3));
+    when(lookups.conversionRate(eq("ROW-ORG"), eq("ROW-CLIENT"), eq("USD"),
+        eq(java.time.LocalDate.parse("2026-11-02")))).thenReturn(Optional.of(new BigDecimal("1.0833")));
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(10.833, lineAt(0).getDouble("unitPrice"), 0);
+  }
+
+  @Test
+  void aListInAnotherCurrencyIsStillTakenAsIsWhenTheDocumentIsInTheOrganizationCurrency()
+      throws Exception {
+    manualLine(0, "{state:'none',candidates:[]}");
+    organizationCurrencyIs("EUR");
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("12.5")));
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(12.5, lineAt(0).getDouble("unitPrice"), 0);
+    verify(lookups, never()).conversionRate(any(), any(), any(), any());
+  }
+
+  @Test
+  void aListInTheDocumentCurrencyIsStillMultipliedByTheRateWhenTheOrganizationHasAnother()
+      throws Exception {
+    manualLine(0, "{state:'none',candidates:[]}");
+    pending.getJSONObject("header").put("currencyId", "USD");
+    when(lookups.currencyById("USD")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("USD", "USD", "$", 2)));
+    rowOwnedByRowOrgAndClient();
+    priceListOf("V1", "PL1", false);
+    when(lookups.productStandardPrice("PL1", "P2")).thenReturn(Optional.of(new BigDecimal("90")));
+    when(lookups.organizationCurrencyId("ROW-ORG")).thenReturn(Optional.of("EUR"));
+    when(lookups.priceScale("USD")).thenReturn(Optional.of(2));
+    when(lookups.conversionRate(eq("ROW-ORG"), eq("ROW-CLIENT"), eq("USD"),
+        eq(java.time.LocalDate.parse("2026-11-02")))).thenReturn(Optional.of(new BigDecimal("1.47")));
+
+    assertSaved(apply("{op:'selectProduct',index:0,id:'P2'}"));
+
+    assertEquals(132.30, lineAt(0).getDouble("unitPrice"), 0);
+  }
+
+  private void rowOwnedByRowOrgAndClient() {
+    org.openbravo.model.common.enterprise.Organization organization =
+        mock(org.openbravo.model.common.enterprise.Organization.class);
+    when(organization.getId()).thenReturn("ROW-ORG");
+    org.openbravo.model.ad.system.Client client = mock(org.openbravo.model.ad.system.Client.class);
+    when(client.getId()).thenReturn("ROW-CLIENT");
+    when(row.getOrganization()).thenReturn(organization);
+    when(row.getClient()).thenReturn(client);
+  }
+
+  @Test
+  void addLineMarksTheLineAsManualAndOnlyAddLineDoes() throws Exception {
+    assertSaved(apply("{op:'addLine'}"));
+
+    assertTrue(lineAt(2).getBoolean("manual"));
+    assertFalse(lineAt(0).has("manual"));
+    assertFalse(lineAt(1).has("manual"));
+  }
+
+  @Test
+  void aClientSuppliedManualKeyIsRefusedOnEveryOperation() throws Exception {
+    String before = commit();
+    String[] bad = {
+        "{op:'addLine',manual:true}",
+        "{op:'setLine',index:0,manual:true}",
+        "{op:'setLine',index:0,manual:false,quantity:1}",
+        "{op:'selectProduct',index:0,id:'P2',manual:true}",
+        "{op:'newProduct',index:0,manual:true}",
+        "{op:'removeLine',index:0,manual:true}",
+        "{op:'setHeader',documentNo:'F-9',manual:true}",
+        "{op:'selectVendor',id:'V2',manual:true}",
+        "{op:'newVendor',manual:true}",
+        "{op:'setCurrency',currencyId:'EUR',manual:true}" };
+    for (String operation : bad) {
+      assertRefusal(apply(operation), 400, "invalid_request");
+    }
+    assertNothingWritten(before);
+  }
+
   // ------------------------------------------------------------------ newProduct
 
   @Test
@@ -2230,5 +2597,268 @@ class InvoiceInboxApplyTest {
     verify(dal).save(row);
     verify(dal).flush();
     verify(dal).refresh(row);
+  }
+
+  // ------------------------------------------------------------------ setCurrency (ETP-6051)
+
+  /** A document that stores EUR with the given source, optionally flagging a printed CHF. */
+  private void storedEur(String source, boolean chfUnavailable) throws Exception {
+    JSONObject document = use(doc());
+    JSONObject header = document.getJSONObject("header").put("currencyId", "EUR");
+    if (source != null) {
+      header.put("currencySource", source);
+    }
+    if (chfUnavailable) {
+      header.put("currencyUnavailable", "CHF");
+      document.put("notices", new JSONArray().put("currency_symbol_ambiguous"));
+    }
+  }
+
+  private NeoResponse setEurWithOrgCurrencyEur() throws Exception {
+    Organization org = mock(Organization.class);
+    when(org.getId()).thenReturn("ORG1");
+    Client client = mock(Client.class);
+    when(client.getId()).thenReturn("CL1");
+    when(row.getOrganization()).thenReturn(org);
+    when(row.getClient()).thenReturn(client);
+    stubCurrency("EUR", true, "0");
+    return setCurrencyWithOrgCurrencyEur("EUR");
+  }
+
+  private void stubCurrency(String id, boolean active, String ownerClient) {
+    Currency currency = mock(Currency.class);
+    when(currency.isActive()).thenReturn(active);
+    Client owner = mock(Client.class);
+    when(owner.getId()).thenReturn(ownerClient);
+    when(currency.getClient()).thenReturn(owner);
+    when(dal.get(Currency.class, id)).thenReturn(currency);
+  }
+
+  private NeoResponse setCurrencyWithOrgCurrencyEur(String id) throws Exception {
+    try (MockedStatic<OBCurrencyUtils> utils = mockStatic(OBCurrencyUtils.class);
+        MockedStatic<CurrencyOptionsHandler> options = mockStatic(CurrencyOptionsHandler.class)) {
+      utils.when(() -> OBCurrencyUtils.getOrgCurrency("ORG1")).thenReturn("EUR");
+      options.when(() -> CurrencyOptionsHandler.selectableCurrencies(any(), any(), any(), any()))
+          .thenReturn(java.util.Map.of());
+      return apply("{op:'setCurrency',currencyId:'" + id + "'}");
+    }
+  }
+
+  private void rowOfOrg1() {
+    Organization org = mock(Organization.class);
+    when(org.getId()).thenReturn("ORG1");
+    Client client = mock(Client.class);
+    when(client.getId()).thenReturn("CL1");
+    when(row.getOrganization()).thenReturn(org);
+    when(row.getClient()).thenReturn(client);
+  }
+
+  @Test
+  void theStoredCurrencyWithNoConversionRangeIsAcceptedAndClearsTheUnavailableFlag()
+      throws Exception {
+    JSONObject document = use(doc());
+    document.getJSONObject("header").put("currencyId", "CHF").put("currencySource", "default")
+        .put("currencyUnavailable", "XXX");
+    rowOfOrg1();
+    stubCurrency("CHF", true, "CL1");
+
+    assertSaved(setCurrencyWithOrgCurrencyEur("CHF"));
+
+    assertWritten();
+    assertEquals("CHF", header().getString("currencyId"));
+    assertEquals("manual", header().getString("currencySource"));
+    assertFalse(header().has("currencyUnavailable"));
+    assertFalse(state.adjusted);
+  }
+
+  @Test
+  void aDifferentNonSelectableCurrencyIsStillInvalid() throws Exception {
+    storedEur("default", false);
+    rowOfOrg1();
+    stubCurrency("CHF", true, "CL1");
+    String before = commit();
+
+    assertRefusal(setCurrencyWithOrgCurrencyEur("CHF"), 422, "invalid_currency");
+
+    assertNothingWritten(before);
+  }
+
+  @Test
+  void theStoredCurrencyThatIsInactiveUnknownOrOfAnotherTenantIsInvalid() throws Exception {
+    JSONObject document = use(doc());
+    document.getJSONObject("header").put("currencyId", "CHF").put("currencySource", "default");
+    rowOfOrg1();
+    stubCurrency("CHF", false, "CL1");
+    assertRefusal(setCurrencyWithOrgCurrencyEur("CHF"), 422, "invalid_currency");
+
+    stubCurrency("CHF", true, "OTHER");
+    assertRefusal(setCurrencyWithOrgCurrencyEur("CHF"), 422, "invalid_currency");
+
+    when(dal.get(Currency.class, "CHF")).thenReturn(null);
+    assertRefusal(setCurrencyWithOrgCurrencyEur("CHF"), 422, "invalid_currency");
+  }
+
+  @Test
+  void theSameCurrencyStillUnavailablePersistsAsManualAndIsNotAdjusted() throws Exception {
+    storedEur("default", true);
+
+    assertSaved(setEurWithOrgCurrencyEur());
+
+    assertWritten();
+    assertEquals("EUR", header().getString("currencyId"));
+    assertEquals("manual", header().getString("currencySource"));
+    assertFalse(header().has("currencyUnavailable"));
+    assertEquals(0, saved().getJSONArray("notices").length());
+    assertFalse(state.adjusted);
+  }
+
+  @Test
+  void theSameCurrencyWithADefaultSourcePersistsAsManualAndIsNotAdjusted() throws Exception {
+    storedEur("default", false);
+
+    assertSaved(setEurWithOrgCurrencyEur());
+
+    assertWritten();
+    assertEquals("manual", header().getString("currencySource"));
+    assertFalse(state.adjusted);
+  }
+
+  @Test
+  void aFullyIdenticalSetCurrencyIsANoOp() throws Exception {
+    storedEur("manual", false);
+    String before = commit();
+
+    assertSaved(setEurWithOrgCurrencyExpectingNoWrite());
+
+    assertNothingWritten(before);
+  }
+
+  private NeoResponse setEurWithOrgCurrencyExpectingNoWrite() throws Exception {
+    return setEurWithOrgCurrencyEur();
+  }
+
+  @Test
+  void aVendorChangeAfterAcceptingTheShownCurrencyKeepsIt() throws Exception {
+    storedEur("default", true);
+    assertSaved(setEurWithOrgCurrencyEur());
+    when(lookups.documentCurrency(eq("V2"), any())).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("USD", "USD", "$", 2)));
+    when(lookups.currencyById("EUR")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("EUR", "EUR", "E", 2)));
+
+    assertSaved(apply("{op:'selectVendor',id:'V2'}"));
+
+    assertEquals("EUR", header().getString("currencyId"));
+    assertEquals("manual", header().getString("currencySource"));
+  }
+
+  // ---- setCurrency: the choice, its refusals, its op shape and what it recomputes (ETP-6051)
+
+  /**
+   * Runs setCurrency {@code id} for a row whose organization currency is {@code orgCurrency}; the
+   * {@code selectable} ids are what the invoice selector would offer, {@code active} the state of
+   * the currency record ({@code null} record when {@code exists} is false).
+   */
+  private NeoResponse setCurrency(String id, String orgCurrency, java.util.Set<String> selectable,
+      boolean exists, boolean active) throws Exception {
+    Organization org = mock(Organization.class);
+    when(org.getId()).thenReturn("ORG1");
+    Client client = mock(Client.class);
+    when(client.getId()).thenReturn("CL1");
+    when(row.getOrganization()).thenReturn(org);
+    when(row.getClient()).thenReturn(client);
+    Currency record = null;
+    if (exists) {
+      record = mock(Currency.class);
+      when(record.isActive()).thenReturn(active);
+      Client owner = mock(Client.class);
+      when(owner.getId()).thenReturn("0");
+      when(record.getClient()).thenReturn(owner);
+    }
+    when(dal.get(Currency.class, id)).thenReturn(record);
+    java.util.Map<String, String> offered = new java.util.LinkedHashMap<>();
+    selectable.forEach(key -> offered.put(key, key));
+    try (MockedStatic<OBCurrencyUtils> utils = mockStatic(OBCurrencyUtils.class);
+        MockedStatic<CurrencyOptionsHandler> options = mockStatic(CurrencyOptionsHandler.class)) {
+      utils.when(() -> OBCurrencyUtils.getOrgCurrency("ORG1")).thenReturn(orgCurrency);
+      options.when(() -> CurrencyOptionsHandler.selectableCurrencies(any(), anyString(), anyString(),
+          anyString())).thenReturn(offered);
+      return apply("{op:'setCurrency',currencyId:'" + id + "'}");
+    }
+  }
+
+  @Test
+  void aSelectableCurrencyIsChosenAsManualAdjustsTheDocumentAndRecomputesTheTotal()
+      throws Exception {
+    when(lookups.currencyById("JPY")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("JPY", "JPY", "Y", 0)));
+    JSONObject document = use(doc());
+    document.getJSONObject("header").put("currencyId", "EUR").put("currencySource", "printed")
+        .put("currencyUnavailable", "CHF");
+    document.put("notices", new JSONArray().put("something_else").put("currency_symbol_ambiguous")
+        .put("another"));
+
+    assertSaved(setCurrency("JPY", "EUR", java.util.Set.of("JPY"), true, true));
+
+    assertEquals("JPY", header().getString("currencyId"));
+    assertEquals("manual", header().getString("currencySource"));
+    assertFalse(header().has("currencyUnavailable"));
+    JSONArray notices = saved().getJSONArray("notices");
+    assertEquals(2, notices.length());
+    assertEquals("something_else", notices.getString(0));
+    assertEquals("another", notices.getString(1));
+    assertTrue(state.adjusted);
+    // net 140, tax round0(29.4) = 29 at scale 0 (it was 169.4 at two decimals)
+    assertEquals(169, header().getDouble("totalAmount"), 0);
+    assertEquals(10, lineAt(0).getDouble("unitPrice"), 0);
+    assertEquals(20, lineAt(1).getDouble("unitPrice"), 0);
+  }
+
+  @Test
+  void theOrganizationCurrencyIsAlwaysSelectable() throws Exception {
+    use(doc()).getJSONObject("header").put("currencyId", "USD");
+
+    assertSaved(setCurrency("EUR", "EUR", java.util.Set.of(), true, true));
+
+    assertEquals("EUR", header().getString("currencyId"));
+    assertEquals("manual", header().getString("currencySource"));
+    assertTrue(state.adjusted);
+  }
+
+  @Test
+  void anInactiveAnUnknownAndANonSelectableCurrencyAreRefusedAndNothingIsWritten()
+      throws Exception {
+    use(doc()).getJSONObject("header").put("currencyId", "EUR");
+    String before = commit();
+
+    assertRefusal(setCurrency("OLD", "EUR", java.util.Set.of("OLD"), true, false), 422,
+        "invalid_currency");
+    assertRefusal(setCurrency("GONE", "EUR", java.util.Set.of("GONE"), false, false), 422,
+        "invalid_currency");
+    assertRefusal(setCurrency("CHF", "EUR", java.util.Set.of("USD"), true, true), 422,
+        "invalid_currency");
+    assertNothingWritten(before);
+  }
+
+  @Test
+  void aRowWithoutAnOrganizationCurrencyRefusesAnyCurrency() throws Exception {
+    String before = commit();
+
+    assertRefusal(setCurrency("USD", null, java.util.Set.of("USD"), true, true), 422,
+        "invalid_currency");
+    assertNothingWritten(before);
+  }
+
+  @Test
+  void aSetCurrencyOpWithExtraKeysOrAMissingOrNonIdCurrencyIsInvalid() throws Exception {
+    String before = commit();
+    String[] bad = { "{op:'setCurrency'}", "{op:'setCurrency',currencyId:'EUR',rate:1.2}",
+        "{op:'setCurrency',currencyId:5}", "{op:'setCurrency',currencyId:''}",
+        "{op:'setCurrency',currencyId:'   '}", "{op:'setCurrency',currencyId:{}}",
+        "{op:'setCurrency',currencyId:true}", "{op:'setCurrency',id:'EUR'}" };
+    for (String operation : bad) {
+      assertRefusal(apply(operation), 400, "invalid_request");
+    }
+    assertNothingWritten(before);
   }
 }

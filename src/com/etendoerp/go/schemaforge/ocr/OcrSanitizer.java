@@ -19,6 +19,7 @@ package com.etendoerp.go.schemaforge.ocr;
 
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.Locale;
 import java.util.Set;
 
 import org.codehaus.jettison.json.JSONArray;
@@ -42,6 +43,11 @@ public final class OcrSanitizer {
   /** Most lines kept. */
   public static final int MAX_LINES = 100;
 
+  /** Longest printed currency text kept ({@code currency_raw}), in characters. */
+  static final int MAX_CURRENCY_RAW = 20;
+  private static final int ISO_LENGTH = 3;
+  private static final String KEY_CURRENCY = "currency";
+  private static final String KEY_CURRENCY_RAW = "currency_raw";
   private static final String KEY_PROPERTIES = "properties";
   private static final String KEY_ITEMS = "items";
 
@@ -68,7 +74,35 @@ public final class OcrSanitizer {
       out.put(key, clean(payload == null ? null : payload.opt(key),
           properties.getJSONObject(key)));
     }
+    normalizeCurrency(out);
     return out;
+  }
+
+  /**
+   * The header currency pair (ETP-6051): {@code currency} is an ISO 4217 code, so exactly three
+   * letters, uppercase, else {@code null}; {@code currency_raw} is the printed text, bounded.
+   * Only objects that declare both keys are touched.
+   */
+  private static void normalizeCurrency(JSONObject out) throws JSONException {
+    if (!out.has(KEY_CURRENCY) || !out.has(KEY_CURRENCY_RAW)) {
+      return;
+    }
+    out.put(KEY_CURRENCY, isoCurrency(out.opt(KEY_CURRENCY)));
+    Object raw = out.opt(KEY_CURRENCY_RAW);
+    String printed = raw instanceof String ? text((String) raw) : "";
+    out.put(KEY_CURRENCY_RAW, printed.isEmpty() ? JSONObject.NULL
+        : printed.length() > MAX_CURRENCY_RAW ? printed.substring(0, MAX_CURRENCY_RAW) : printed);
+  }
+
+  private static Object isoCurrency(Object value) {
+    String code = value instanceof String ? text((String) value).toUpperCase(Locale.ROOT) : "";
+    for (int i = 0; code.length() == ISO_LENGTH && i < ISO_LENGTH; i++) {
+      char letter = code.charAt(i);
+      if (letter < 'A' || letter > 'Z') {
+        return JSONObject.NULL;
+      }
+    }
+    return code.length() == ISO_LENGTH ? code : JSONObject.NULL;
   }
 
   private static Object clean(Object value, JSONObject schema) throws JSONException {

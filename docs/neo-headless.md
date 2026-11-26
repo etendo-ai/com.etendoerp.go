@@ -2420,7 +2420,17 @@ is a warning, not an error.
 `PurchaseInvoiceOcrLookups`):
 - Vendor: by tax id first (`vendorsByTaxId`, with or without VAT prefix; one hit `linked`, several
   `ambiguous`), then by name: `linked` only for a unique exact normalized name with no conflicting
-  tax id; a contains hit stays `ambiguous`; nothing is `new` (name read) or `none`.
+  tax id; a contains hit stays `ambiguous`; nothing is `new` (name read) or `none`. A name search (exact or
+  partial) classifies each candidate in three tiers (ETP-6051). **Certain**: the unique exact name, or the
+  tax id match, with no tax id conflict: `linked`. **Probable**: partial or repeated name matches where no tax
+  id conflicts (one side may lack it): `ambiguous`, ordered best first (exact name, then closest name length).
+  **Weak**: both tax ids present and different: listed after the others and never probable. Every candidate
+  carries an explicit boolean `probable` (`header.vendor.candidates[i].probable`): `true` only on the first one
+  and only when the best non-conflicting candidate is strictly better than the next (a tie leaves all of them
+  `false`); an `ambiguous` result from a tax id search, or from an exact name that contradicts the stored tax
+  id, has every candidate `false`. When every name hit is weak the result is `new` with no candidates. The key
+  is absent only on documents stored before it existed. The name search reads up to 100 rows and keeps 10
+  candidates.
 - Products per line: `OcrProductMatch.classify` as is (`AUTO_MATCHED` -> `linked`, `SUGGESTED` ->
   `ambiguous`, `NONE` -> `new`).
 - Tax per line: `resolved` (vendor with address), `pending_vendor` (new vendor or no address; valid
@@ -2434,6 +2444,19 @@ is a warning, not an error.
   rules: discount, two roundings, tax mode, currency scale; only this one is rounded to the scale)
   (`totalSource` `printed|lines`). `total_amount` was added to the shared `purchase-invoice` OCR
   schema (`ocr-config.json`), so it also reaches the SPA's "Extract and complete" and the MCP tool.
+- Currency (ETP-6051): the `purchase-invoice` OCR schema also carries two nullable header fields (both in
+  `required`): `currency` (ISO 4217 code, 3 uppercase letters, only when the document makes it certain: a
+  printed code or an unambiguous symbol such as the euro sign) and `currency_raw` (the currency exactly as
+  printed: `€`, `US$`, `USD`, `$`). A bare `$`, `£` or `¥` is ambiguous, so `currency` is then null and
+  `currency_raw` carries the symbol. The matcher (`InboxMatcher.documentCurrency`) resolves the document
+  currency in this order: (a) `currency` when it is an active currency of the tenant
+  (`OcrLookups.currencyByCode`); (b) with no code, `currency_raw` when exactly one currency among those the
+  document can use carries that symbol (`OcrLookups.currenciesBySymbol(symbol, organizationId)`); none or
+  several adds the notice `currency_symbol_ambiguous` and falls through; (c) the organization /
+  client default. It stamps the header with `currencySource` (`printed` for a or b, else `default`;
+  `manual` once the user picks one) and `currencyRaw` (display only). A printed code that is not an active
+  currency of the tenant keeps the default currency and sets `header.currencyUnavailable` to that code. The
+  new fields are nullable, so the single-document OCR flow and the MCP tool, which share the schema, ignore them.
 
 **`CURRENT_DATA` contract** (version 1; codes only, the UI translates; every text read from the
 document is untrusted data):
@@ -2442,12 +2465,14 @@ document is untrusted data):
 { "version": 1,
   "header": {
     "vendor": { "state": "linked|ambiguous|new|none", "matchedBy": "taxId|name", "id": null,
-      "name": "...", "candidates": [{ "id": "", "name": "", "taxId": "" }],
+      "name": "...", "candidates": [{ "id": "", "name": "", "taxId": "", "probable": false }],
       "extracted": { "name": "", "taxId": "", "address": "", "postalCode": "", "city": "",
         "country": "", "email": "", "phone": "" },
       "addressState": "PRESENT|MISSING|UNKNOWN", "locationId": null },
     "documentNo": "", "invoiceDate": "yyyy-MM-dd|null", "invoiceDateRaw": "",
     "totalAmount": 0.0, "totalSource": "printed|lines",
+    "currencyId": "", "currencySource": "printed|default|manual", "currencyRaw": "",
+    "currencyUnavailable": "ISO code, only when the printed currency is not a tenant currency",
     "duplicate": { "state": "none|found|unknown", "invoices": [{ "id": "", "documentNo": "" }],
       "inbox": [{ "id": "", "fileName": "" }] },
     "receiver": { "check": "match|absent|no-org-tax-id|same-as-issuer|mismatch",
@@ -2461,7 +2486,7 @@ document is untrusted data):
   "validation": { "valid": false, "missing": ["vendor", "invoiceDate", "amount", "lines",
     "line[2].tax", "line[3].product"] },
   "notices": ["receiver_tax_id_absent", "org_tax_id_missing", "vendor_address_missing",
-    "duplicate_check_unknown", "duplicate_in_inbox"] }
+    "duplicate_check_unknown", "duplicate_in_inbox", "currency_symbol_ambiguous"] }
 ```
 
 **Reusable pieces for the review panel (ETP-6050).** `InvoiceInboxValidator.validate(document)`
@@ -2573,7 +2598,7 @@ the document reaches the browser.
     receiver:{check:"absent"}}, lines:[], notices:[]}` plus its validation. It is not persisted.
 - Texts of the document come from an external extraction and are untrusted data: they are copied,
   never interpreted. The lookups are bound by the row's `TARGET_TYPE` the way the worker binds them.
-- **Hidden from MCP**: `agentExcludedActions()` returns `discard`, `review`, `apply`, `mark-reviewed` and `confirm` (§4.12.9).
+- **Hidden from MCP**: `agentExcludedActions()` returns `discard`, `review`, `apply`, `mark-reviewed`, `confirm` and `currencyOptions` (§4.12.9).
 
 **Edit (ETP-6050 S2): `apply` and `mark-reviewed`.** Two more actions of `InvoiceInboxHeaderHandler`
 (`InvoiceInboxApply`, `InvoiceInboxMarkReviewed`); the spec stays read-only. Both are `POST`
@@ -2597,12 +2622,13 @@ key, non-object, missing `index`/`id`: 400 `invalid_request`; no `updated`: 400 
 |---|---|---|
 | `setHeader` | `documentNo`, `invoiceDate` (patch) | text cleaned like an extracted one (`OcrSanitizer.text`, at most 200 chars; over 20 is the validation `REFERENCE_TOO_LONG`, not a refusal); date `yyyy-MM-dd`, year 1900-2100, `null`/`""` clears; any other key is 400 |
 | `setLine` | `index`, any of `description`, `quantity`, `unitPrice` (within +/-1e9), `taxId`, `taxRate` (0-100 or null, legacy), `discount` (0-100, null = 0) | scales HALF_UP: quantity 4, unitPrice 6, taxRate 2, discount 4; out of range or not a number: 422 `invalid_value`; `null` is accepted for `quantity`/`unitPrice`/`taxRate` (stored null, the validator reports the line). **`taxId`** (string, or `null`; when it is a non-null id in the same operation as a `taxRate`, the id wins and the typed rate is not applied at all; pinning the server-resolved id makes the stored `taxRate` follow the tax's rate, and marks only if that rate actually changes) chooses the line's tax by id, as the purchase invoice line's tax selector does: it must pass `OcrLookups.taxById` (active, `ValidFrom` <= the document date or today, purchase or both, client or System, tenant-visible: the `C_Tax_IsSOTrx_Date` rule), else 422 `unknown_tax` `{index}`. The CHOSEN TAX WINS: `tax = {state: resolved, matchedBy: manual, id, rate}` and `taxRate` becomes its rate (the printed rate stays in `EXTRACTED_DATA`); the name is never stored. `null` drops a chosen tax and the server resolves one again (from the rate and the vendor's address). A chosen tax survives a vendor change, and a date change while it still passes the rule; typing a `taxRate` that changes drops it (the tax is resolved by rate again). Choosing the id already chosen writes nothing; choosing the id the server resolved only pins it (no mark). Choosing or changing a tax marks `ADJUSTED` like any line change |
-| `addLine` | none | `{index: max+1, description:"", quantity:1, unitPrice:0, product:none}`; `taxRate` = the previous (last) line's, else the vendor address' default tax and its rate; `pending_vendor` without address; over 100 lines: 422 `too_many_lines` |
+| `addLine` | none | `{index: max+1, manual: true, description:"", quantity:1, unitPrice:0, product:none}` (`manual` = ETP-6051 marker of a line the user added: written only here, never accepted from a request, absent on OCR and legacy lines); `taxRate` = the previous (last) line's, else the vendor address' default tax and its rate; `pending_vendor` without address; over 100 lines: 422 `too_many_lines` |
 | `removeLine` | `index` | 422 `line_not_found` when absent |
 | `selectVendor` | `id` | must resolve through `OcrLookups.vendorById` (else 422 `unknown_vendor`); `vendor = linked, matchedBy manual`, address state/location read again, taxes rebuilt |
 | `newVendor` | `fields?` (`name, taxId, address, postalCode, city, countryName, email, phone`) | patch of `vendor.extracted`; `vendor = new`, `addressState UNKNOWN`, every line tax `pending_vendor`. Nothing is created: the contact is created on confirm (ETP-6051), which must apply the single-invoice OCR flow's seed |
-| `selectProduct` | `index`, `id` | `OcrLookups.productById` (else 422 `unknown_product`); `product = linked, matchedBy manual` |
+| `selectProduct` | `index`, `id` | `OcrLookups.productById` (else 422 `unknown_product`); `product = linked, matchedBy manual`. **ETP-6051, manual lines only** (`line.manual === true`, see *Manual line pricing*): it ALWAYS takes the price list price, overwriting the current `unitPrice` (typed, or the previous product's), as the purchase-invoice window does; with no usable list price the current `unitPrice` is left as is. An OCR/legacy line is never touched |
 | `newProduct` | `index`, `name?`, `categoryId?`, `uomId?` | `product = new` with `new = {name, categoryId, uomId, categorySource, uomSource}`: ONLY ids (and their sources) are stored, validated by `OcrLookups.productCategoryById` / `uomById` (422 `unknown_category` / `unknown_uom`); `null` clears (and drops the source). A field the operation does not mention keeps its stored value and source; naming the id already stored keeps its source (`ocr`/`default`) and changes nothing; naming another id stores it with `categorySource`/`uomSource = manual`. From a line that was not `new` (ambiguous, none, linked) the base is what the worker would have pre-filled for it (printed unit, defaults: see *New product pre-fill*), so an unmodified "create" takes that data. `review` and `apply` answers add `new.category` and `new.uom` (names) at read time from those ids, in the request language (`NeoTrl`, active and tenant-visible rows; no name when the id no longer resolves); the sources travel as stored. A name stored by an earlier version is ignored and replaced |
+| `setCurrency` | `currencyId` | the user picks the document currency (ETP-6051). The id must be an active currency of the system or of the row's tenant, else 422 `invalid_currency`; a DIFFERENT id must also be the organization currency or one the invoice's own selector offers (`CurrencyOptionsHandler.selectableCurrencies`: a conversion range to or from the organization currency), else the same 422. The id already stored skips that check (it may be a vendor default with no conversion; the live verdict decides whether `exchangeRate` stays a blocker). Stores `header.currencyId` and `currencySource = manual` (so a later vendor change keeps it), drops `currencyUnavailable` and the `currency_symbol_ambiguous` notice. A different id marks `ADJUSTED` (`InvoiceInboxAdjustedPolicy.currencyChanged`); the same id as stored changes nothing and does not mark, but still persists when it was not yet the user's choice (source not `manual`, or `currencyUnavailable` set), which clears the blocker without an adjustment. No custom rate is accepted and line prices are never re-priced |
 
 The line `index` is a stable id: never renumbered, a new line takes the highest index plus one (a
 document whose lines carry none gets its positions on the first edit); the validator codes are
@@ -2645,13 +2671,54 @@ invoice, decide the cents:
   both. Rows are by (rate, mode), ascending by rate, `D` before `L`.
 - **Currency scale.** Amounts are rounded to the decimals of the document currency
   (`C_Currency.StdPrecision`, `NeoCurrencyPrecision.forCurrencyId`, the scale every GO document line
-  uses), not a fixed 2. The currency is the vendor's purchase price list currency, else the
-  organization's, else the client's (`OcrLookups.documentCurrency(vendorId, organizationId)`; the organization is the ROW's, tenant-checked, not the
-  session's; a vendor not linked uses it directly). It is stored as `header.currencyId` by the worker and by `apply` when the document
-  has none or the vendor changes (so a vendor change re-derives it and the amounts); read-only in the
-  panel. The `review` and `apply` answers carry `currency = {id, isoCode, symbol, scale}`; a row with no
-  stored currency derives it at read time, without writing. The exchange rate and the currency picker of
-  the invoice are untouched: this is only the scale of the inbox's own amounts.
+  uses), not a fixed 2. The currency defaults to the organization's, else the client's (`OcrLookups.documentCurrency(vendorId, organizationId)`, as the AD default `@C_Currency_ID@` of `C_Invoice`; the organization is the ROW's, tenant-checked, not the
+  session's). The vendor and its price list infer NOTHING: in GO a price list's own currency is a Classic leftover and the purchase invoice never moves its currency on a business-partner or price-list change (ETP-4029, `blockCalloutCurrencyUpdate`); the user changes it directly (`setCurrency`). Documents stored before ETP-6051 follow-up keep the `header.currencyId` they already have. It is stored as `header.currencyId` by the worker and by `apply` when the document
+  has none (a vendor change never moves it); the panel lets the user change it with `setCurrency` (ETP-6051). The `review`
+  and `apply` answers carry `currency = {id, isoCode, symbol, scale, rate, source}`: `rate` is the
+  organization-to-document multiply rate valid on the invoice date (`DocumentCurrencyRate.lookupRate`; `1`
+  for the organization currency; `null` when none is valid or the date is unknown) and `source` is
+  `printed`, `default` or `manual` (`InvoiceInboxReview.sourceOf`; an unknown stored value reads `default`).
+  A row with no stored currency derives it at read time (`rate: 1`, `source: default`), without writing.
+  Confirm sends no rate: the invoice header pipeline computes it.
+- **Manual line pricing** (ETP-6051). A line added with `addLine` carries `manual: true`; a product picked on it
+  (`selectProduct`) is priced from the document's purchase price list like the purchase-invoice window, and ALWAYS
+  overwrites the line's `unitPrice` (a typed price, or the previous product's, as the purchase-invoice window
+  does; when no usable list price exists the current price is kept, never zeroed; OCR lines keep their price
+  as read). The list is resolved in ONE place (`InvoiceInboxPriceList.forVendor`, also used by the review
+  answer and by the `price_list_tax_included` confirm check): the vendor's purchase price list, else the
+  default purchase price list (active, non-sales, default; also for a new vendor or none; tenant-visible; first
+  by name then id when several defaults exist, so it is deterministic). The catalog price is the product's
+  `pricestd` in the LATEST ACTIVE version with `validfrom <= NOW()` through the very query that enriches the
+  product selector rows (`ProductPriceSelectorPolicy.standardPrice`), so the price the picker shows is the one
+  applied, up to rounding: the server rounds a converted price to `C_Currency.PricePrecision` while the drawer's
+  converted row shows a fixed 2 decimals (SPA `applyProductCurrencyConversion`), so they can differ for 0- or
+  3-decimal currencies (consistent with ETP-6177). **Declared divergence:** that rule uses NOW(), while
+  `FinancialUtils.getProductPrice` (the invoice pipeline) uses the invoice date; we follow the selector. `InvoiceInboxLinePricing.priceFor` applies it only
+  when the price is positive, the list does NOT include tax (the inbox sends net prices) and the price is read
+  as an ORGANIZATION-currency price ALWAYS, whatever the list's own currency (parity with the purchase invoice,
+  whose drawer uses `priceCurrency = org`): in GO a price list only dictates a price in the organization
+  currency, its own currency is a Classic leftover and infers nothing). Document currency = organization
+  currency: the price as is. Otherwise a positive org-to-document rate must exist on the invoice date (`DocumentCurrencyRate.lookupRate`, the
+  `exchangeRate` blocker's lookup): `price x rate` rounded HALF_UP to the document currency's
+  `C_Currency.PricePrecision` (2 when none), the rule of `OrderLineCurrencyConversion` (ETP-6177) and of the SPA's
+  `applyProductCurrencyConversion`. Otherwise (no rate when the document is not in the organization currency, a tax-included list, a product absent
+  from the list, price 0) the line keeps its current price. The tax is not touched on a pick (rate and address by
+  `DefaultTaxResolver` as for any line; whether picking a product should also set the tax is pending a
+  functional decision). The `manual` marker is never accepted from a client: `addLine` takes no keys and any
+  other operation carrying `manual` is 400 `invalid_request` (unknown key). Lines added before this change
+  carry no marker, so they are treated as OCR lines and are not priced; the pick itself marks `ADJUSTED` as any
+  product selection does, and the price it brings adds no extra mark. The server does not refuse a product absent from the list: the SPA's
+  drawer only offers the ones in it (the selector's `priceList` context). The `review` and `apply` answers add
+  `pricing = {priceListId, orgCurrencyId, orgCurrencyIsoCode, rate}` (read-time, never stored; `priceListId` and
+  the org fields null when unknown; `rate` = `currency.rate`).
+- **Currency options** (ETP-6051). `GET /sws/neo/invoice-inbox/header/{id}/action/currencyOptions[?date=yyyy-MM-dd]`
+  delegates to `CurrencyOptionsHandler` with a rate type scoped by the ROW: its own organization and client
+  (never the session's) and, unless `date` is given, its stored invoice date. It lists the organization
+  currency plus every currency with a conversion range to or from it, exactly what the purchase invoice
+  selector offers; it is the source of the SPA picker. The `exchangeRate` blocker also appears when
+  `header.currencyUnavailable` is set, whatever the rate lookup says (`InvoiceInboxLiveChecks`): the printed
+  currency does not exist in the tenant, and the user must pick another one (or accept the default through
+  `setCurrency` with the shown id) before confirming.
 - **Input scales** (HALF_UP, stored): `quantity` 4, `unitPrice` 6 (the price scale of GO), `discount` 4,
   `taxRate` 2; the price after the discount `unit6` stays at 6 decimals.
 The rule exists in three copies (SPA `invoiceInboxReviewModel.js`, `InvoiceInboxTotals`, the Etendo engine). Each
@@ -2770,7 +2837,7 @@ NEW token in `error.updated` and `error.documentStatus = ERROR`; an `ERROR` row 
 note above); `CONFIRMED`, `DISCARDED` and `FOREIGN_RECEIVER` are 409 `not_editable` from the guards.
 
 Error details are keys of the `error` object: `field` and `index` (`invalid_value`), `index`
-(`line_not_found`, `unknown_product`, `unknown_category`, `unknown_uom`, `unknown_tax`), `max` (`too_many_lines`),
+(`line_not_found`, `unknown_product`, `unknown_category`, `unknown_uom`, `unknown_tax`), `max` (`too_many_lines`), none (`invalid_currency`),
 `missing`, `updated` and `documentStatus` (`not_valid`), `documentStatus` (`not_editable`, `not_reviewable`: `error.status` already
 holds the HTTP code). The server texts are the English defaults of `InvoiceInboxMessages` (no
 `AD_MESSAGE` row, like discard and review); the SPA translates by `error.code`.
@@ -2779,7 +2846,7 @@ holds the HTTP code). The server texts are the English defaults of `InvoiceInbox
 `{"updated": "<token>"}` (no other key), served by `InvoiceInboxHeaderHandler` (class `InvoiceInboxConfirm`,
 split in `...Claim`, `...Checks`, `...Work`, `...Lines`, `...Seeds`, `...Verify`, `...Attachment`,
 `...Failure`). ONE document per request: a batch is the SPA sending one request per document, so a
-failure never touches its neighbours. Hidden from MCP like the other four actions (§4.12.9).
+failure never touches its neighbours. Hidden from MCP like the other actions of the inbox (§4.12.9).
 
 - **200** `{id, status:"CONFIRMED", invoice:{id, documentNo, identifier}, adjusted, createdVendor,
   createdProducts, alreadyConfirmed, totalMismatch}`. A document that is already `CONFIRMED` answers 200 with its
@@ -2797,12 +2864,11 @@ failure never touches its neighbours. Hidden from MCP like the other four action
   `missing_exchange_rate`; 422 `price_list_tax_included` (message key `ETGO_InvoiceInboxPriceListTaxIncluded`:
   the price list that will price the invoice, the linked vendor's purchase list else the default purchase list,
   has `IsTaxIncluded = Y`; refused before anything is written and WITHOUT moving the row, since the fix is in the
-  vendor's price list, not in the document. Why: the inbox sends the NET price, so on such a list the engine
+  price list, not in the document. Why: the inbox sends the NET price, so on such a list the engine
   totals the draft at zero. GO's own price-list window discards `priceIncludesTax`, so only Classic or imported
-  data has such lists; supporting them (sending `grossUnitPrice`) is a later ticket. A NEW vendor has no list yet
-  and is not affected. Known limit: for a linked vendor with no purchase list the check takes the first
-  default purchase list, with no ordering, which may differ from the list NEO's create defaults assign
-  when several default lists exist; the totals check below is the backstop); 422 `duplicate_invoice` + `error.invoice {id, documentNo}` (a not voided
+  data has such lists; supporting them (sending `grossUnitPrice`) is a later ticket. Since ETP-6051 the list is resolved by `InvoiceInboxPriceList.forVendor` (vendor list, else the
+  deterministic default purchase list), so a NEW vendor or a vendor without a list is now also refused when the
+  DEFAULT list includes tax (before, a new vendor was never checked); the totals check below is the backstop); 422 `duplicate_invoice` + `error.invoice {id, documentNo}` (a not voided
   purchase invoice of the same vendor with the same number, asked at confirm time). The two live gaps are
   also validation codes before the user confirms (see `InvoiceInboxLiveChecks`): the `missing` list of the
   verdict gains `vendorAddress` and `exchangeRate` (status `ERROR` / `MISSING_FIELDS`, in the review answer
@@ -2836,7 +2902,12 @@ failure never touches its neighbours. Hidden from MCP like the other four action
   `no_product_sequence`, `no_file`, `attach_failed`, `currency_mismatch`, `total_mismatch {invoice, document}`,
   `step_failed {step, n?, name?, reason, missing?[]}` (`step` is `vendor`, `vendorAddress`, `header`, `line`,
   `product` or `creation`; `n` is the 1-based line, `name` the new product, `reason` the pipeline's own
-  message, `missing` the field names it reports), `search_key_exists {step, n?, name?}` and the catch-all
+  message, `missing` the field names it reports), used only when the operation gave a
+  message of its own, `step_refused_status {step, status}` (same `step`, plus `n` for a line step and `name`
+  for a new product step; `status` is the HTTP status) when a step was refused with NO message, so the only
+  text left is the batch's generic "Operation 'x' rejected by server": the user sees the step and the status
+  instead of that generic text, and the server logs a WARN with the operation id, the status and ONLY the
+  keys and length of the refused body, never its values, `search_key_exists {step, n?, name?}` and the catch-all
   `refused {message}` for text that arrives already built from outside (the `OBException` message of the
   completion, an SIF preset refusal, a classified NEO failure): that one cannot be an identifier, the raw
   message is kept in `params.message`. If the value would exceed 2000 characters, only `text` and the string
@@ -2848,7 +2919,10 @@ failure never touches its neighbours. Hidden from MCP like the other four action
   `AD_MESSAGE` row, so they are always English: the language leak seen before came only from outside text
   (the completion's `OBException`, the pipeline's message, user data), now carried in `refused.message` /
   `step_failed.reason`. It never carries SQL, file paths or stack frames (exceptions are classified and
-  sanitized as any NEO failure, and a batch failure names its step).
+  sanitized as any NEO failure, and a batch failure names its step). `InvoiceInboxConfirmWork` recognizes the generic refusal text through
+  `BatchService.OPERATION_PREFIX` and `BatchService.REJECTED_SUFFIX` (package-private; same text as before, no
+  behavior change in the batch), so changing either constant changes how the inbox reports a message-less
+  refusal.
 - **After the commit nothing fails the confirm.** Once `completeInvoiceOrThrow` returns, the telemetry is
   emitted and the answer is built in its own guard; if building it fails the answer is the idempotent shape
   (`alreadyConfirmed: true`, `invoice.id` only), never 422 for an invoice that exists.
@@ -2901,7 +2975,7 @@ failure never touches its neighbours. Hidden from MCP like the other four action
   only when the document's `totalSource` is `printed` and the printed total differs from the lines total by
   MORE than one minimal unit of the currency (a cent at scale 2, a whole unit at scale 0), compared at the
   currency scale (the rule of the SPA banner, `InvoiceInboxSummary.totalMismatch`; the currency is the
-  stored one, else the one derived as the worker does: vendor purchase price list, organization, client;
+  stored one, else the one derived as the worker does: organization, client;
   a missing, null, non-numeric or non-finite printed total never warns, and amounts round HALF_UP). The review answer gains
   `errorDetail` (when set, the raw stored string; see the identifier format above), `errorInfo` (when it parses) and `totalMismatch`; it already carried `currency`. The confirm answer carries
   `totalMismatch` too (computed from the stored document at confirm time) so the toast can mention it.
@@ -7875,18 +7949,19 @@ handlers do, so `buildingNumber` no longer blocks the request here either — `s
 `country` are unaffected. With both layers fixed, the "no longer a UI-vs-API divergence" claim two
 paragraphs above now holds for the onboarding endpoint too, not only for the 3 entity handlers.
 
-**Declared divergence: `discard`, `review`, `apply`, `mark-reviewed` and `confirm` of the invoice inbox are
+**Declared divergence: `discard`, `review`, `apply`, `mark-reviewed`, `confirm` and `currencyOptions` of the invoice inbox are
 REST-only (ETP-6049, ETP-6050, ETP-6051).** The action
 `POST /sws/neo/invoice-inbox/header/{id}/action/discard` works from the SPA and plain REST, and is
 hidden from MCP (`InvoiceInboxHeaderHandler.agentExcludedActions()` = `discard`, `review`, `apply`,
-`mark-reviewed`, `confirm`: `etendo_action` answers HTTP 405 `method_not_allowed`, "its customization keeps
+`mark-reviewed`, `confirm`, `currencyOptions`: `etendo_action` answers HTTP 405 `method_not_allowed`, "its customization keeps
 it for people only. Nothing was run.", raised by `McpRoutingException.actionHidden`). Discard is irreversible
 and `confirm` (ETP-6051) creates and COMPLETES a purchase invoice, with its vendor and products, from a
 document that only its reviewer vouched for: both ship for people first. `GET .../action/review`
 (ETP-6050) is hidden the same way: it is the review panel's own read, up to 1 MB of document plus
 enrichment, which would only cost an agent context; agents read the row with `etendo_get` (no
 `currentData`). `POST .../action/apply` and `.../action/mark-reviewed` (ETP-6050 S2) are the panel's own
-autosave and review mark, hidden the same way. All five are declared together; exposing them to agents
+autosave and review mark, hidden the same way. `GET .../action/currencyOptions` (ETP-6051) is the review
+panel's currency selector read, hidden the same way. All six are declared together; exposing them to agents
 means declaring an `actionContract` for each and removing that one override. The batch path
 (`etendo_batch`) does not run these actions. `confirm` itself runs the NEO create pipeline through
 `BatchService.executeInCallerTransaction` (the same operations, gates and hooks as `/batch`, without its

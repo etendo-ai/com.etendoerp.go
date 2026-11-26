@@ -55,6 +55,8 @@ final class InboxFakeLookups implements OcrLookups {
 
   final List<String> taxIdSearches = new ArrayList<>();
   final List<String> nameSearches = new ArrayList<>();
+  /** The row limit each name search was made with, one entry per search. */
+  final List<Integer> nameSearchLimits = new ArrayList<>();
   final List<String> addressAsks = new ArrayList<>();
   final List<String> duplicateAsks = new ArrayList<>();
   final List<List<String>> productAsks = new ArrayList<>();
@@ -69,12 +71,21 @@ final class InboxFakeLookups implements OcrLookups {
   Optional<DocCurrency> currency = Optional.empty();
   /** The vendor ids the document currency was asked with, one entry per ask ({@code null} too). */
   final List<String> currencyAsks = new ArrayList<>();
+  /** Every (vendorId, organizationId) the two-argument default currency was asked with. */
+  final List<List<String>> currencyOrgAsks = new ArrayList<>();
   /** The unit each printed text resolves to (ETP-6051); a text not in the map resolves to none. */
   final Map<String, Party> unitsByPrinted = new HashMap<>();
   /** The tenant default unit, empty when none. */
   Optional<Party> defaultUom = Optional.empty();
   /** The tenant default product category, empty when none. */
   Optional<Party> defaultCategory = Optional.empty();
+  /** The active currency each printed ISO code resolves to (ETP-6051); a code not in the map is unknown. */
+  final Map<String, DocCurrency> currenciesByCode = new HashMap<>();
+  /** The currencies each printed symbol resolves to (ETP-6051); a symbol not in the map has none. */
+  final Map<String, List<DocCurrency>> currenciesBySymbolMap = new HashMap<>();
+  final List<String> codeAsks = new ArrayList<>();
+  final List<String> symbolAsks = new ArrayList<>();
+  final List<String> symbolOrganizations = new ArrayList<>();
   final List<String> printedUnitAsks = new ArrayList<>();
   final List<String> categoryOrganizations = new ArrayList<>();
   int defaultUomAsks;
@@ -82,6 +93,7 @@ final class InboxFakeLookups implements OcrLookups {
   @Override
   public List<Party> searchVendors(String name, int limit) {
     nameSearches.add(name);
+    nameSearchLimits.add(limit);
     return byName;
   }
 
@@ -143,6 +155,25 @@ final class InboxFakeLookups implements OcrLookups {
   public Optional<DocCurrency> documentCurrency(String vendorId) {
     currencyAsks.add(vendorId);
     return currency;
+  }
+
+  @Override
+  public Optional<DocCurrency> documentCurrency(String vendorId, String organizationId) {
+    currencyOrgAsks.add(java.util.Arrays.asList(vendorId, organizationId));
+    return documentCurrency(vendorId);
+  }
+
+  @Override
+  public Optional<DocCurrency> currencyByCode(String isoCode) {
+    codeAsks.add(isoCode);
+    return Optional.ofNullable(currenciesByCode.get(isoCode));
+  }
+
+  @Override
+  public List<DocCurrency> currenciesBySymbol(String symbol, String organizationId) {
+    symbolAsks.add(symbol);
+    symbolOrganizations.add(organizationId);
+    return currenciesBySymbolMap.getOrDefault(symbol, List.of());
   }
 
   @Override

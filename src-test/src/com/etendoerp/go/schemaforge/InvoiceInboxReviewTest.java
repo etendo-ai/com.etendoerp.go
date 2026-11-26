@@ -47,6 +47,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.openbravo.dal.core.OBContext;
+import org.openbravo.erpCommon.utility.OBCurrencyUtils;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
 import org.openbravo.model.ad.system.Client;
 import org.openbravo.model.ad.utility.Attachment;
@@ -717,7 +718,7 @@ class InvoiceInboxReviewTest {
   }
 
   @Test
-  void theDerivedCurrencyIsAskedWithTheLinkedVendorOnlyAndNothingIsWritten() throws Exception {
+  void theDefaultCurrencyIsAskedWithTheLinkedVendorOnlyAndNothingIsWritten() throws Exception {
     when(lookups.documentCurrency(any(), any())).thenReturn(Optional.empty());
 
     when(row.getCurrentData()).thenReturn(doc("{\"state\":\"linked\",\"id\":\"V1\"}", "[]"));
@@ -867,5 +868,213 @@ class InvoiceInboxReviewTest {
   void lookupsForAnUnknownOrMissingTargetTypeIsEmpty() {
     assertTrue(InvoiceInboxReview.lookupsFor(null).isEmpty());
     assertTrue(InvoiceInboxReview.lookupsFor("NOT_A_TARGET").isEmpty());
+  }
+
+  @Test
+  void theCurrencySourceIsPrintedManualOrDefault() throws Exception {
+    assertEquals("printed", sourceWith("{header:{currencySource:'printed'}}"));
+    assertEquals("manual", sourceWith("{header:{currencySource:'manual'}}"));
+    assertEquals("default", sourceWith("{header:{currencySource:'default'}}"));
+    assertEquals("default", sourceWith("{header:{}}"));
+    assertEquals("default", sourceWith("{}"));
+  }
+
+  private static String sourceWith(String document) throws Exception {
+    return InvoiceInboxReview.sourceOf(new JSONObject(document));
+  }
+
+  // ------------------------------------------------------------------ currency rate and source (ETP-6051)
+
+  /** A stored USD document, organization currency EUR, optional header extras. */
+  private JSONObject usdBlock(String headerExtra, java.math.BigDecimal rate, boolean rateThrows)
+      throws Exception {
+    Organization org = mock(Organization.class);
+    when(org.getId()).thenReturn("ORG-1");
+    when(row.getOrganization()).thenReturn(org);
+    when(row.getClient()).thenReturn(client);
+    when(client.getId()).thenReturn("CL-1");
+    when(lookups.currencyById("USD-ID")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("USD-ID", "USD", "$", 2)));
+    when(row.getCurrentData()).thenReturn("{\"version\":1,\"header\":{\"vendor\":{\"state\":"
+        + "\"none\"},\"currencyId\":\"USD-ID\"" + headerExtra + "},\"lines\":[]}");
+    try (MockedStatic<OBCurrencyUtils> utils = mockStatic(
+        OBCurrencyUtils.class);
+        MockedStatic<DocumentCurrencyRate> rates = mockStatic(DocumentCurrencyRate.class)) {
+      utils.when(() -> OBCurrencyUtils.getOrgCurrency("ORG-1"))
+          .thenReturn("EUR-ID");
+      if (rateThrows) {
+        rates.when(() -> DocumentCurrencyRate.lookupRate(any(), any(), any(), any(), any()))
+            .thenThrow(new IllegalStateException("boom"));
+      } else {
+        rates.when(() -> DocumentCurrencyRate.lookupRate(any(), any(), any(), any(), any()))
+            .thenReturn(rate);
+      }
+      return ok().getJSONObject("currency");
+    }
+  }
+
+  @Test
+  void aForeignCurrencyWithARangeAnswersItsRateOnTheInvoiceDate() throws Exception {
+    JSONObject block = usdBlock(",\"invoiceDate\":\"2026-11-02\"", new java.math.BigDecimal("1.08"),
+        false);
+
+    assertEquals(1.08, block.getDouble("rate"), 0.0);
+  }
+
+  @Test
+  void aForeignCurrencyWithNoRangeAnswersANullRate() throws Exception {
+    assertTrue(usdBlock(",\"invoiceDate\":\"2026-11-02\"", null, false).isNull("rate"));
+  }
+
+  @Test
+  void aMissingOrInvalidDateAnswersANullRateWithoutFailingTheCall() throws Exception {
+    assertTrue(usdBlock("", new java.math.BigDecimal("1.08"), false).isNull("rate"));
+    assertTrue(usdBlock(",\"invoiceDate\":\"not a date\"", new java.math.BigDecimal("1.08"), false)
+        .isNull("rate"));
+  }
+
+  @Test
+  void aFailingRateLookupAnswersANullRate() throws Exception {
+    assertTrue(usdBlock(",\"invoiceDate\":\"2026-11-02\"", null, true).isNull("rate"));
+  }
+
+  @Test
+  void theOrganizationCurrencyHasARateOfOne() throws Exception {
+    Organization org = mock(Organization.class);
+    when(org.getId()).thenReturn("ORG-1");
+    when(row.getOrganization()).thenReturn(org);
+    when(lookups.currencyById("EUR-ID")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("EUR-ID", "EUR", "E", 2)));
+    when(row.getCurrentData()).thenReturn("{\"version\":1,\"header\":{\"vendor\":{\"state\":"
+        + "\"none\"},\"currencyId\":\"EUR-ID\"},\"lines\":[]}");
+    try (MockedStatic<OBCurrencyUtils> utils = mockStatic(
+        OBCurrencyUtils.class)) {
+      utils.when(() -> OBCurrencyUtils.getOrgCurrency("ORG-1"))
+          .thenReturn("EUR-ID");
+
+      assertEquals(1, ok().getJSONObject("currency").getInt("rate"));
+    }
+  }
+
+  @Test
+  void theCurrencyBlockCarriesTheSourceOfTheStoredCurrency() throws Exception {
+    assertEquals("printed", usdBlock(",\"currencySource\":\"printed\"", null, false)
+        .getString("source"));
+    assertEquals("manual", usdBlock(",\"currencySource\":\"manual\"", null, false)
+        .getString("source"));
+    assertEquals("default", usdBlock(",\"currencySource\":\"default\"", null, false)
+        .getString("source"));
+    assertEquals("default", usdBlock("", null, false).getString("source"), "legacy document");
+  }
+
+  @Test
+  void theOrganizationFallbackCurrencyIsAtRateOneAndDefault() throws Exception {
+    Organization org = mock(Organization.class);
+    Currency eur = currency("EUR-ID", "EUR", "E");
+    when(org.getCurrency()).thenReturn(eur);
+    when(row.getOrganization()).thenReturn(org);
+
+    JSONObject block = ok().getJSONObject("currency");
+
+    assertEquals(1, block.getInt("rate"));
+    assertEquals("default", block.getString("source"));
+  }
+
+  @Test
+  void noCurrencyAnywhereAnswersANullRate() throws Exception {
+    assertTrue(ok().getJSONObject("currency").isNull("rate"));
+  }
+
+  // ------------------------------------------------------------------ pricing block (ETP-6051)
+
+  /** The review of a stored document of vendor {@code V1} (linked) or none, EUR the org currency. */
+  private JSONObject pricingBlock(String vendorJson, String currencyId, String invoiceDate,
+      java.math.BigDecimal rate) throws Exception {
+    Organization organization = mock(Organization.class);
+    when(organization.getId()).thenReturn("ORG-1");
+    when(row.getOrganization()).thenReturn(organization);
+    when(row.getClient()).thenReturn(client);
+    when(client.getId()).thenReturn("CL-1");
+    when(lookups.currencyById("USD-ID")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("USD-ID", "USD", "$", 2)));
+    when(lookups.currencyById("EUR-ID")).thenReturn(Optional.of(
+        new OcrLookups.DocCurrency("EUR-ID", "EUR", "E", 2)));
+    when(row.getCurrentData()).thenReturn("{\"version\":1,\"header\":{\"vendor\":" + vendorJson
+        + ",\"currencyId\":\"" + currencyId + "\",\"invoiceDate\":\"" + invoiceDate
+        + "\"},\"lines\":[]}");
+    org.openbravo.dal.service.OBDal dal = mock(org.openbravo.dal.service.OBDal.class);
+    Currency eur = currency("EUR-ID", "EUR", "E");
+    when(dal.get(Currency.class, "EUR-ID")).thenReturn(eur);
+    try (MockedStatic<org.openbravo.dal.service.OBDal> dalStatic = mockStatic(
+        org.openbravo.dal.service.OBDal.class);
+        MockedStatic<OBCurrencyUtils> utils = mockStatic(OBCurrencyUtils.class);
+        MockedStatic<DocumentCurrencyRate> rates = mockStatic(DocumentCurrencyRate.class)) {
+      dalStatic.when(org.openbravo.dal.service.OBDal::getInstance).thenReturn(dal);
+      utils.when(() -> OBCurrencyUtils.getOrgCurrency("ORG-1")).thenReturn("EUR-ID");
+      rates.when(() -> DocumentCurrencyRate.lookupRate(any(), any(), any(), any(), any()))
+          .thenReturn(rate);
+      return ok().getJSONObject("pricing");
+    }
+  }
+
+  @Test
+  void thePricingBlockCarriesTheDocumentListTheOrgCurrencyAndARateOfOneForIt() throws Exception {
+    when(lookups.documentPriceList("V1")).thenReturn(Optional.of(
+        new OcrLookups.PurchasePriceList("PL-V1", false)));
+
+    JSONObject pricing = pricingBlock("{\"state\":\"linked\",\"id\":\"V1\"}", "EUR-ID",
+        "2026-11-02", null);
+
+    assertEquals("PL-V1", pricing.getString("priceListId"));
+    assertEquals("EUR-ID", pricing.getString("orgCurrencyId"));
+    assertEquals("EUR", pricing.getString("orgCurrencyIsoCode"));
+    assertEquals(1, pricing.getInt("rate"));
+  }
+
+  @Test
+  void aNewOrUnlinkedVendorAsksTheListWithNoVendorAndAForeignCurrencyTakesTheDateRate()
+      throws Exception {
+    when(lookups.documentPriceList(null)).thenReturn(Optional.of(
+        new OcrLookups.PurchasePriceList("PL-DEFAULT", false)));
+
+    JSONObject pricing = pricingBlock("{\"state\":\"new\",\"id\":\"IGNORED\"}", "USD-ID",
+        "2026-11-02", new java.math.BigDecimal("1.08"));
+
+    assertEquals("PL-DEFAULT", pricing.getString("priceListId"));
+    assertEquals(1.08, pricing.getDouble("rate"), 0.0);
+    org.mockito.Mockito.verify(lookups, org.mockito.Mockito.never()).documentPriceList("IGNORED");
+  }
+
+  @Test
+  void withNoListAndNoValidRateThePricingBlockAnswersNulls() throws Exception {
+    JSONObject pricing = pricingBlock("{\"state\":\"none\"}", "USD-ID", "2026-11-02", null);
+
+    assertTrue(pricing.isNull("priceListId"));
+    assertTrue(pricing.isNull("rate"));
+    assertEquals("EUR", pricing.getString("orgCurrencyIsoCode"));
+  }
+
+  @Test
+  void withoutAnOrganizationCurrencyThePricingBlockHasNullCurrenciesButStillTheList()
+      throws Exception {
+    when(lookups.documentPriceList(null)).thenReturn(Optional.of(
+        new OcrLookups.PurchasePriceList("PL-DEFAULT", false)));
+
+    JSONObject block = ok().getJSONObject("pricing");
+
+    assertEquals("PL-DEFAULT", block.getString("priceListId"));
+    assertTrue(block.isNull("orgCurrencyId"));
+    assertTrue(block.isNull("orgCurrencyIsoCode"));
+    assertTrue(block.isNull("rate"));
+  }
+
+  @Test
+  void aFailingListLookupNeverFailsTheReviewAndAnswersNulls() throws Exception {
+    when(lookups.documentPriceList(null)).thenThrow(new IllegalStateException("boom"));
+
+    JSONObject block = ok().getJSONObject("pricing");
+
+    assertTrue(block.isNull("priceListId"));
+    assertTrue(block.isNull("orgCurrencyId"));
   }
 }
