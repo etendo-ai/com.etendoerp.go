@@ -36,8 +36,10 @@ import java.sql.ResultSet;
 
 import javax.servlet.http.HttpServletResponse;
 
+import org.hibernate.Session;
 import org.junit.After;
 import org.junit.Test;
+import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.openbravo.advpaymentmngt.ProcessInvoiceUtil;
@@ -58,6 +60,8 @@ import org.openbravo.model.ad.ui.Process;
  * there they assert the <em>delegation</em> from the handler — they are not duplicates.
  *
  * <p>Everything is exercised with {@link MockedStatic}: no CDI container, no database.
+ *
+ * @covers com.etendoerp.go.schemaforge.InvoiceCompletionService
  */
 public class InvoiceCompletionServiceTest {
 
@@ -80,6 +84,17 @@ public class InvoiceCompletionServiceTest {
     result.setTitle("Error");
     result.setMessage(message);
     return result;
+  }
+
+  /**
+   * An {@link OBDal} mock with a session: the completion flushes and clears it before running the
+   * process (ETP-6414). Stubbed outside any {@code thenReturn(...)} so it is never nested stubbing.
+   */
+  private static OBDal mockDal() {
+    OBDal dal = mock(OBDal.class);
+    Session session = mock(Session.class);
+    when(dal.getSession()).thenReturn(session);
+    return dal;
   }
 
   /**
@@ -132,7 +147,7 @@ public class InvoiceCompletionServiceTest {
       weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
           .thenReturn(processInvoiceUtil);
 
-      OBDal dal = mock(OBDal.class);
+      OBDal dal = mockDal();
       dalMock.when(OBDal::getInstance).thenReturn(dal);
       when(dal.get(Process.class, PROCESS_ID_COMPLETE_INVOICE)).thenReturn(mock(Process.class));
 
@@ -166,7 +181,7 @@ public class InvoiceCompletionServiceTest {
       weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
           .thenReturn(processInvoiceUtil);
 
-      OBDal dal = mock(OBDal.class);
+      OBDal dal = mockDal();
       dalMock.when(OBDal::getInstance).thenReturn(dal);
       when(dal.get(Process.class, PROCESS_ID_COMPLETE_INVOICE)).thenReturn(mock(Process.class));
 
@@ -212,7 +227,7 @@ public class InvoiceCompletionServiceTest {
           .recognizeMessageKeys(eq("El Periodo no existe o no está abierto"), any()))
           .thenReturn(java.util.List.of("PeriodNotAvailable"));
 
-      OBDal dal = mock(OBDal.class);
+      OBDal dal = mockDal();
       dalMock.when(OBDal::getInstance).thenReturn(dal);
       when(dal.get(Process.class, PROCESS_ID_COMPLETE_INVOICE)).thenReturn(mock(Process.class));
 
@@ -242,7 +257,7 @@ public class InvoiceCompletionServiceTest {
       weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
           .thenReturn(processInvoiceUtil);
 
-      OBDal dal = mock(OBDal.class);
+      OBDal dal = mockDal();
       dalMock.when(OBDal::getInstance).thenReturn(dal);
       when(dal.get(Process.class, PROCESS_ID_COMPLETE_INVOICE)).thenReturn(null);
 
@@ -272,6 +287,48 @@ public class InvoiceCompletionServiceTest {
     }
   }
 
+  /**
+   * The creation flows flush line changes whose triggers rewrite {@code C_InvoiceTax}, leaving a
+   * stale {@code InvoiceTax} in the session; the process then failed on it ("No row with the given
+   * identifier exists") and rolled the creation back. The session must be flushed and cleared
+   * before anything else touches the invoice (the Verifactu native UPDATE included) and before the
+   * process runs.
+   */
+  @Test
+  public void completeInvoiceOrThrow_flushesAndClearsSessionBeforeTheProcess() {
+    RectificativeSupport.setColumnPresentForTests(false);
+    ProcessInvoiceUtil processInvoiceUtil = mock(ProcessInvoiceUtil.class);
+    when(processInvoiceUtil.process(
+        eq("inv-stale-tax"), eq("CO"), eq(""), eq(""), eq(""), any(), any()))
+        .thenReturn(successResult("Document completed"));
+    Session session = mock(Session.class);
+    Connection conn = mock(Connection.class);
+
+    try (MockedStatic<NeoDefaultsService> defaultsMock = Mockito.mockStatic(NeoDefaultsService.class);
+        MockedStatic<WeldUtils> weldMock = Mockito.mockStatic(WeldUtils.class);
+        MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class)) {
+
+      defaultsMock.when(() -> NeoDefaultsService.buildVariablesSecureApp(any()))
+          .thenReturn(new VariablesSecureApp("u", "c", "o", "r", "en_US"));
+      weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
+          .thenReturn(processInvoiceUtil);
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      when(dal.getSession()).thenReturn(session);
+      when(dal.getConnection()).thenReturn(conn);
+      when(dal.get(Process.class, PROCESS_ID_COMPLETE_INVOICE)).thenReturn(mock(Process.class));
+
+      InvoiceCompletionService.completeInvoiceOrThrow("inv-stale-tax", null);
+
+      InOrder order = Mockito.inOrder(dal, session, processInvoiceUtil);
+      order.verify(dal).flush();
+      order.verify(session).clear();
+      order.verify(dal).getConnection();
+      order.verify(processInvoiceUtil).process(
+          eq("inv-stale-tax"), eq("CO"), eq(""), eq(""), eq(""), any(), any());
+    }
+  }
+
   // ── completeInvoiceOrThrow ───────────────────────────────────────────────────
 
   /**
@@ -296,7 +353,7 @@ public class InvoiceCompletionServiceTest {
       weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
           .thenReturn(processInvoiceUtil);
 
-      OBDal dal = mock(OBDal.class);
+      OBDal dal = mockDal();
       dalMock.when(OBDal::getInstance).thenReturn(dal);
       when(dal.get(Process.class, PROCESS_ID_COMPLETE_INVOICE)).thenReturn(mock(Process.class));
 
@@ -353,7 +410,7 @@ public class InvoiceCompletionServiceTest {
       weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
           .thenReturn(processInvoiceUtil);
 
-      OBDal dal = mock(OBDal.class);
+      OBDal dal = mockDal();
       dalMock.when(OBDal::getInstance).thenReturn(dal);
       when(dal.get(Process.class, PROCESS_ID_COMPLETE_INVOICE)).thenReturn(mock(Process.class));
 
@@ -399,8 +456,7 @@ public class InvoiceCompletionServiceTest {
             sql -> sql != null && sql.contains("em_etsg_isrectificative"))))
         .thenReturn(rectifPs);
 
-    // The main UPDATE — executeUpdate() returns 0 so the post-update cache-eviction branch
-    // (which would need OBDal.getInstance().getSession()) is never reached.
+    // The main UPDATE — only the SQL text matters here; executeUpdate() returns 0.
     PreparedStatement updatePs = mock(PreparedStatement.class);
     when(updatePs.executeUpdate()).thenReturn(0);
     when(conn.prepareStatement(argThat(sql -> sql != null && sql.startsWith("UPDATE c_invoice"))))
@@ -528,7 +584,7 @@ public class InvoiceCompletionServiceTest {
           .thenReturn(new VariablesSecureApp("u", "c", "o", "r", "en_US"));
       weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
           .thenReturn(processInvoiceUtil);
-      OBDal dal = mock(OBDal.class);
+      OBDal dal = mockDal();
       dalMock.when(OBDal::getInstance).thenReturn(dal);
 
       NeoResponse result = InvoiceCompletionService.completeInvoice("inv-quota", null);
@@ -554,7 +610,8 @@ public class InvoiceCompletionServiceTest {
           .thenReturn(new VariablesSecureApp("u", "c", "o", "r", "en_US"));
       weldMock.when(() -> WeldUtils.getInstanceFromStaticBeanManager(ProcessInvoiceUtil.class))
           .thenReturn(processInvoiceUtil);
-      dalMock.when(OBDal::getInstance).thenReturn(mock(OBDal.class));
+      OBDal dal = mockDal();
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
 
       try {
         InvoiceCompletionService.completeInvoiceOrThrow("inv-quota-throw", null);

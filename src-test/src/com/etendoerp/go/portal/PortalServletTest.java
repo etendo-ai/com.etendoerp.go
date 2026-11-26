@@ -573,7 +573,8 @@ public class PortalServletTest {
     try (MockedStatic<PortalDocumentsEndpoint> endpoint =
         mockStatic(PortalDocumentsEndpoint.class)) {
       JSONObject found = new JSONObject().put("documents", new org.codehaus.jettison.json
-          .JSONArray());
+          .JSONArray()).put("groups", new org.codehaus.jettison.json.JSONArray()
+              .put(new JSONObject().put("kind", "INVOICE").put("count", 12)));
       endpoint.when(() -> PortalDocumentsEndpoint.search(any(), any())).thenReturn(found);
       HttpServletRequest request = request("GET", "/search");
       when(request.getParameter("q")).thenReturn("F-001");
@@ -586,6 +587,10 @@ public class PortalServletTest {
       endpoint.verify(() -> PortalDocumentsEndpoint.search(scope.capture(), eq("F-001")));
       assertEquals(CLIENT_ID, scope.getValue().getClientId());
       assertEquals(BP_ID, scope.getValue().getBusinessPartnerId());
+      JSONObject sent = new JSONObject(call.body.toString());
+      assertEquals("the per-kind groups travel as built", 12,
+          sent.getJSONArray("groups").getJSONObject(0).getInt("count"));
+      assertTrue(sent.has("documents"));
     }
   }
 

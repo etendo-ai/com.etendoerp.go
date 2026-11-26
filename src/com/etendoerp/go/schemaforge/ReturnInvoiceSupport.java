@@ -120,6 +120,11 @@ final class ReturnInvoiceSupport {
    * so there is no stale tax entity for a cascade refresh to resurrect as an INSERT. Keep it that
    * way — do not read {@code invoice.getInvoiceTaxList()} before the refresh.
    *
+   * <p>That holds for the refresh, not for the completion: the line changes flushed AFTER it
+   * rewrite {@code C_InvoiceTax} again, and the completion failed in production on a tax the
+   * session still held (ETP-6414). {@code InvoiceCompletionService} now clears the session before
+   * completing, so this flow needs no clear of its own.
+   *
    * @param originInvoiceIds ids of the invoices being rectified; must not be empty
    */
   static NeoResponse finalizeReturnInvoice(Invoice invoice, List<ShipmentInOutLine> lines,

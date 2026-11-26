@@ -59,7 +59,7 @@ import com.smf.securewebservices.utils.SecureWebServicesUtils;
  * {@code OBContext}-mocking convention (a shared {@link MockedStatic} for {@link OBContext},
  * opened in {@code @BeforeEach} / closed in {@code @AfterEach}), and additionally mocks {@link
  * OBDal} and {@link SecureWebServicesUtils} statically per test the way {@code
- * EtendoGoJwtServletCoverageTest} does for the exact same {@code
+ * EtendoGoJwtServletLoginTest} does for the exact same {@code
  * SecureWebServicesUtils#generateToken(User, Role)} overload.
  *
  * <p>One deviation from {@code SFPromoteUserRoleTest}: this webhook has no access gate and no

@@ -39,6 +39,7 @@ import static org.mockito.Mockito.when;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.ZoneId;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
@@ -714,18 +715,45 @@ public class PortalDocumentsEndpointTest {
   }
 
   @Test
-  public void searchListsTheMatchesOfEveryKindAsRows() throws Exception {
+  public void searchListsTheMatchesOfEveryKindAsRowsAndGroupsThemByKind() throws Exception {
     Invoice invoice = invoice("INV-5", null, null, null);
+    Invoice olderInvoice = invoice("INV-4", null, null, null);
     Order order = order("ORD-5", "SO");
-    query.when(() -> PortalDocumentQuery.search(SESSION, "F-5", 8))
-        .thenReturn(Arrays.<BaseOBObject>asList(invoice, order));
+    PortalDocumentQuery.SearchResult result = new PortalDocumentQuery.SearchResult(
+        Arrays.<BaseOBObject>asList(invoice, order), Arrays.asList(
+            new PortalDocumentQuery.KindMatches(PortalDocumentKind.ORDER, 1L,
+                Collections.<BaseOBObject>singletonList(order)),
+            new PortalDocumentQuery.KindMatches(PortalDocumentKind.INVOICE, 37L,
+                Arrays.<BaseOBObject>asList(invoice, olderInvoice))));
+    query.when(() -> PortalDocumentQuery.search(SESSION, "F-5", 8, 5)).thenReturn(result);
 
-    JSONArray documents = PortalDocumentsEndpoint.search(SESSION, "F-5")
-        .getJSONArray("documents");
+    JSONObject body = PortalDocumentsEndpoint.search(SESSION, "F-5");
 
+    JSONArray documents = body.getJSONArray("documents");
     assertEquals(2, documents.length());
     assertEquals("INVOICE", documents.getJSONObject(0).getString("kind"));
     assertEquals("ORDER", documents.getJSONObject(1).getString("kind"));
+    JSONArray groups = body.getJSONArray("groups");
+    // Columns: kind, count, row ids.
+    Object[][] expected = { { "ORDER", 1L, Collections.singletonList("ORD-5") },
+        { "INVOICE", 37L, Arrays.asList("INV-5", "INV-4") } };
+    assertEquals(expected.length, groups.length());
+    for (int i = 0; i < expected.length; i++) {
+      JSONObject group = groups.getJSONObject(i);
+      assertEquals(expected[i][0], group.getString("kind"));
+      assertEquals("count is the kind's total, not its rows", expected[i][1],
+          group.getLong("count"));
+      JSONArray rows = group.getJSONArray("documents");
+      List<String> ids = new ArrayList<>();
+      for (int j = 0; j < rows.length(); j++) {
+        ids.add(rows.getJSONObject(j).getString("id"));
+      }
+      assertEquals(expected[i][2], ids);
+    }
+    // One schedule query covers the invoice only a group shows (INV-4) too.
+    query.verify(() -> PortalDocumentQuery.invoiceSchedules(
+        argThat(ids -> ids.size() == 2 && ids.containsAll(Arrays.asList("INV-5", "INV-4"))),
+        any()), times(1));
   }
 
   @Test

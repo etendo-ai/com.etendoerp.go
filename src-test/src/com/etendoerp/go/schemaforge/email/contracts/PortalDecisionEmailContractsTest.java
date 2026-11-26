@@ -68,6 +68,7 @@ import com.etendoerp.go.schemaforge.email.EmailProviderRequest;
 import com.etendoerp.go.schemaforge.email.EmailRecipientResolution;
 import com.etendoerp.go.schemaforge.email.EmailRecipientSet;
 import com.etendoerp.go.schemaforge.email.EmailSendContext;
+import com.etendoerp.go.schemaforge.email.render.EmailFooter;
 
 /**
  * Unit tests for the two emails of a portal quotation decision: the confirmation the customer
@@ -280,7 +281,7 @@ public class PortalDecisionEmailContractsTest {
     assertTrue(body, body.contains(">2.450,00\u00A0€<"));
     assertFalse(body, body.contains(">Motivo<"));
     // The «Creado con etendo.ai» footer closes the card, its link tagged as the acceptance's.
-    assertTrue(body, body.contains("Creado con&nbsp;<a "));
+    assertTrue(body, body.contains("Creado con&nbsp;<img src=\"" + EmailFooter.LOGO_URL + "\""));
     assertTrue(body, body.contains("utm_content=mail_aceptacion"));
   }
 
