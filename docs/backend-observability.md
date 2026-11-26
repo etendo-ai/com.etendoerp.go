@@ -112,7 +112,8 @@ user `0`) or no session means no identity: events from a scheduler or an anonymo
 without the ids.
 
 Emitters that send from a background thread (`BankBounceKpiTelemetry`, `ContactTypeTelemetry`,
-`AccountingKpiTelemetry`, `GoodsShipmentTelemetry`, `InvoiceInboxTelemetry`, `PortalKpiTelemetry`)
+`AccountingKpiTelemetry`, `GoodsShipmentTelemetry`, `InvoiceInboxTelemetry`, `PortalKpiTelemetry`,
+`RemittanceFileTelemetry`)
 capture the identity on the calling thread through the service (`NeoTelemetryService.captureIdentity`,
 so it uses the service's own resolver) and hand it to the sender (`NeoTelemetryIdentity.runWith`);
 `McpSessionManager.executeInContext` captures it for the call's client and user on the request
@@ -174,7 +175,7 @@ Allowed boolean keys (a non-boolean value is dropped):
 - `critical`
 - `flag_enabled`
 - `is_customer`
-- `is_regeneration` (ETP-6247)
+- `is_regeneration` (ETP-6247; no longer sent since the SEPA file is not stored, still allowed)
 - `is_vendor`
 - `previous_is_customer`
 - `preselected` (ETP-5581)
@@ -633,23 +634,25 @@ Example (`backend_bank_bounce_pair_decided` as submitted to Mixpanel):
 
 ## Remittance SEPA File KPIs (ETP-6247)
 
-`backend_remittance_file_generated` — a remittance's SEPA file was generated and stored, by
-«Confirmar» (`confirm`) or «Regenerar fichero» (`generateFile`). Emitted by
+`backend_remittance_file_generated` — a remittance's SEPA file was downloaded («Descargar fichero»,
+`downloadFile`). The file is generated on every download and never stored, so the event counts
+downloads; «Confirmar» (`confirm`) only checks the file and emits nothing. Emitted by
 `RemittanceFileTelemetry`, only with `sepa-remittances` on, through `NeoBatchScope.runAfterCommit`,
-on one bounded background thread. Outside a batch (the SPA and a single MCP call) the event is
-handed off **as soon as the action succeeds, before the request's own commit** — the same as the
-bounce-pair KPIs —, so a commit that failed afterwards would still have emitted it; inside a batch it
-waits for the batch commit and is dropped on rollback. A refused action (any 4xx/5xx) emits nothing.
+on one bounded background thread. The event is handed off **as soon as the action succeeds,
+before the request's own commit** — the same as the bounce-pair KPIs —, so a commit that failed
+afterwards would still have emitted it. A download is refused inside a batch (422
+`ETGO_RemittanceFileDownloadInBatch`), so it always emits right after the action. A refused action
+(any 4xx/5xx) emits nothing.
 
 | Property | Value |
 |---|---|
 | `account_id` | the tenant (`AD_Client_ID`) |
 | `direction` | `AR` (collection, CORE) or `AP` (payment, SCT) |
 | `invoice_count` | distinct invoices of the remittance's active lines |
-| `is_regeneration` | `false` for `confirm`, `true` for `generateFile` |
 | `channel` | `ui` or `mcp` (`NeoWriteChannel`, as the bounce KPIs) |
 | `flag_enabled` | always `true` |
 | `role_groups` | list, see *Payload Safety*; omitted when no role can be read |
+| `ad_user_id`, `ad_client_id`, `etgo_account_id`, `tenant_type` | the common identity (see *Common identity on every event*), captured on the request thread before the send is handed to the sender thread; the remittance KPI counts distinct `ad_user_id` |
 
 No record id, document number, amount or name.
 

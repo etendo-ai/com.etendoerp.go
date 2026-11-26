@@ -17,6 +17,10 @@
         <default><![CDATA[N]]></default>
         <onCreateDefault/>
       </column>
+      <column name="EM_ETGO_REMITTED_AMT" primaryKey="false" required="false" type="DECIMAL" autoIncrement="false">
+        <default><![CDATA[0]]></default>
+        <onCreateDefault/>
+      </column>
       <index name="EM_ETGO_INVOICE_SOTRX_TOTAL" unique="false">
         <index-column name="ISSOTRX"/>
         <index-column name="GRANDTOTAL"/>

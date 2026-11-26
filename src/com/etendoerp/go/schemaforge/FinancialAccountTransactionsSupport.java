@@ -63,7 +63,8 @@ final class FinancialAccountTransactionsSupport {
    * transfer / create-payment). Centralizes the admin-mode + try/catch/finally boilerplate that was
    * previously duplicated in each handler: validates the body is present, runs the action under
    * admin mode, and on failure rolls back and maps the exception to a 400 (business) / 500
-   * (unexpected) response. {@code logContext} labels the log lines; {@code userError} is the safe
+   * (unexpected) response — or, for a {@link NeoRefusalException}, to the answer it carries.
+   * {@code logContext} labels the log lines; {@code userError} is the safe
    * message returned to the client on an unexpected error (never leaks internal details). The action
    * is a {@link Callable} so it may propagate the checked {@code JSONException} the DAL/JSON layer
    * throws; it should close over the already-validated body.
@@ -74,6 +75,12 @@ final class FinancialAccountTransactionsSupport {
     try {
       OBContext.setAdminMode(true);
       return action.call();
+    } catch (NeoRefusalException e) {
+      // A refusal that carries its own answer (status and extra keys), e.g. ETP-6247's 422
+      // ETGO_InvoiceInRemittance from AddPaymentService: rolled back like any business error.
+      log.warn("{} refused: {}", logContext, e.getMessage());
+      OBDal.getInstance().rollbackAndClose();
+      return e.getResponse();
     } catch (OBException e) {
       log.warn("{} business error: {}", logContext, e.getMessage());
       OBDal.getInstance().rollbackAndClose();

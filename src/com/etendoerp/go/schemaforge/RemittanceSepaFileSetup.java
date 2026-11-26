@@ -91,6 +91,10 @@ final class RemittanceSepaFileSetup {
 
   private static final Map<String, String> SCT = parameters(
       "Use_AT-02_toGenerateId", NO,
+      // A file-layout switch of the SCT generator (SEPAUtil.groupByDuedate): Y opens one PmtInf
+      // block per execution date, N (ours) one per instruction. It groups no payments: that is
+      // the remittance grouping (P / GGPD / GGP, RemittanceProcessAction), applied by REM before
+      // the file, whose instructions are already one per payment; unaffected by GGP (ETP-6247).
       "GroupBy_Duedate", NO,
       "Business_Code", "ZZZ",
       "DebtorIdentifier:Id+Business_Code", NO);
