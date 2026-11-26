@@ -79,8 +79,13 @@ unchanged, so the SPA needs no core release. (Deviation from the first plan, whi
 `featureAccess` map and a `useFeatureAccess` hook: that needed schema_forge_core changes in ten
 session-controller paths for no behavioural gain.) In schema_forge the page guards
 (`fiscal-models`, Fiscal Monitor, Smart Scan, Report viewer, not-posted documents) and the
-`menu.json` entries of the six features use the feature ids instead of the proxy/anchor window
-ids. The legacy anchor keys stay in the map, overlaid with the same tier, so an SPA build that still
+`menu.json` entries of Smart Scan, Financial Reports, Inventory Stock and Fiscal Monitor are gated
+on `accessFeature` (Fiscal Monitor also keeps its real SII Monitor `windowId`, which the roles
+matrix uses as identity, and a role granted through GO Access alone shows it without that window
+in its menu tree). Deviation: the `fiscal-models` and `not-posted-documents` entries keep their
+legacy `windowId`/`obuiappProcessId` as menu identity only (the roles matrix reads it);
+`SFListMenu` already resolves them through `GoFeatureAccess`, so the sidebar cannot disagree, and
+the six legacy ids therefore still appear in `tools/app-shell/src`. The legacy anchor keys stay in the map, overlaid with the same tier, so an SPA build that still
 reads them agrees. `SFListMenu` already resolves the six records through `GoFeatureAccess`. The
 schema_forge PR is merged in the same release as this one; the backend change is backward
 compatible, so deploying it first is safe.

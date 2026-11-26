@@ -55,6 +55,8 @@ import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
  * Covers tree building, search mode, resolveType/str helpers,
  * exception handling, edge cases, and role-based access filtering
  * (ETP-4511: menu filtered by AD_Window_Access / AD_Process_Access).
+ *
+ * @covers com.etendoerp.go.schemaforge.webhooks.SFListMenu
  */
 @MockitoSettings(strictness = Strictness.LENIENT)
 class SFListMenuTest {

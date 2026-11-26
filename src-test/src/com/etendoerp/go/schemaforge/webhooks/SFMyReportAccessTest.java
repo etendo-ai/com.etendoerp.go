@@ -55,6 +55,8 @@ import com.etendoerp.go.schemaforge.util.ReportAccessCatalog;
  * ReportAccessCatalog#ROWS} rows resolve to {@code full} with zero DB queries), a restricted role
  * with zero grants (empty map), a restricted role with exactly one grant (only that row appears),
  * and exception handling.
+ *
+ * @covers com.etendoerp.go.schemaforge.webhooks.SFMyReportAccess
  */
 @MockitoSettings(strictness = Strictness.LENIENT)
 class SFMyReportAccessTest {

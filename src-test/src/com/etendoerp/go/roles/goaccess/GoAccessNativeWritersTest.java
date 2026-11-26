@@ -25,6 +25,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Stream;
 
@@ -40,9 +41,20 @@ import org.junit.jupiter.api.Test;
  */
 class GoAccessNativeWritersTest {
 
-  private static final Pattern NATIVE_WRITE = Pattern.compile(
-      "(insert\\s+into|update|delete\\s+from)\\s+(ad_window_access|obuiapp_process_access)\\b",
-      Pattern.CASE_INSENSITIVE);
+  private static final Pattern CLASSIC_TABLE = Pattern.compile(
+      "ad_window_access|obuiapp_process_access", Pattern.CASE_INSENSITIVE);
+  /** A write keyword anywhere in the code, so SQL assembled from templates is caught too. */
+  private static final Pattern WRITE_KEYWORD = Pattern.compile(
+      "\\b(insert\\s+into|update\\s+[\"\\w]|delete\\s+from)", Pattern.CASE_INSENSITIVE);
+  private static final Pattern COMMENTS = Pattern.compile("/\\*.*?\\*/|//[^\\n]*",
+      Pattern.DOTALL);
+  /** An actual call, not an import or a mention in a comment. */
+  private static final Pattern MIRROR_CALL = Pattern.compile(
+      "GoAccessLegacyMirror\\s*\\.\\s*(snapshot|syncChanged|onClassicGrantChange)\\s*\\(");
+  /** Files that name a classic access table next to a write keyword but never write it. */
+  private static final Set<String> CONFIRMED_READ_ONLY = Set.of(
+      // the mirror itself: it only reads the classic tables and writes ETGO_GO_ACCESS
+      "src/com/etendoerp/go/roles/goaccess/GoAccessLegacyMirror.java");
 
   @Test
   void everyNativeWriterOfAClassicGrantGoesThroughTheMirror() throws IOException {
@@ -50,15 +62,19 @@ class GoAccessNativeWritersTest {
     List<String> offenders = new ArrayList<>();
     try (Stream<Path> files = Files.walk(root.resolve("src"))) {
       for (Path file : (Iterable<Path>) files.filter(f -> f.toString().endsWith(".java"))::iterator) {
-        String source = new String(Files.readAllBytes(file), StandardCharsets.UTF_8);
-        if (NATIVE_WRITE.matcher(source).find() && !source.contains("GoAccessLegacyMirror")) {
-          offenders.add(root.relativize(file).toString());
+        String source = COMMENTS.matcher(
+            new String(Files.readAllBytes(file), StandardCharsets.UTF_8)).replaceAll("");
+        String relative = root.relativize(file).toString();
+        if (CLASSIC_TABLE.matcher(source).find() && WRITE_KEYWORD.matcher(source).find()
+            && !MIRROR_CALL.matcher(source).find() && !CONFIRMED_READ_ONLY.contains(relative)) {
+          offenders.add(relative);
         }
       }
     }
     assertTrue(offenders.isEmpty(),
-        "native writers of AD_Window_Access / OBUIAPP_Process_Access that do not call "
-            + "GoAccessLegacyMirror: " + offenders);
+        "files that name AD_Window_Access / OBUIAPP_Process_Access next to a write keyword and do "
+            + "not call GoAccessLegacyMirror.snapshot/syncChanged/onClassicGrantChange (add them "
+            + "to CONFIRMED_READ_ONLY only when they never write the table): " + offenders);
   }
 
   private static Path moduleRoot() {

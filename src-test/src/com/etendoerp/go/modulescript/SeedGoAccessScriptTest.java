@@ -56,6 +56,8 @@ import com.etendoerp.go.schemaforge.util.GoFeature;
  * like {@code EnsureLegacyPlanScriptTest}: the literal feature and template tables must match
  * {@link GoFeature} and {@link SystemRoleTemplates}, and the statements must be idempotent and
  * never overwrite an administrator's row.
+ *
+ * @covers com.etendoerp.go.modulescript.SeedGoAccessScript
  */
 class SeedGoAccessScriptTest {
 

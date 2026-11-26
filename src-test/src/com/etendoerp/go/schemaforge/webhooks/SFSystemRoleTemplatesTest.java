@@ -65,6 +65,8 @@ import com.etendoerp.go.schemaforge.data.SFSpec;
  * Purchasing/Inventory ordering, graceful degradation when a template id no longer resolves to
  * an active role, the Etendo-GO-window intersection + tier resolution (same convention as
  * {@code SFRolesOverview}), and exception handling.</p>
+ *
+ * @covers com.etendoerp.go.schemaforge.webhooks.SFSystemRoleTemplates
  */
 @MockitoSettings(strictness = Strictness.LENIENT)
 class SFSystemRoleTemplatesTest extends BaseWebhookTest {
