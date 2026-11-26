@@ -65,7 +65,8 @@ public final class EmailLayout {
 
   /** Font stack of the ETP-6209 designs: the decision card and the Etendo footer. */
   static final String CARD_FONT_STACK = "Inter, Arial, Helvetica, sans-serif";
-  static final String FOOTER_MUTED_COLOR = "#6B7280";
+  /** The footer line's words and link (ETP-6209 QA: #6B7280 read too faint next to the logo). */
+  static final String FOOTER_TEXT_COLOR = "#4B5563";
   static final String WHITE = "#FFFFFF";
   static final String PRESENTATION_TABLE =
       "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\"";
@@ -271,24 +272,22 @@ public final class EmailLayout {
     // One anchor wraps the words and the logo, so either is the link: no button, no tracking pixel,
     // the link points straight at its target with no redirect. The logo carries its size both as
     // attributes (Outlook) and inline, and the brand as alt text for clients that block images.
-    // The words sit in an inline-block one logo high and both are vertical-align:middle on a line
-    // that high, so their centres line up: a bare text run next to a middle-aligned image sits on
-    // the baseline and reads lower than the logo (seen in Gmail, ETP-6209 QA).
+    // The logo is baseline-aligned: its wordmark's baseline is the image's bottom edge, so the words
+    // and the wordmark sit on one line. Centring (vertical-align:middle) read as the words dropping
+    // below the logo in Gmail (ETP-6209 QA); the words are 14px to match the wordmark's x-height.
     html.append(PRESENTATION_TABLE).append(" width=\"100%\" style=\"width:100%;\">")
         .append(CENTERED_ROW_OPEN).append(" class=\"sf-text\"").append(STYLE_FONT)
-        .append(CARD_FONT_STACK).append(";padding:24px 0 8px 0;font-size:12px;line-height:")
-        .append(EmailFooter.LOGO_HEIGHT).append("px;")
-        .append("font-weight:400;color:").append(FOOTER_MUTED_COLOR).append(";\">")
+        .append(CARD_FONT_STACK).append(";padding:24px 0 8px 0;font-size:14px;line-height:20px;")
+        .append("font-weight:400;color:").append(FOOTER_TEXT_COLOR).append(";\">")
         .append("<a href=\"").append(escape(footer.getUrl())).append("\" style=\"color:")
-        .append(FOOTER_MUTED_COLOR).append(";text-decoration:none;\">")
-        .append("<span style=\"display:inline-block;vertical-align:middle;line-height:")
-        .append(EmailFooter.LOGO_HEIGHT).append("px;font-size:12px;margin-right:4px;\">")
-        .append(escape(footer.getPrefix())).append("</span><img src=\"")
+        .append(FOOTER_TEXT_COLOR).append(";text-decoration:none;\">")
+        .append(escape(footer.getPrefix())).append("&nbsp;<img src=\"")
         .append(escape(footer.getLogoUrl())).append("\" width=\"").append(EmailFooter.LOGO_WIDTH)
         .append("\" height=\"").append(EmailFooter.LOGO_HEIGHT).append("\" alt=\"")
-        .append(escape(footer.getBrand())).append("\" style=\"display:inline-block;width:")
+        .append(escape(footer.getBrand())).append("\" style=\"width:")
         .append(EmailFooter.LOGO_WIDTH).append("px;height:").append(EmailFooter.LOGO_HEIGHT)
-        .append("px;border:0;vertical-align:middle;\"></a>").append(ROW_CLOSE).append(TABLE_CLOSE);
+        .append("px;border:0;vertical-align:baseline;\"></a>").append(ROW_CLOSE)
+        .append(TABLE_CLOSE);
   }
 
   private static String paragraphOpen() {

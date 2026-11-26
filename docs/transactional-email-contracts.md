@@ -410,13 +410,12 @@ The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-po
   (`EmailFooter.LOGO_URL` =
   `https://etendo.ai/wp-content/uploads/2026/11/etendoai-logo-email-200.png`, a 200×30 asset drawn
   at 100×15: `width`/`height` attributes for Outlook plus inline `width`/`height`, `border:0`,
-  `display:inline-block`, `vertical-align:middle`), `alt="etendo.ai"` so the brand still reads when
-  the client blocks remote images. The words sit in a `<span>` that is `display:inline-block`,
-  `vertical-align:middle`, `line-height:15px` (one logo high) with a 4px `margin-right`, on a cell
-  whose `line-height` is also 15px, so the centres of words and logo line up — bare text beside a
-  middle-aligned image sits on the baseline and reads lower in Gmail. Words and logo are **one**
-  anchor to the footer link below. No
-  button, no «Conoce más», no social, no privacy link (dropped from the spec). These emails have no
+  `vertical-align:baseline`), `alt="etendo.ai"` so the brand still reads when the client blocks
+  remote images. The words are 14px (`line-height:20px`) in `#4B5563` (`EmailLayout.FOOTER_TEXT_COLOR`),
+  separated from the logo by a `&nbsp;`. The logo is **baseline-aligned** because the wordmark's
+  baseline is the image's bottom edge, so words and wordmark sit on one line; `vertical-align:middle`
+  read as the words dropping below the logo in Gmail. Words and logo are **one** anchor to the
+  footer link below. No button, no «Conoce más», no social, no privacy link (dropped from the spec). These emails have no
   plain-text part, so there is no text variant of the footer.
 - **The footer logo is a marketing-owned asset** on etendo.ai (the WordPress uploads path above),
   not shipped with this module: if marketing moves or renames it, update `EmailFooter.LOGO_URL`,
