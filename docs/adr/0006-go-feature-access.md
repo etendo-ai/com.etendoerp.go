@@ -102,8 +102,8 @@ compatible, so deploying it first is safe.
   fallback" is **not met for tax-report**: the issue says it needs a functional decision on its grant
   source, and the human guidance says to keep the behaviour and mark it TODO. A follow-up issue
   (decide the grant source, declare it as a feature, close the fallback) has to be opened and linked
-  from the PR, because ETP-4802 will be closed; its key then replaces `TODO(ETP-4802)` in
-  `GoFeature`.
+  from the PR, because ETP-4802 will be closed; its key then goes in the
+  "Pending" comment of `GoFeature`.
 - Retiring the legacy fallback and the classic proxy/anchor grants after one release.
 - Identifier uniqueness validation in sf-validate-pipeline: the DB unique index covers role +
   feature; `GoFeature.ids()` is the single identifier list, checked against the list reference by a

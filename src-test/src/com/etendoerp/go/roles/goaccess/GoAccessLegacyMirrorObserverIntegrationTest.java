@@ -29,11 +29,11 @@ import org.openbravo.base.provider.OBProvider;
 import org.openbravo.base.weld.test.WeldBaseTest;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
-import org.openbravo.model.ad.access.ProcessAccess;
+import org.openbravo.client.application.Process;
+import org.openbravo.client.application.ProcessAccess;
 import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.WindowAccess;
 import org.openbravo.model.ad.system.Client;
-import org.openbravo.model.ad.ui.Process;
 import org.openbravo.model.ad.ui.Window;
 import org.openbravo.model.common.enterprise.Organization;
 
@@ -102,7 +102,7 @@ public class GoAccessLegacyMirrorObserverIntegrationTest extends WeldBaseTest {
     access.setOrganization(role.getOrganization());
     access.setActive(true);
     access.setRole(role);
-    access.setProcess(OBDal.getInstance().get(Process.class, PROCESS_ID));
+    access.setObuiappProcess(OBDal.getInstance().get(Process.class, PROCESS_ID));
     access.setEditableField(true);
     OBDal.getInstance().save(access);
     OBDal.getInstance().flush();
@@ -114,9 +114,29 @@ public class GoAccessLegacyMirrorObserverIntegrationTest extends WeldBaseTest {
   }
 
   private Role role() {
+    return role(true);
+  }
+
+  /**
+   * A role and its grant saved in one transaction with a single flush: the role is not in the
+   * database yet when the observer runs, so the mirror (which never flushes inside the event)
+   * cannot reference it. The classic grant is still written; the GO row is then settled by the
+   * next seed, and the legacy fallback of {@code GoFeatureAccess} decides until then.
+   */
+  @Test
+  public void aGrantSavedWithItsNewRoleBeforeAnyFlushStillPersists() {
+    Role role = role(false);
+    WindowAccess access = windowAccess(role, true);
+    OBDal.getInstance().flush();
+    OBDal.getInstance().refresh(access);
+    assertEquals(role.getId(), access.getRole().getId());
+    assertEquals(true, access.isActive());
+  }
+
+  private Role role(boolean flush) {
     Role role = OBProvider.getInstance().get(Role.class);
     role.setNewOBObject(true);
-    role.setClient(OBDal.getInstance().get(Client.class, "0"));
+    role.setClient(OBDal.getInstance().get(Client.class, OBContext.getOBContext().getCurrentClient().getId()));
     role.setOrganization(OBDal.getInstance().get(Organization.class, "0"));
     role.setActive(true);
     role.setName("GO Access mirror test " + System.nanoTime());
@@ -125,7 +145,9 @@ public class GoAccessLegacyMirrorObserverIntegrationTest extends WeldBaseTest {
     role.setTemplate(false);
     role.setClientAdmin(false);
     OBDal.getInstance().save(role);
-    OBDal.getInstance().flush();
+    if (flush) {
+      OBDal.getInstance().flush();
+    }
     return role;
   }
 
