@@ -212,7 +212,9 @@ final class BankBounceKpiTelemetry {
   /**
    * The detected pair a decision is about. With two lines: the pair whose bounce is one of them and
    * whose original, or one of whose candidates, is the other, in either order. With one line (a
-   * panel dismissal before an original is chosen): the first pair that touches it in any role.
+   * panel dismissal before an original is chosen): the pair whose bounce it is, and only when it is
+   * the bounce of none, the first pair that touches it as original or candidate. A line can be the
+   * bounce of one pair and a candidate of another; its own pair comes first whatever the order.
    *
    * @param detected the pairs detected for the action, may be {@code null}
    * @param lineId   one line of the pair
@@ -223,10 +225,32 @@ final class BankBounceKpiTelemetry {
     if (detected == null || StringUtils.isBlank(lineId)) {
       return null;
     }
+    if (otherId == null) {
+      Match own = bounceOf(detected, lineId);
+      if (own != null) {
+        return own;
+      }
+    }
     for (Pair p : detected) {
       Match match = otherId == null ? touching(p, lineId) : between(p, lineId, otherId);
       if (match != null) {
         return match;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The pair whose bounce is {@code lineId}.
+   *
+   * @param detected the pairs detected for the action
+   * @param lineId   the line
+   * @return the match, or {@code null} when the line is the bounce of no pair
+   */
+  private static Match bounceOf(List<Pair> detected, String lineId) {
+    for (Pair p : detected) {
+      if (p.bounce().id().equals(lineId)) {
+        return new Match(p, Proposal.of(p));
       }
     }
     return null;

@@ -85,6 +85,10 @@ import com.etendoerp.go.schemaforge.BankBounceDetector.StatementLine;
  * {@code BOUNCE_AI_SUGGESTION_STALE}, for a group that group alone while the others proceed. Any other
  * {@code choiceSource}, or none, changes nothing.
  *
+ * <p><b>"No es un rechazo".</b> {@code POST bank-reconciliation?action=dismissPair} discards
+ * nothing: it marks the pair's rejection line as not a rejection, and detection never proposes that
+ * line as one again; {@code restoreBounceSuggestion} clears the mark ({@link BankBounceDismissal}).
+ *
  * <p><b>Concurrency.</b> Once both lines are known to belong to the account, they are locked
  * {@code FOR UPDATE} in id order and re-read before their state is checked ({@link #lockLines}),
  * on every path that writes them (both discard paths and {@code restorePair}). <b>One read per
@@ -95,7 +99,10 @@ final class BankBouncePairService {
 
   static final String ACTION_DISCARD_PAIR = "discardPair";
   static final String ACTION_RESTORE_PAIR = "restorePair";
-  /** "No es un rebote" from the panel: KPI telemetry only, nothing is written (UI-only). */
+  /**
+   * "No es un rechazo" from the panel (UI-only): marks the pair's rejection line as not a rejection
+   * ({@link BankBounceDismissal}) and records the KPI decision.
+   */
   static final String ACTION_DISMISS_PAIR = "dismissPair";
 
   static final String KEY_COUNTERPART_LINE_ID = "counterpartLineId";
@@ -260,19 +267,23 @@ final class BankBouncePairService {
 
   /**
    * {@code POST dismissPair {financialAccountId, statementLineId, counterpartLineId?}}: the panel's
-   * "No es un rebote". <b>Writes nothing</b> — the rejection is not stored, so detection proposes
-   * the pair again next time — and exists only to record the decision for the bounce-pair KPI
-   * ({@link BankBounceKpiTelemetry#panelDismissed}). {@code statementLineId} is the line selected
-   * in the panel, in any role (bounce, original or candidate); {@code counterpartLineId} is the
-   * other line as the card shows it, omitted while no original of an ambiguous pair is chosen.
-   * Requires the flag (403 {@code BOUNCE_SUGGESTIONS_OFF}); the lines must belong to the account
-   * (400 / 404). A pair detection does not propose answers 200 too and records nothing. UI-only:
-   * not declared to agents ({@link ReconciliationAgentActions}), so the MCP refuses it.
+   * "No es un rechazo". Marks the rejection line of the pair as not a rejection, so detection never
+   * proposes it as one again ({@link BankBounceDismissal#dismiss}), and records the decision for
+   * the bounce-pair KPI ({@link BankBounceKpiTelemetry#panelDismissed}) unless it repeats one
+   * already stored. {@code statementLineId} is the line selected in the panel, in any role (bounce,
+   * original or candidate); {@code counterpartLineId} is the other line as the card shows it,
+   * omitted while no original of an ambiguous pair is chosen; the mark always goes on the pair's
+   * rejection line. Requires the flag (403 {@code BOUNCE_SUGGESTIONS_OFF}); the lines must belong
+   * to the account (400 / 404); a rejection line that left the pending pool meanwhile is refused
+   * (409 {@code LINE_NOT_PENDING}). A pair detection does not propose answers 200, marks nothing
+   * and records nothing. UI-only: not declared to agents ({@link ReconciliationAgentActions}), so
+   * the MCP refuses it.
    *
    * @param handler the reconciliation handler, for its DAL seams
    * @param body    the request body
-   * @return 200 with {@code {ok:true}}, or the refusal
-   * @throws Exception when the answer cannot be written
+   * @return 200 with {@code {ok:true, dismissedLineId, bounceDismissedAt}} (both {@code null}
+   *         when nothing is marked), or the refusal
+   * @throws Exception when the account data cannot be read or the answer cannot be written
    */
   static NeoResponse dismissPair(ReconciliationHandler handler, JSONObject body) throws Exception {
     if (!BankBounceSuggestionsFlag.isEnabled()) {
@@ -290,9 +301,16 @@ final class BankBouncePairService {
     if (invalid != null) {
       return invalid;
     }
-    BankBounceKpiTelemetry.panelDismissed(new Detection(handler, account, true), account, lineId,
-        counterpartId);
-    return ReconciliationSupport.envelope(new JSONObject().put("ok", true));
+    Detection detection = new Detection(handler, account, true);
+    BankBounceDismissal.Outcome outcome =
+        BankBounceDismissal.dismiss(handler, detection, lineId, counterpartId);
+    if (outcome.error() != null) {
+      return outcome.error();
+    }
+    if (outcome.report()) {
+      BankBounceKpiTelemetry.panelDismissed(detection, account, lineId, counterpartId);
+    }
+    return ReconciliationSupport.envelope(outcome.json());
   }
 
   /**
@@ -329,7 +347,7 @@ final class BankBouncePairService {
    * @param key  the key
    * @return the trimmed id, or {@code null}
    */
-  private static String optId(JSONObject body, String key) {
+  static String optId(JSONObject body, String key) {
     return body.isNull(key) ? null : StringUtils.trimToNull(body.optString(key, null));
   }
 
@@ -924,12 +942,16 @@ final class BankBouncePairService {
   }
 
   /**
-   * Discards both lines of a validated pair and links each to the other, then flushes.
+   * Discards both lines of a validated pair and links each to the other, then flushes. A rejection
+   * line the user had marked as not a rejection loses that mark ({@link BankBounceDismissal#clear}):
+   * discarding it as the rejection of a pair says the opposite. The mark of the original, if any,
+   * stays: being an original does not contradict it.
    *
    * @param pair the validated pair
    */
   static void discard(Validated pair) {
     Date now = new Date();
+    BankBounceDismissal.clear(pair.bounce());
     link(pair.original(), pair.bounce(), now, pair);
     link(pair.bounce(), pair.original(), now, pair);
     OBDal.getInstance().flush();
@@ -1019,7 +1041,7 @@ final class BankBouncePairService {
    * @param account the account of the call
    * @return the refusal, or {@code null}
    */
-  private static NeoResponse ownedLineError(FIN_BankStatementLine line, String lineId,
+  static NeoResponse ownedLineError(FIN_BankStatementLine line, String lineId,
       FIN_FinancialAccount account) {
     if (line == null) {
       return NeoResponse.error(HttpServletResponse.SC_NOT_FOUND,
@@ -1058,7 +1080,7 @@ final class BankBouncePairService {
    * @param body    the request body
    * @return the account, or {@code null}
    */
-  private static FIN_FinancialAccount requireAccount(ReconciliationHandler handler,
+  static FIN_FinancialAccount requireAccount(ReconciliationHandler handler,
       JSONObject body) {
     String accountId = body.optString(ReconciliationHandler.KEY_FINANCIAL_ACCOUNT_ID, null);
     return StringUtils.isBlank(accountId) ? null : handler.loadAccount(accountId);

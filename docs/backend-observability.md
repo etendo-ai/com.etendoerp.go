@@ -595,8 +595,11 @@ When it is emitted:
   detection sees the pair, and only `account_id`, `channel`, `flag_enabled`, `decision`, `surface`
   when it does not (e.g. a line reconciled meanwhile). A malformed request (400 / 404) emits
   nothing. `failed` never counts in the KPI.
-- **`dismissPair` (surface `panel`, UI only)**: `unchecked` — the panel's *No es un rebote*. Nothing
-  is written, so the pair is proposed again next time and each dismissal counts.
+- **`dismissPair` (surface `panel`, UI only)**: `unchecked` — the panel's *No es un rechazo*. The
+  rejection line is marked as not a rejection (`EM_ETGO_Bounce_Dismissed`), so the pair is not
+  proposed again; a repeated call on a pair already dismissed sends nothing, so each dismissal counts
+  once. Its undo (`restoreBounceSuggestion`) sends no event. Before the DAL maps the column the
+  call only records the decision, as it did before the mark existed.
 
 A pair discarded that detection did not propose (sent through the API or the MCP) still emits
 `discarded`, with the signals of its two lines, `review`, `preselected: false` and

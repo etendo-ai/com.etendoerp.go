@@ -995,7 +995,8 @@ accounts that should see the tool. The mcp-tests harness needs it on for a targe
 > `ReconciliationHandler.buildAutoMatch` and `buildPendingLines` (bounce pairs, the `bounce` state),
 > `ReconciliationHandler.applySuggestions` (`bouncePair` groups, and the KPI events through the
 > detection it hands to `BankBounceKpiTelemetry.ModalDecisions`),
-> `BankBouncePairService.discardPair`, `restorePair` and `dismissPair` (KPI-only, writes nothing),
+> `BankBouncePairService.discardPair`, `restorePair` and `dismissPair` (marks the rejection line
+> "No es un rechazo", `BankBounceDismissal`), `BankBounceDismissal.restoreSuggestion` (its undo),
 > every caller of `StatementLineFilter`
 > (whether discarded lines are honoured at all) and `BankStatementsHandler.loadStatements`.
 > Contract: `docs/neo-headless.md` §4.12.1.1, *Discarded lines and bounce pairs*.

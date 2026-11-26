@@ -45,6 +45,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.sql.Timestamp;
 import java.math.BigDecimal;
 import java.time.Clock;
 import java.time.Duration;
@@ -76,6 +77,9 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
 import org.mockito.InOrder;
@@ -121,7 +125,14 @@ import com.google.common.base.Ticker;
  * runs for real over stubbed queries (PSD2 payments, open movements), so the roles, the signal and
  * the payment guard are the production ones.
  *
+ * <p>"No es un rechazo" ({@code dismissPair}, {@code restoreBounceSuggestion}): the
+ * {@code EM_ETGO_Bounce_Dismissed} column is NOT mapped by default, so the cases that predate it
+ * pin the fallback (nothing marked, the KPI decision only); the cases of the mark map it first
+ * ({@link #mapDismissColumn}), as a regenerated DAL does.
+ *
  * @covers com.etendoerp.go.schemaforge.BankBouncePairService
+ * @covers com.etendoerp.go.schemaforge.BankBounceDismissal
+ * @covers com.etendoerp.go.schemaforge.BankBounceSuggestions
  * @covers com.etendoerp.go.schemaforge.StatementLineDiscard
  * @covers com.etendoerp.go.schemaforge.BankBounceErrors
  * @covers com.etendoerp.go.schemaforge.BankBounceKpiTelemetry
@@ -1216,7 +1227,11 @@ class BankBouncePairServiceTest {
       verify(telemetry, after(300).never()).emit(anyString(), anyMap(), any());
     }
 
-    /** "No es un rebote" writes nothing and emits unchecked; flag off and unknown pairs emit none. */
+    /**
+     * "No es un rechazo" with {@code EM_ETGO_Bounce_Dismissed} not mapped yet (the fallback): it
+     * writes nothing, locks nothing, answers no mark and emits unchecked; flag off and unknown pairs
+     * emit none.
+     */
     @Test
     @DisplayName("dismissPair writes nothing, emits unchecked from any role, 403 with the flag off")
     void dismissPair() throws Exception {
@@ -1230,6 +1245,10 @@ class BankBouncePairServiceTest {
           new JSONObject().put("financialAccountId", ACCOUNT_ID).put("statementLineId", bounce.id));
       assertEquals(200, response.getHttpStatus());
       assertTrue(data(response).getBoolean("ok"));
+      assertTrue(data(response).isNull(BankBounceDismissal.KEY_DISMISSED_LINE_ID),
+          "the column is not mapped: nothing carries the mark");
+      assertTrue(data(response).isNull(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      verify(session, never()).refresh(any(Object.class), any(LockOptions.class));
       Map<String, Object> props = decided(1).get(0);
       assertEquals(BankBounceKpiTelemetry.DECISION_UNCHECKED, props.get("decision"));
       assertEquals(BankBounceKpiTelemetry.SURFACE_PANEL, props.get("surface"));
@@ -2192,6 +2211,647 @@ class BankBouncePairServiceTest {
     private NeoContext routeContext(JSONObject body) {
       return NeoContext.builder().httpMethod("POST").requestBody(body)
           .queryParams(Map.of("action", BankBouncePairService.ACTION_DISMISS_PAIR)).build();
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // "No es un rechazo": the mark on the rejection line (EM_ETGO_Bounce_Dismissed mapped)
+  // ---------------------------------------------------------------------------
+
+  /** The ambiguous fixture: two equal outflows, the worded return between them, all same day. */
+  private Line[] ambiguousDismissFixture() {
+    Line o1 = pendingLine("L-O1", "-50.00", DAY, "", "TRANSFERENCIA");
+    Line o2 = pendingLine("L-O2", "-50.00", DAY, "", "TRANSFERENCIA");
+    Line bounce = pendingLine("L-IN", "50.00", DAY, "", "DEVOLUCION TRANSFERENCIA");
+    return new Line[] { o1, o2, bounce };
+  }
+
+  /** The proposed high pair: an outflow with a PSD2 end-to-end id and its inflow a day later. */
+  private Line[] highDismissFixture() {
+    Line original = pendingLine("L-OUT", "-80.00", DAY, "", "SEPA TRANSFER E2E777");
+    Line bounce = pendingLine("L-IN", "80.00", DAY.plusDays(1), "", "ABONO");
+    pisRows.add(new Object[] { "E2E777", "PAY-PIS" });
+    return new Line[] { original, bounce };
+  }
+
+  @Nested
+  @DisplayName("dismissPair — the mark goes on the pair's rejection line only")
+  class DismissalMark {
+
+    /** The running model maps the mark column, as a regenerated DAL does. */
+    @BeforeEach
+    void mapTheMark() {
+      mapDismissColumn();
+    }
+
+    @Test
+    @DisplayName("the rejection alone: only it is marked, answered with its time, one unchecked event")
+    void rejectionAloneMarksOnlyIt() throws Exception {
+      Line[] f = ambiguousDismissFixture();
+
+      NeoResponse response = BankBouncePairService.dismissPair(handler, lineBody(f[2].id));
+
+      assertEquals(200, response.getHttpStatus());
+      JSONObject data = data(response);
+      assertTrue(data.getBoolean("ok"));
+      assertEquals("L-IN", data.getString(BankBounceDismissal.KEY_DISMISSED_LINE_ID));
+      Date mark = markOf(f[2]);
+      assertNotNull(mark, "the rejection carries the mark");
+      assertEquals(wire(mark), data.getString(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      assertEquals(3, data.length(), "ok, dismissedLineId and bounceDismissedAt: " + data);
+      assertNothingWritten(f[0], f[1]);
+      InOrder written = inOrder(dal);
+      written.verify(dal).save(f[2].mock);
+      written.verify(dal).flush();
+      assertNull(f[2].value(StatementLineDiscard.COL_IS_DISCARDED), "a dismissal discards nothing");
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(BankBounceKpiTelemetry.DECISION_UNCHECKED, props.get("decision"));
+      assertEquals(Boolean.TRUE, props.get("ambiguous"));
+    }
+
+    @ParameterizedTest(name = "statementLineId={0}, counterpartLineId={1}")
+    @CsvSource({ "L-OUT,L-IN", "L-IN,L-OUT", "L-OUT," })
+    @DisplayName("from the original, from the rejection or from the original alone: the rejection is marked")
+    void anyRoleMarksTheRejection(String lineId, String counterpartId) throws Exception {
+      Line[] f = highDismissFixture();
+      JSONObject body = lineBody(lineId);
+      if (counterpartId != null) {
+        body.put("counterpartLineId", counterpartId);
+      }
+
+      NeoResponse response = BankBouncePairService.dismissPair(handler, body);
+
+      assertEquals(200, response.getHttpStatus());
+      assertEquals("L-IN", data(response).getString(BankBounceDismissal.KEY_DISMISSED_LINE_ID));
+      assertNotNull(markOf(f[1]));
+      assertNothingWritten(f[0]);
+      Map<String, Object> props = decided(1).get(0);
+      assertEquals(BankBounceKpiTelemetry.DECISION_UNCHECKED, props.get("decision"));
+      assertEquals(BankBounceDetector.CONFIDENCE_HIGH, props.get("confidence"));
+    }
+
+    @Test
+    @DisplayName("a candidate with the rejection: the rejection is marked, the candidate is not")
+    void candidateAndRejectionMarkTheRejection() throws Exception {
+      Line[] f = ambiguousDismissFixture();
+
+      NeoResponse response = BankBouncePairService.dismissPair(handler, body(f[1].id, f[2].id));
+
+      assertEquals("L-IN", data(response).getString(BankBounceDismissal.KEY_DISMISSED_LINE_ID));
+      assertNotNull(markOf(f[2]));
+      assertNothingWritten(f[0], f[1]);
+      assertEquals(Boolean.TRUE, decided(1).get(0).get("chosen_among_alternatives"));
+    }
+
+    @Test
+    @DisplayName("repeating it writes nothing, sends no event and answers the stored mark")
+    void repeatIsIdempotent() throws Exception {
+      Line[] f = ambiguousDismissFixture();
+      BankBouncePairService.dismissPair(handler, lineBody(f[2].id));
+      decided(1);
+      Date mark = markOf(f[2]);
+      Mockito.clearInvocations(telemetry, f[2].mock, dal, session);
+
+      for (JSONObject repeat : new JSONObject[] { lineBody(f[2].id), body(f[1].id, f[2].id),
+          body(f[2].id, f[0].id) }) {
+        JSONObject data = data(BankBouncePairService.dismissPair(handler, repeat));
+        assertEquals("L-IN", data.getString(BankBounceDismissal.KEY_DISMISSED_LINE_ID), repeat
+            .toString());
+        assertEquals(wire(mark), data.getString(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      }
+      // The original alone names no marked line, and its pair is no longer detected: no mark.
+      JSONObject alone = data(BankBouncePairService.dismissPair(handler, lineBody(f[0].id)));
+      assertTrue(alone.isNull(BankBounceDismissal.KEY_DISMISSED_LINE_ID), alone.toString());
+
+      assertSame(mark, markOf(f[2]), "the first time is kept");
+      assertNothingWritten(f);
+      verify(dal, never()).save(any());
+      verify(session, never()).refresh(any(Object.class), any(LockOptions.class));
+      verify(telemetry, after(300).never()).emit(anyString(), anyMap(), any());
+    }
+
+    /**
+     * A line named alone that is the rejection of one detected pair AND the original of another
+     * (listed first): the mark goes on the line itself, the rejection of its own pair, never on
+     * the other pair's rejection; the KPI event is about that same pair.
+     *
+     * @throws Exception when the call fails
+     */
+    @Test
+    @DisplayName("a line alone that is the rejection of one pair and the original of another: it is the one marked")
+    void lineAloneThatIsARejectionPrefersItsOwnPair() throws Exception {
+      Line outflow = pendingLine("L-A", "-30.00", DAY, "", "X");
+      Line both = pendingLine("L-B", "30.00", DAY, "", "Y");
+      Line later = pendingLine("L-C", "-30.00", DAY, "", "Z");
+      Pair asOriginal = new Pair(model("L-B", 30), model("L-C", -30), List.of(),
+          List.of(BankBounceDetector.SIGNAL_COUNTERPARTY), BankBounceDetector.CONFIDENCE_REVIEW);
+      Pair asRejection = new Pair(model("L-A", -30), model("L-B", 30), List.of(),
+          List.of(BankBounceDetector.SIGNAL_RETURN_TEXT), BankBounceDetector.CONFIDENCE_HIGH);
+
+      try (MockedStatic<BankBounceDetector> detector =
+          mockStatic(BankBounceDetector.class, Mockito.CALLS_REAL_METHODS)) {
+        detector.when(() -> BankBounceDetector.detect(any()))
+            .thenReturn(List.of(asOriginal, asRejection));
+
+        NeoResponse response = BankBouncePairService.dismissPair(handler, lineBody(both.id));
+
+        assertEquals("L-B", data(response).getString(BankBounceDismissal.KEY_DISMISSED_LINE_ID));
+        assertNotNull(markOf(both));
+        assertNothingWritten(outflow, later);
+        Map<String, Object> props = decided(1).get(0);
+        assertEquals(BankBounceDetector.SIGNAL_RETURN_TEXT, props.get("detection_signal"),
+            "the event is about the pair whose rejection was marked");
+      }
+    }
+
+    @Test
+    @DisplayName("a marked line named alone that is the original of a detected pair: that pair's rejection is marked")
+    void markedLineAsOriginalOfAnotherPairMarksThatRejection() throws Exception {
+      Line inflow = pendingLine("L-X", "250.00", DAY, "ACME", "Cobro cliente");
+      Line reversal = pendingLine("L-Y", "-250.00", DAY.plusDays(4), "ACME", "Retrocesion cobro");
+      Date earlier = new Date(1_780_000_000_000L);
+      inflow.values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), earlier);
+      List<Pair> detected = detect();
+      assertEquals(1, detected.size(), "precondition: the marked line is the original of a pair");
+      assertEquals("L-X", detected.get(0).original().id());
+      assertEquals("L-Y", detected.get(0).bounce().id());
+
+      NeoResponse response = BankBouncePairService.dismissPair(handler, lineBody(inflow.id));
+
+      assertEquals(200, response.getHttpStatus());
+      assertEquals("L-Y", data(response).getString(BankBounceDismissal.KEY_DISMISSED_LINE_ID),
+          "the mark goes on the rejection of the pair the line belongs to");
+      Date mark = markOf(reversal);
+      assertNotNull(mark);
+      assertEquals(wire(mark), data(response).getString(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      assertSame(earlier, markOf(inflow), "the original keeps its own mark");
+      assertNothingWritten(inflow);
+      verify(session).refresh(eq(reversal.mock), writeLockOptions());
+      assertEquals(BankBounceKpiTelemetry.DECISION_UNCHECKED, decided(1).get(0).get("decision"));
+    }
+
+    @Test
+    @DisplayName("lines that are not a detected pair: nulls, nothing written, no event")
+    void undetectedLinesMarkNothing() throws Exception {
+      Line[] f = highDismissFixture();
+      Line stranger = pendingLine("L-Z", "-7.00", DAY, "ZETA", "OTHER");
+
+      for (JSONObject request : new JSONObject[] { lineBody(stranger.id),
+          body(stranger.id, f[1].id) }) {
+        NeoResponse response = BankBouncePairService.dismissPair(handler, request);
+        assertEquals(200, response.getHttpStatus());
+        assertSame(JSONObject.NULL, data(response).get(BankBounceDismissal.KEY_DISMISSED_LINE_ID));
+        assertSame(JSONObject.NULL, data(response).get(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      }
+
+      assertNothingWritten(f[0], f[1], stranger);
+      verify(telemetry, after(300).never()).emit(anyString(), anyMap(), any());
+    }
+
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = { "inactive", "matched", "draft statement", "discarded" })
+    @DisplayName("a rejection that left the pending pool under the lock: 409 LINE_NOT_PENDING, nothing written")
+    void rejectionNoLongerPendingIsRefused(String why) throws Exception {
+      Line[] f = highDismissFixture();
+      leavePendingPool(f[1], why);
+
+      NeoResponse response = BankBouncePairService.dismissPair(handler, body(f[0].id, f[1].id));
+
+      assertCoded(response, 409, BankBounceErrors.CODE_LINE_NOT_PENDING);
+      verify(session).refresh(eq(f[1].mock), writeLockOptions());
+      verify(f[1].mock, never()).set(eq(prop(BankBounceDismissal.COL_DISMISSED_AT)), any());
+      verify(dal, never()).save(any());
+      verify(telemetry, after(300).never()).emit(anyString(), anyMap(), any());
+    }
+
+    @Test
+    @DisplayName("the rejection is locked FOR UPDATE and re-read before it is written, the original is not locked")
+    void rejectionIsLockedBeforeItIsWritten() throws Exception {
+      Line[] f = highDismissFixture();
+
+      BankBouncePairService.dismissPair(handler, body(f[0].id, f[1].id));
+
+      InOrder order = inOrder(session, f[1].mock, dal);
+      order.verify(session).refresh(eq(f[1].mock), writeLockOptions());
+      order.verify(f[1].mock).set(eq(prop(BankBounceDismissal.COL_DISMISSED_AT)), any(Date.class));
+      order.verify(dal).save(f[1].mock);
+      order.verify(dal).flush();
+      verify(session, never()).refresh(eq(f[0].mock), any(LockOptions.class));
+    }
+
+    @Test
+    @DisplayName("a rejection marked meanwhile keeps its time: no write, no new KPI decision")
+    void rejectionMarkedMeanwhileKeepsItsTime() throws Exception {
+      Line[] f = highDismissFixture();
+      List<Pair> beforeTheMark = BankBounceDetector.detect(BankBounceDetector.load(account,
+          pending, DATE_TOL_DAYS));
+      Date meanwhile = new Date(1_780_000_000_000L);
+      f[1].values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), meanwhile);
+
+      NeoResponse response;
+      try (MockedStatic<BankBounceDetector> detector =
+          mockStatic(BankBounceDetector.class, Mockito.CALLS_REAL_METHODS)) {
+        // The detection was read before the other request committed its mark.
+        detector.when(() -> BankBounceDetector.detect(any())).thenReturn(beforeTheMark);
+        response = BankBouncePairService.dismissPair(handler, body(f[0].id, f[1].id));
+      }
+
+      assertEquals("L-IN", data(response).getString(BankBounceDismissal.KEY_DISMISSED_LINE_ID));
+      assertEquals(wire(meanwhile),
+          data(response).getString(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      verify(session).refresh(eq(f[1].mock), writeLockOptions());
+      assertNothingWritten(f);
+      verify(telemetry, after(300).never()).emit(anyString(), anyMap(), any());
+    }
+  }
+
+  @Nested
+  @DisplayName("restoreBounceSuggestion — the undo of the mark")
+  class RestoreSuggestion {
+
+    /** The running model maps the mark column. */
+    @BeforeEach
+    void mapTheMark() {
+      mapDismissColumn();
+    }
+
+    @Test
+    @DisplayName("clears the mark under the lock and the pair is detected again")
+    void clearsTheMarkAndThePairComesBack() throws Exception {
+      Line[] f = highDismissFixture();
+      BankBouncePairService.dismissPair(handler, body(f[0].id, f[1].id));
+      assertTrue(detect().isEmpty(), "precondition: the dismissed pair is not detected");
+      Mockito.clearInvocations(session, dal, f[1].mock);
+
+      NeoResponse response = BankBounceDismissal.restoreSuggestion(handler, lineBody(f[1].id));
+
+      assertEquals(200, response.getHttpStatus());
+      assertTrue(data(response).getBoolean(BankBounceDismissal.KEY_RESTORED));
+      assertEquals("L-IN", data(response).getString("statementLineId"));
+      assertNull(markOf(f[1]));
+      InOrder order = inOrder(session, f[1].mock, dal);
+      order.verify(session).refresh(eq(f[1].mock), writeLockOptions());
+      order.verify(f[1].mock).set(prop(BankBounceDismissal.COL_DISMISSED_AT), null);
+      order.verify(dal).save(f[1].mock);
+      order.verify(dal).flush();
+      List<Pair> again = detect();
+      assertEquals(1, again.size());
+      assertEquals("L-IN", again.get(0).bounce().id());
+    }
+
+    @Test
+    @DisplayName("a line with no mark, or with the column not mapped, is answered restored:false and not written")
+    void unmarkedLineIsLeftAsItIs() throws Exception {
+      Line[] f = highDismissFixture();
+
+      NeoResponse plain = BankBounceDismissal.restoreSuggestion(handler, lineBody(f[1].id));
+      assertEquals(200, plain.getHttpStatus());
+      assertFalse(data(plain).getBoolean(BankBounceDismissal.KEY_RESTORED));
+
+      f[1].values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), new Date());
+      mappedColumns.remove(BankBounceDismissal.COL_DISMISSED_AT.toUpperCase(Locale.ROOT));
+      NeoResponse unmapped = BankBounceDismissal.restoreSuggestion(handler, lineBody(f[1].id));
+      assertFalse(data(unmapped).getBoolean(BankBounceDismissal.KEY_RESTORED),
+          "the column is not in the running model: the mark is never read");
+
+      assertNothingWritten(f);
+      verify(dal, never()).save(any());
+    }
+
+    @Test
+    @DisplayName("refusals: 403 flag off before anything is read, 400 account / line, 404, 400 other account, 409 not pending")
+    void refusals() throws Exception {
+      Line[] f = highDismissFixture();
+      f[1].values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), new Date());
+      Line foreign = pendingLine("L-FOREIGN", "80.00", DAY, "", "ABONO");
+      foreign.values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), new Date());
+      when(foreign.mock.getBankStatement().getAccount()).thenReturn(otherAccount);
+
+      assertEquals(400, BankBounceDismissal.restoreSuggestion(handler,
+          new JSONObject().put("statementLineId", f[1].id)).getHttpStatus());
+      assertEquals(400, BankBounceDismissal.restoreSuggestion(handler,
+          new JSONObject().put("financialAccountId", "ACC-NOPE").put("statementLineId", f[1].id))
+          .getHttpStatus());
+      assertEquals(400, BankBounceDismissal.restoreSuggestion(handler,
+          new JSONObject().put("financialAccountId", ACCOUNT_ID)).getHttpStatus());
+      assertEquals(400, BankBounceDismissal.restoreSuggestion(handler,
+          new JSONObject().put("financialAccountId", ACCOUNT_ID).put("statementLineId", "  "))
+          .getHttpStatus());
+      assertEquals(404, BankBounceDismissal.restoreSuggestion(handler, lineBody("L-NOPE"))
+          .getHttpStatus());
+      assertEquals(400, BankBounceDismissal.restoreSuggestion(handler, lineBody(foreign.id))
+          .getHttpStatus());
+      when(f[1].mock.getFinancialAccountTransaction()).thenReturn(mock(FIN_FinaccTransaction.class));
+      assertCoded(BankBounceDismissal.restoreSuggestion(handler, lineBody(f[1].id)), 409,
+          BankBounceErrors.CODE_LINE_NOT_PENDING);
+      assertNothingWritten(f[0], f[1], foreign);
+
+      Mockito.clearInvocations(handler);
+      flag.when(BankBounceSuggestionsFlag::isEnabled).thenReturn(false);
+      assertCoded(BankBounceDismissal.restoreSuggestion(handler, lineBody(f[1].id)), 403,
+          BankBounceErrors.CODE_SUGGESTIONS_OFF);
+      verify(handler, never()).loadAccount(anyString());
+      verify(handler, never()).loadLine(anyString());
+      assertNotNull(markOf(f[1]), "every refusal leaves the mark");
+    }
+  }
+
+  @Nested
+  @DisplayName("POST ?action=restoreBounceSuggestion — runPostAction envelope, refusals roll back")
+  class RestoreSuggestionRoute {
+
+    private MockedStatic<OBContext> obContext;
+
+    /** {@code runPostAction} enters and leaves admin mode; the mark column is mapped. */
+    @BeforeEach
+    void mockContext() {
+      obContext = mockStatic(OBContext.class);
+      mapDismissColumn();
+    }
+
+    /** Closes the OBContext mock. */
+    @AfterEach
+    void closeContext() {
+      obContext.close();
+    }
+
+    @Test
+    @DisplayName("200 {restored:true} through runPostAction, admin mode on and off, no rollback")
+    void restoresThroughTheEnvelope() throws Exception {
+      Line[] f = highDismissFixture();
+      f[1].values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), new Date());
+      NeoContext context = routeContext(lineBody(f[1].id));
+
+      NeoResponse response;
+      try (MockedStatic<ReconciliationHandlerSupport> support =
+          mockStatic(ReconciliationHandlerSupport.class, Mockito.CALLS_REAL_METHODS)) {
+        response = BankBounceDismissal.handleRestoreSuggestion(handler, context);
+        support.verify(() -> ReconciliationHandlerSupport.runPostAction(handler, context,
+            BankBounceDismissal.ACTION_RESTORE_SUGGESTION));
+      }
+
+      assertEquals(200, response.getHttpStatus());
+      assertTrue(data(response).getBoolean(BankBounceDismissal.KEY_RESTORED));
+      assertNull(markOf(f[1]));
+      obContext.verify(() -> OBContext.setAdminMode(true));
+      obContext.verify(OBContext::restorePreviousMode);
+      verify(handler, never()).doRollbackAndClose();
+    }
+
+    @Test
+    @DisplayName("403 flag off, 400 missing line, 404, 400 other account, 409 not pending: rolled back")
+    void refusalsRollBack() throws Exception {
+      Line[] f = highDismissFixture();
+      f[1].values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), new Date());
+      Line foreign = pendingLine("L-FOREIGN", "80.00", DAY, "", "ABONO");
+      when(foreign.mock.getBankStatement().getAccount()).thenReturn(otherAccount);
+
+      assertEquals(400, route(new JSONObject().put("financialAccountId", ACCOUNT_ID))
+          .getHttpStatus());
+      assertEquals(404, route(lineBody("L-NOPE")).getHttpStatus());
+      assertEquals(400, route(lineBody(foreign.id)).getHttpStatus());
+      when(f[1].mock.isActive()).thenReturn(false);
+      assertCoded(route(lineBody(f[1].id)), 409, BankBounceErrors.CODE_LINE_NOT_PENDING);
+      flag.when(BankBounceSuggestionsFlag::isEnabled).thenReturn(false);
+      assertCoded(route(lineBody(f[1].id)), 403, BankBounceErrors.CODE_SUGGESTIONS_OFF);
+
+      verify(handler, Mockito.times(5)).doRollbackAndClose();
+      assertNothingWritten(f[0], f[1], foreign);
+      assertNotNull(markOf(f[1]));
+    }
+
+    /**
+     * Runs {@code restoreBounceSuggestion} through its POST route.
+     *
+     * @param body the request body
+     * @return the answer
+     */
+    private NeoResponse route(JSONObject body) {
+      return BankBounceDismissal.handleRestoreSuggestion(handler, routeContext(body));
+    }
+
+    /**
+     * The context of a {@code POST ?action=restoreBounceSuggestion} from the SPA.
+     *
+     * @param body the request body
+     * @return the context
+     */
+    private NeoContext routeContext(JSONObject body) {
+      return NeoContext.builder().httpMethod("POST").requestBody(body)
+          .queryParams(Map.of("action", BankBounceDismissal.ACTION_RESTORE_SUGGESTION)).build();
+    }
+  }
+
+  @Nested
+  @DisplayName("a hand discard says the opposite: the rejection's mark is cleared, the original's kept")
+  class DiscardOfADismissedLine {
+
+    /** The running model maps the mark column. */
+    @BeforeEach
+    void mapTheMark() {
+      mapDismissColumn();
+    }
+
+    @Test
+    @DisplayName("discardPair of a marked rejection clears its mark and discards the pair for review")
+    void discardPairClearsTheRejectionMark() throws Exception {
+      Line[] f = highDismissFixture();
+      BankBouncePairService.dismissPair(handler, body(f[0].id, f[1].id));
+      assertNotNull(markOf(f[1]));
+
+      NeoResponse response = BankBouncePairService.discardPair(handler, body(f[0].id, f[1].id));
+
+      assertEquals(200, response.getHttpStatus());
+      assertEquals(BankBounceDetector.CONFIDENCE_REVIEW, data(response).getString("confidence"),
+          "no longer proposed, so stored for review");
+      assertNull(markOf(f[1]));
+      assertEquals(Boolean.TRUE, f[1].value(StatementLineDiscard.COL_IS_DISCARDED));
+      assertEquals(Boolean.TRUE, f[0].value(StatementLineDiscard.COL_IS_DISCARDED));
+    }
+
+    @Test
+    @DisplayName("discardPair keeps the mark of a marked original")
+    void discardPairKeepsTheOriginalMark() throws Exception {
+      Line[] f = highDismissFixture();
+      Date mark = new Date(1_780_000_000_000L);
+      f[0].values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), mark);
+
+      NeoResponse response = BankBouncePairService.discardPair(handler, body(f[1].id, f[0].id));
+
+      assertEquals(200, response.getHttpStatus());
+      assertSame(mark, markOf(f[0]), "being an original does not contradict the mark");
+      verify(f[0].mock, never()).set(eq(prop(BankBounceDismissal.COL_DISMISSED_AT)), any());
+      assertEquals(Boolean.TRUE, f[0].value(StatementLineDiscard.COL_IS_DISCARDED));
+    }
+
+    @Test
+    @DisplayName("applySuggestions bouncePair group: the rejection's mark is cleared, the original's kept")
+    void applyPairsClearsOnlyTheRejectionMark() throws Exception {
+      Line o1 = pendingLine("L-O1", "-50.00", DAY, "ACME", "X");
+      Line b1 = pendingLine("L-B1", "50.00", DAY.plusDays(1), "ACME", "Y");
+      Line o2 = pendingLine("L-O2", "-70.00", DAY, "BETA", "X");
+      Line b2 = pendingLine("L-B2", "70.00", DAY.plusDays(1), "BETA", "Y");
+      Date mark = new Date(1_780_000_000_000L);
+      b1.values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), mark);
+      o2.values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), mark);
+      JSONArray groups = new JSONArray().put(pairGroup(o1.id, b1.id)).put(pairGroup(b2.id, o2.id));
+      JSONArray results = new JSONArray();
+
+      BankBouncePairService.applyPairs(handler, account, groups, new HashSet<>(), results, true);
+
+      for (int i = 0; i < results.length(); i++) {
+        assertTrue(results.getJSONObject(i).optBoolean("discarded"), results.toString());
+      }
+      assertNull(markOf(b1), "the rejection of the first group");
+      assertSame(mark, markOf(o2), "the original of the second group");
+      assertNull(markOf(o1));
+      assertNull(markOf(b2));
+    }
+
+    @Test
+    @DisplayName("choiceSource ai on a marked rejection: 409 BOUNCE_AI_SUGGESTION_STALE, the mark stays")
+    void aiChoiceOnAMarkedRejectionIsStale() throws Exception {
+      Line[] f = ambiguousDismissFixture();
+      aiAssess(0.90, 0.05, 0.05);
+      BankBouncePairService.dismissPair(handler, lineBody(f[2].id));
+      Date mark = markOf(f[2]);
+      assertNotNull(mark);
+
+      assertCoded(BankBouncePairService.discardPair(handler, aiBody(f[0].id, f[2].id, "ai")), 409,
+          BankBounceErrors.CODE_AI_SUGGESTION_STALE);
+      JSONArray results = new JSONArray();
+      BankBouncePairService.applyPairs(handler, account,
+          new JSONArray().put(pairGroup(f[0].id, f[2].id).put("choiceSource", "ai")),
+          new HashSet<>(), results, true);
+
+      assertEquals(BankBounceErrors.CODE_AI_SUGGESTION_STALE,
+          results.getJSONObject(0).getString("code"), results.toString());
+      assertSame(mark, markOf(f[2]));
+      assertNull(f[2].value(StatementLineDiscard.COL_IS_DISCARDED));
+      assertNull(f[0].value(StatementLineDiscard.COL_IS_DISCARDED));
+    }
+  }
+
+  @Nested
+  @DisplayName("pendingLines and autoMatch after a dismissal")
+  class AfterADismissal {
+
+    /** The running model maps the mark column. */
+    @BeforeEach
+    void mapTheMark() {
+      mapDismissColumn();
+    }
+
+    @Test
+    @DisplayName("every panel row carries bounceDismissedAt: the time on the marked line, null on the others")
+    void panelRowsCarryTheMark() throws Exception {
+      Line[] f = highDismissFixture();
+      BankBouncePairService.dismissPair(handler, body(f[0].id, f[1].id));
+      BankBounceSuggestions.Plan plan =
+          BankBounceSuggestions.plan(true, account, () -> pending, DATE_TOL_DAYS);
+      JSONArray rows = new JSONArray()
+          .put(new JSONObject().put("id", "L-OUT").put("state", "pending"))
+          .put(new JSONObject().put("id", "L-IN").put("state", "pending"))
+          .put(new JSONObject().put("id", "L-REC").put("state", "reconciled"));
+
+      BankBounceSuggestions.panelView(plan).finish(rows, new HashMap<>());
+
+      assertSame(JSONObject.NULL, rows.getJSONObject(0).get(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      assertEquals(wire(markOf(f[1])),
+          rows.getJSONObject(1).get(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+      assertSame(JSONObject.NULL, rows.getJSONObject(2).get(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT),
+          "a row that is not a pending candidate has no line behind it");
+      assertFalse(rows.getJSONObject(0).has(BankBounceSuggestions.KEY_BOUNCE_PAIR));
+      assertFalse(rows.getJSONObject(1).has(BankBounceSuggestions.KEY_BOUNCE_PAIR),
+          "the dismissed pair is not annotated");
+    }
+
+    @Test
+    @DisplayName("autoMatch no longer offers the dismissed pair")
+    void autoMatchNoLongerOffersIt() throws Exception {
+      Line[] f = highDismissFixture();
+      assertEquals(1, BankBounceSuggestions.plan(true, account, () -> pending, DATE_TOL_DAYS)
+          .offered(Set.of()).size(), "precondition: the pair is offered before the dismissal");
+
+      BankBouncePairService.dismissPair(handler, body(f[0].id, f[1].id));
+      BankBounceSuggestions.Plan plan =
+          BankBounceSuggestions.plan(true, account, () -> pending, DATE_TOL_DAYS);
+      JSONArray groups = new JSONArray();
+      BankBounceSuggestions.appendGroups(plan, groups, new JSONObject());
+
+      assertTrue(plan.offered(Set.of()).isEmpty());
+      assertTrue(plan.reservedLineIds().isEmpty(), "the high pair no longer reserves its lines");
+      assertEquals(0, groups.length(), groups.toString());
+    }
+  }
+
+  /** Maps {@code EM_ETGO_Bounce_Dismissed} in the simulated model, as a regenerated DAL does. */
+  private void mapDismissColumn() {
+    mappedColumns.put(BankBounceDismissal.COL_DISMISSED_AT.toUpperCase(Locale.ROOT),
+        propertyNameOf(BankBounceDismissal.COL_DISMISSED_AT));
+  }
+
+  /**
+   * The mark a simulated line holds.
+   *
+   * @param line the line
+   * @return when it was dismissed, or {@code null}
+   */
+  private static Date markOf(Line line) {
+    return (Date) line.value(BankBounceDismissal.COL_DISMISSED_AT);
+  }
+
+  /**
+   * A time as the canonical NEO wire datetime the answers carry.
+   *
+   * @param at the time
+   * @return its wire form
+   */
+  private static String wire(Date at) {
+    return ReconciliationSupport.formatDate(new Timestamp(at.getTime()));
+  }
+
+  /**
+   * A body naming one line of the account.
+   *
+   * @param lineId the {@code statementLineId}
+   * @return the body
+   * @throws Exception when it cannot be written
+   */
+  private static JSONObject lineBody(String lineId) throws Exception {
+    return new JSONObject().put("financialAccountId", ACCOUNT_ID).put("statementLineId", lineId);
+  }
+
+  /**
+   * The detection of the account now, over the simulated pending lines.
+   *
+   * @return the detected pairs
+   */
+  private List<Pair> detect() {
+    return BankBounceDetector.detect(BankBounceDetector.load(account, pending, DATE_TOL_DAYS));
+  }
+
+  /**
+   * Takes a pending line out of the pending pool the way {@code why} says, after detection.
+   *
+   * @param line the line
+   * @param why  inactive, matched, draft statement or discarded
+   */
+  private void leavePendingPool(Line line, String why) {
+    switch (why) {
+      case "inactive":
+        when(line.mock.isActive()).thenReturn(false);
+        break;
+      case "matched":
+        when(line.mock.getFinancialAccountTransaction())
+            .thenReturn(mock(FIN_FinaccTransaction.class));
+        break;
+      case "draft statement":
+        when(line.mock.getBankStatement().isProcessed()).thenReturn(false);
+        break;
+      default:
+        line.values.put(prop(StatementLineDiscard.COL_IS_DISCARDED), true);
+        break;
     }
   }
 

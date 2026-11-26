@@ -36,8 +36,9 @@ import com.etendoerp.go.featureflags.GoFeatureFlags;
  * {@code buildPendingLines} (bounce pairs and the {@code bounce} state),
  * {@code ReconciliationHandler.applySuggestions} ({@code bouncePair} groups and, through the
  * detection it hands to {@code BankBounceKpiTelemetry.ModalDecisions}, the KPI events),
- * {@code BankBouncePairService.discardPair}, {@code restorePair} and {@code dismissPair} (the
- * KPI-only "No es un rebote"), and every caller of
+ * {@code BankBouncePairService.discardPair}, {@code restorePair} and {@code dismissPair} ("No es
+ * un rechazo", which marks the rejection line), {@code BankBounceDismissal.restoreSuggestion} (its
+ * undo), and every caller of
  * {@link StatementLineFilter} (whether discarded lines are honoured at all: their exclusion from
  * {@code pendingLines} and auto-match, {@code counts.discarded}, {@code status=discarded}, the
  * {@code LINE_DISCARDED} write guards, the {@code discarded} marker of the statement lines) and

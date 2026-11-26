@@ -4354,10 +4354,12 @@ stays retired (IMP-19: it is not a report generator); its actions are published 
 | `discardPair` | write | **`statementLineId`**, **`counterpartLineId`** | `POST ?action=discardPair` (ETP-5581, flag `bank-bounce-suggestions`) |
 | `restorePair` | write | **`lineId`** | `POST ?action=restorePair` (ETP-5581, flag `bank-bounce-suggestions`) |
 
-Not declared to agents on purpose (UI-only, ETP-5581): `dismissPair` (the panel's *No es un rebote*,
-KPI telemetry only) and the `applySuggestions` body key `bounceDecisions` (the modal's report of the
-pairs it showed and did not apply). An agent calling either gets the contract's 422 (unknown action
-/ undeclared key); see *Discarded lines and bounce pairs* and the declared exception below.
+Not declared to agents on purpose (UI-only, ETP-5581): `dismissPair` (the panel's *No es un
+rechazo*: marks the rejection line as not a rejection, plus the KPI decision), its undo
+`restoreBounceSuggestion`, and the `applySuggestions` body key `bounceDecisions` (the modal's report
+of the pairs it showed and did not apply). An agent calling any of them gets the contract's 422
+(unknown action / undeclared key); see *Discarded lines and bounce pairs* and the declared exception
+below.
 
 Notes: 1:1, 1:N and partial matches are all `reconcileGroup` (a shortfall beyond tolerance leaves
 a pending remainder, exactly as in the UI). `glItemId` is optional on `reconcileDifference`
@@ -4549,7 +4551,7 @@ with no reconciliation) is not reconciled, so a discarded one is still refused b
 
 | Where | Usage passed to the hook | Behaviour (flag on) |
 |---|---|---|
-| `pendingLines` | `MATCH_STATEMENT_GRID` | Excluded lines are left out of `lines`, `total` and every count, and counted in **`counts.discarded`**. `status=discarded` answers **only** them: each row has `state`/`status` `discarded`, `discarded:true`, nothing reconciled, and `bounceLink` (`{counterpartLineId, discardedAt, signal, confidence}`, or `null` for a line discarded on its own); `counts` then carries only `discarded` — the other filters keep the counts of the default request, so this call does not run the matching engine. `PENDING_LINES_SQL` is unchanged: the hooks answer HQL, so the excluded ids are read once through the hook and the rows are split in Java. |
+| `pendingLines` | `MATCH_STATEMENT_GRID` | Excluded lines are left out of `lines`, `total` and every count, and counted in **`counts.discarded`** (lines) and **`counts.discardedPairs`** (pairs — the panel's *Descartadas (N)*): over the same excluded lines (same scope and date range), two lines whose `EM_ETGO_Bounce_Pair_Line_ID` point at each other are ONE entry, and any other line — no link, partner not among them, one-sided link — is one on its own; the rule of the SPA's `buildDiscardedPairRows` (`BankBounceDiscardedPairs`, one OBQuery for the links; with the link column not mapped yet, every line counts alone). Both keys are absent with the flag off. `status=discarded` answers **only** them: each row has `state`/`status` `discarded`, `discarded:true`, nothing reconciled, and `bounceLink` (`{counterpartLineId, discardedAt, signal, confidence}`, or `null` for a line discarded on its own); `counts` then carries only `discarded` and `discardedPairs` (from the lines already read) — the other filters keep the counts of the default request, so this call does not run the matching engine. `PENDING_LINES_SQL` is unchanged: the hooks answer HQL, so the excluded ids are read once through the hook and the rows are split in Java. |
 | `autoMatch` candidates (`loadPendingLines`) | `AUTO_MATCH_CANDIDATES` | Excluded lines are never proposed (now an `OBQuery`, keeping the readable client/org filter). |
 | `bank-statements?action=lines` | `MATCH_STATEMENT_GRID` | Excluded lines are still listed, with **`discarded:true`** (every row carries `discarded`). |
 | Write paths | per path | 409 `LINE_DISCARDED`, see *Line targeting* above. |
@@ -4568,7 +4570,12 @@ date tolerance) or wording, `review` otherwise; an **ambiguous** pair (several e
 originals) is always `review`, names no original and carries its candidates. A pair is **never
 proposed** when either line is the bank movement of a real ERP payment (`BankBouncePaymentGuard`,
 answered `HAS_PAYMENT` on the write paths), including a line that may be one invoice of a larger
-multi-invoice payment.
+multi-invoice payment. A line the user marked **not a rejection** (*No es un rechazo*,
+`EM_ETGO_Bounce_Dismissed`, see `dismissPair` below) is **never the bounce of a pair**, with any
+original; it stays a candidate in every other way — it may still be the original of a later
+reversal — and the originals it was proposed with stay free to pair with another, real bounce. This
+holds for every reader of the detection: `autoMatch` groups, `pendingLines`, the AI second layer
+(its components are built from the detected pairs) and the KPI's pair lookup.
 
 **Statement adjacency.** Banks write a return next to the line it reverses, but the order of the
 lines **within a day is not taken as chronological**: PSD2 numbers a statement's lines by their
@@ -4620,7 +4627,11 @@ share 140.
   candidate line shared by several ambiguous pairs is annotated once, by the first of them; every
   pair's bounce line still carries its own `groupKey` and lists all its candidates, so the distinct
   `groupKey`s of the `bounce` rows still equal `kpis.bouncePairs`. Under a date or text filter, a
-  `review` pair is judged on its visible lines only.
+  `review` pair is judged on its visible lines only. Every row also carries **`bounceDismissedAt`**:
+  when the user said that line is not a rejection (the wire datetime of `EM_ETGO_Bounce_Dismissed`),
+  `null` otherwise — read from the auto-match candidate lines, so a line that is not one (reconciled,
+  in a split group) is always `null`. The panel shows it as *Marcada como no rechazo* with the undo
+  (`restoreBounceSuggestion`). With the flag off the key is absent.
 - **`applySuggestions`.** `{kind:"bouncePair", statementLineId, counterpartLineId}` groups are
   validated and discarded **first**, in the same request transaction; their lines join the set the
   transaction groups are prepared against, so a line checked in two groups is refused (409) the
@@ -4659,15 +4670,37 @@ share 140.
   `BOUNCE_AI_SUGGESTION_STALE` and writes nothing. The 409 means the lookup completed and disagreed; an internal failure of the
   lookup is logged (class only) and answers the generic server error. It never calls the model.
 - **`dismissPair {financialAccountId, statementLineId, counterpartLineId?}`** (flag required, 403
-  `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's *No es un rebote*. **Writes nothing**: the
-  rejection is not stored, so detection proposes the pair again on the next `autoMatch` /
-  `pendingLines`. It exists only to record the decision for the KPI. `statementLineId` is the line
-  selected in the panel, in any role (bounce, original or candidate); `counterpartLineId` is the
-  other line the card shows (the chosen original of an ambiguous pair), omitted while none is
-  chosen — the pair is resolved from either line, in either order, through the action's detection.
-  400 without `statementLineId` or with the same line twice; 404 / 400 for a line not found or of
-  another account. Answers 200 `{ok:true}` (in the usual `response.data` envelope), also for lines
-  detection does not pair (nothing is recorded then). UI-only: not in the MCP contracts.
+  `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's *No es un rechazo*. **Persisted on the rejection
+  line**: the pair is resolved from either line, in either order, through the action's detection
+  (`statementLineId` is the line selected in the panel, in any role — bounce, original or candidate;
+  `counterpartLineId` is the other line the card shows, the chosen original of an ambiguous pair,
+  omitted while none is chosen), and the pair's **bounce** line gets `EM_ETGO_Bounce_Dismissed` (now),
+  whichever line was selected (`BankBounceDismissal`). From then on detection never proposes that
+  line as a bounce (see the detection rules above); the original(s) stay ordinary pending lines and
+  may pair with another bounce. Nothing else is written: no discard, no link. The rejection line is
+  locked `FOR UPDATE` and re-read first; one that left the pending pool meanwhile (matched,
+  discarded, inactive, draft statement, split group) answers 409 `LINE_NOT_PENDING` and nothing is
+  written. **Idempotent**: the bounce of a dismissed pair is no longer detected, so a repeated call
+  finds no pair and answers the mark already stored (no write, no KPI event). A line that already
+  carries the mark is still looked up first: it is never a bounce, but it may be the original of
+  another detected pair (the panel omits `counterpartLineId` when that bounce is outside its date
+  range), and then that pair's bounce is marked. 400 without `statementLineId`
+  or with the same line twice; 404 / 400 for a line not found or of another account. Answers 200
+  `{ok:true, dismissedLineId, bounceDismissedAt}` (in the usual `response.data` envelope): the line
+  that carries the mark and when it was set, both `null` when the lines are not a detected pair
+  (nothing written, nothing recorded) or the column is not in the running model yet (the DAL was not
+  regenerated: the call then only records the KPI decision, as before). The KPI decision
+  (`unchecked`) is sent for a new dismissal only, not for a repeat. UI-only: not in the MCP
+  contracts.
+- **`restoreBounceSuggestion {financialAccountId, statementLineId}`** (flag required, 403
+  `BOUNCE_SUGGESTIONS_OFF` otherwise): the undo of *No es un rechazo*, from the line's own panel.
+  Clears `EM_ETGO_Bounce_Dismissed`, so detection may propose the line as a bounce again on the next
+  `autoMatch` / `pendingLines`. 400 without an account or `statementLineId`; 404 / 400 for a line
+  not found or of another account; the line is locked and re-read, and one that is not pending
+  (matched, discarded, inactive, draft statement, split group) answers 409 `LINE_NOT_PENDING`. A
+  pending line with no mark is left as it is. Answers 200 `{restored, statementLineId}`
+  (`restored:false` when there was no mark), so repeating the call is harmless. No KPI event.
+  UI-only: not in the MCP contracts.
 - **`restorePair {financialAccountId, lineId}`** (flag required, 403 `BOUNCE_SUGGESTIONS_OFF`
   otherwise, like `discardPair`: with the flag off Etendo does not honour discarded lines, so there
   is nothing to undo here; Classic's PSD2 Restore button still works): restores the line AND the
@@ -4700,6 +4733,10 @@ public service), plus this module's link columns on `FIN_BankStatementLine`:
 `EM_ETGO_Bounce_Pair_Line_ID` (the counterpart; `ON DELETE SET NULL`), `EM_ETGO_Bounce_Discarded`
 (when), `EM_ETGO_Bounce_Signal` (list `pis_link` / `return_text` / `counterparty`, null for a pair
 with no signal) and `EM_ETGO_Bounce_Confidence` (list `high` / `review`). Restoring clears all four.
+A hand discard whose **bounce** is a line marked *No es un rechazo* is accepted (the validation never
+looked at the mark) and **clears the mark** on that line: the user has now said it is a rejection.
+The mark of the original, if it has one, stays. Such a pair is not proposed by detection, so it is
+stored `review` and its KPI event is a pair detection did not propose.
 **The stored confidence records what the system suggested, not the user's final choice** (the KPI
 counts `high` pairs only): it is `high` ONLY when detection proposed exactly this pair (same bounce,
 same original, not ambiguous) as `high`. Any other pair is stored `review`, whatever its signals
@@ -4814,8 +4851,9 @@ How a call is made (all in `BankBounceAi` / `BankBounceAiQuestions`):
 
 **Editing a statement keeps the discard (`bank-statements?action=update`).** The update deletes and
 recreates the unmatched lines; a body line that carries the `id` of the line it replaces keeps the
-PSD2 transaction id, the PSD2 discard flag and button and the bounce-pair link
-(`BankStatementLineSet.bankIdentitiesOfUnmatched` / `restoreBankIdentity` / `relinkBouncePairs`).
+PSD2 transaction id, the PSD2 discard flag and button, the bounce-pair link and the *No es un
+rechazo* mark (`BankStatementLineSet.bankIdentitiesOfUnmatched` / `restoreBankIdentity` /
+`relinkBouncePairs`).
 A body line without `id` is a new line, as before — the SPA's statement editor does not send it
 yet, so until it does an edit still loses them.
 
@@ -7316,9 +7354,12 @@ filtered per request.
 | `discardPair`, `restorePair` | 403 `BOUNCE_SUGGESTIONS_OFF`; the SPA never offers them (it renders what the backend sends) | listed, and answer the same 403 (their descriptions say "only available when bank rejection suggestions are enabled") |
 | `pendingLines` `status=discarded` | ignored like any status the panel filters client-side | `discarded` listed as the option's only value; ignored the same way (the description says so) |
 
-Also declared (any flag value): `dismissPair` and the `applySuggestions` key `bounceDecisions` are
-**REST-only**. They feed the bounce-pair KPI from the SPA's modal and panel, which an agent does
-not have; the MCP refuses them with the contract's 422 (unknown action / undeclared key). An agent's
+Also declared (any flag value): `dismissPair`, its undo `restoreBounceSuggestion` and the
+`applySuggestions` key `bounceDecisions` are **REST-only**. They serve the SPA's modal and panel
+(the KPI report, and the *No es un rechazo* mark and its undo), which an agent does not have; the
+MCP refuses them with the contract's 422 (unknown action / undeclared key). An agent is still
+affected by a mark the panel stored: the detection behind its `autoMatch` / `pendingLines` never
+proposes a marked line as a bounce, on both channels alike. An agent's
 `applySuggestions` and `discardPair` still emit their decision events, with `channel: "mcp"`; in
 place of `bounceDecisions`, an agent's `applySuggestions` that applied at least one `bouncePair`
 group reports the preselected pairs it left out as `unchecked` (inferred by the backend), and one
