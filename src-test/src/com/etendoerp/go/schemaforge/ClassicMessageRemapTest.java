@@ -91,15 +91,15 @@ public class ClassicMessageRemapTest {
       + "Modelo para evitar esta validación y forzar la generación del fichero.";
   private static final String CERT_GO_ES = "No se ha encontrado ningún certificado válido. Sube "
       + "el certificado de la organización en la sección Certificado digital de Configuración "
-      + "fiscal.";
+      + "Fiscal.";
   private static final String CONFIG_ES = "No existe configuración de TBAI alcanzable. Revise la "
       + "ventana de configuración.";
   private static final String CONFIG_GO_ES = "No hay ninguna configuración de TicketBAI activa "
-      + "para esta organización. Revísala en Configuración fiscal (pestaña TicketBAI).";
+      + "para esta organización. Revísala en Configuración Fiscal (pestaña TicketBAI).";
   /** The SII literal sentence: needs no AD_MESSAGE row, so it works without the database. */
   private static final String SII_TYPE_CLASSIC = "La factura debe contener información en el campo "
       + "Clave tipo factura.";
-  private static final String NIF_GO_ES = "El contacto no está marcado como Factura Simplificada, así que su NIF/CIF es obligatorio. Complétalo en Contactos.";
+  private static final String NIF_GO_ES = "El contacto no está marcado como Factura Simplificada, así que su NIF es obligatorio. Complétalo en Contactos.";
 
   @Before
   public void setUp() {
@@ -140,7 +140,7 @@ public class ClassicMessageRemapTest {
     ClassicMessageRemap.apply(response, "en_US");
 
     assertEquals("Process execution failed: No valid certificate was found. Upload the "
-        + "organization certificate in the Digital certificate section of Fiscal configuration.",
+        + "organization certificate in the Digital certificate section of Fiscal Configuration.",
         response.getBody().getJSONObject("error").getString("message"));
   }
 
@@ -202,7 +202,7 @@ public class ClassicMessageRemapTest {
   @Test
   public void aRemappedTextIsTrimmed() {
     assertEquals("No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración fiscal (pestaña TicketBAI).",
+        + "Revísala en Configuración Fiscal (pestaña TicketBAI).",
         ClassicMessageRemap.remapText(" @TBAI_ConfigNotFound@ ", "es_ES"));
     assertEquals("  Una nota cualquiera de la factura  ",
         ClassicMessageRemap.remapText("  Una nota cualquiera de la factura  ", "es_ES"));
@@ -230,7 +230,7 @@ public class ClassicMessageRemapTest {
     JSONObject content = new JSONObject(
         body.getJSONArray("content").getJSONObject(0).getString("text"));
     assertEquals("El certificado no es válido. Vuelve a subirlo en la sección Certificado digital "
-        + "de Configuración fiscal. Detalle: el fichero .p12 caducó", content.getString("message"));
+        + "de Configuración Fiscal. Detalle: el fichero .p12 caducó", content.getString("message"));
     assertEquals("error", content.getString("status"));
     assertEquals("Error: ", content.getString("title"));
     assertEquals("validation_error", content.getString("error"));
@@ -240,7 +240,7 @@ public class ClassicMessageRemapTest {
   @Test
   public void aReplacementAddsNoSpaceAroundIt() {
     assertEquals("Error (No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración fiscal (pestaña TicketBAI).)",
+        + "Revísala en Configuración Fiscal (pestaña TicketBAI).)",
         ClassicMessageRemap.remapText("Error (No existe configuración de TBAI alcanzable. Revise "
             + "la ventana de configuración.)", "es_ES"));
   }
@@ -264,10 +264,10 @@ public class ClassicMessageRemapTest {
     com.fasterxml.jackson.databind.JsonNode strict =
         new com.fasterxml.jackson.databind.ObjectMapper().readTree(out);
     assertEquals("No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración fiscal (pestaña TicketBAI). Detalle: línea 1\\nlínea 2",
+        + "Revísala en Configuración Fiscal (pestaña TicketBAI). Detalle: línea 1\\nlínea 2",
         strict.get("message").asText());
     assertEquals("No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración fiscal (pestaña TicketBAI). Detalle: línea 1\\nlínea 2",
+        + "Revísala en Configuración Fiscal (pestaña TicketBAI). Detalle: línea 1\\nlínea 2",
         ClassicMessageRemap.remapText(classic + "  Detalle: línea 1\\nlínea 2", "es_ES"));
   }
 
@@ -393,7 +393,7 @@ public class ClassicMessageRemapTest {
   @Test
   public void theRawTokenIsReplaced() {
     assertEquals("Error: No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración fiscal (pestaña TicketBAI).",
+        + "Revísala en Configuración Fiscal (pestaña TicketBAI).",
         ClassicMessageRemap.remapText("Error: @TBAI_ConfigNotFound@", "es_ES"));
   }
 
@@ -448,6 +448,35 @@ public class ClassicMessageRemapTest {
     assertEquals("The contact is not marked as Simplified Invoice, so the invoice Partner Address "
         + "must have its First line (the street) filled in. Complete it in Contacts, Location tab.",
         ClassicMessageRemap.remapText(classic, "en_US"));
+  }
+
+  /**
+   * VERI*FACTU country vs. Residence Country Tax ID Key check: the GO text names the dropdown
+   * labels the user sees («Pasaporte» / «No Censado»), never the raw codes 07 / 03, in both
+   * languages.
+   */
+  @Test
+  public void theVerifactuTaxIdKeyCheckNamesTheDropdownLabelsNotTheCodes() {
+    String classic = "El valor del Código País sólo puede ser ES cuando el \"Código NIF País "
+        + "Residencia\" del tercero es 07 or 03. Si el valor de este campo es 07 el Código País "
+        + "tiene que ser ES.";
+    ClassicMessageRemap.setTextsForTest(Map.of("ETVFAC_error_code_idtype", List.of(classic)));
+
+    String es = ClassicMessageRemap.remapText(classic, "es_ES");
+    String en = ClassicMessageRemap.remapText(classic, "en_US");
+
+    assertEquals("El país de la dirección de facturación solo puede ser España cuando la Clave "
+        + "NIF País Residencia del contacto es «Pasaporte» o «No Censado», y con «No Censado» el "
+        + "país debe ser España. Revisa el país de la dirección y la Clave NIF País Residencia del "
+        + "contacto en Contactos.", es);
+    assertEquals("The country of the billing address can only be Spain when the contact Residence "
+        + "Country Tax ID Key is \"Pasaporte\" or \"No Censado\", and with \"No Censado\" the "
+        + "country must be Spain. Check the address country and the contact Residence Country Tax "
+        + "ID Key in Contacts.", en);
+    for (String go : List.of(es, en)) {
+      assertFalse(go, go.contains("07"));
+      assertFalse(go, go.contains("03"));
+    }
   }
 
   /** Messages a GO user cannot trigger are not catalogued. */
@@ -801,6 +830,46 @@ public class ClassicMessageRemapTest {
           + "previamente: 5. FV-9: NIF no censado", ClassicMessageRemap.remapText(classic, "es_ES"));
       assertEquals(classic, "Invoices sent successfully: 7. Not sent: 3. Previously sent: 5. "
           + "FV-9: NIF no censado", ClassicMessageRemap.remapText(classic, "en_US"));
+    }
+  }
+
+  /**
+   * ETP-6284: the four DUA sentences the SII module raises (no AD_MESSAGE), copied from
+   * {@code FacturasEventHandler}, {@code SIISOAPUtils} and {@code SIIUtils} as they are thrown —
+   * the last one with its trailing space. Each leaves NEO as its GO text in Spanish and English,
+   * also inside a REST error body.
+   */
+  @Test
+  public void theSiiDuaSentencesAreRemappedToTheirGoTexts() throws Exception {
+    Map<String, String> classicByKey = Map.of(
+        "siiDuaRequiredImport",
+        "Si la clave tipo factura es 'Import(DUA)' los campos DUA y fecha DUA son obligatorios.",
+        "siiDuaRequiredCustomsSettlement",
+        "Si la clave tipo factura es 'Aduanas-Liquidación Complementaria' los campos DUA y fecha "
+            + "DUA son obligatorios.",
+        "siiMultiDuaTaxLineDuaRequired",
+        "Si la clave tipo factura es 'Import(DUA)' o 'Aduanas-Liquidación Complementaria' y está "
+            + "marcado el check 'Multiple DUA' los campos 'DUA' y 'fecha DUA' son obligatorios en "
+            + "las lineas.",
+        "siiDuaDateAfterAccountingDate",
+        "Una factura de tipo F5 o LC debe tener fecha DUA y ésta no puede ser posterior a la "
+            + "fecha de registro contable. ");
+
+    for (Map.Entry<String, String> classic : classicByKey.entrySet()) {
+      String key = classic.getKey();
+      for (String language : List.of("es_ES", "en_US")) {
+        String goText = NeoHints.catalogText(key, language);
+        assertTrue(key + " " + language, goText != null && !goText.isBlank());
+        assertEquals(key + " " + language, goText,
+            ClassicMessageRemap.remapText(classic.getValue(), language).trim());
+      }
+
+      NeoResponse response = NeoResponse.error(422, classic.getValue());
+      ClassicMessageRemap.apply(response, "es_ES");
+      JSONObject error = response.getBody().getJSONObject("error");
+      assertEquals(key, NeoHints.catalogText(key, "es_ES"), error.getString("message").trim());
+      // A literal entry has no AD_MESSAGE identity, so nothing is published in messageKeys.
+      assertFalse(key, error.has("messageKeys"));
     }
   }
 }

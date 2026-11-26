@@ -396,6 +396,12 @@ public class McpToolRouter {
       // came here without reading etendo_schema. One constant, declared once per response, instead
       // of a `$ref` field repeated on every row.
       return wrapAsTextContent(McpConstants.RECORD_REF_NOTE + "\n\n" + body);
+    } catch (Context7DocsException e) {
+      log.log(Context7DocsException.logLevel(e.getStatusCode()),
+          "Context7 docs lookup failed for topic '{}' status={} authenticated={} session={}: {}",
+          topic, e.getStatusCode(), apiKey != null, McpUsageTelemetry.sessionForLog(),
+          e.getMessage());
+      return wrapAsErrorContent(e.agentMessage());
     } catch (Exception e) {
       log.error("Error fetching docs for topic '{}' session={}", topic,
           McpUsageTelemetry.sessionForLog(), e);
@@ -846,10 +852,12 @@ public class McpToolRouter {
     // is left untouched. See McpFkResolver's class javadoc for the selector-context limitation.
     // ETP-5535: a child's selectors also see its parent record, as etendo_selectors' parentContext
     // would carry it — a line's tax rule reads the header's order date.
-    JSONObject fkError = McpFkResolver.resolveFkNames(filteredBody, dalEntity, adTab,
+    // ETP-6365: with the SF entity, so a name the field's own picker lists resolves too.
+    JSONObject fkError = McpFkResolver.resolveFkNames(filteredBody,
+        new McpFkResolver.Target(dalEntity, adTab, sfEntity),
         McpSelectorContextHelper.buildSelectorContextParams(
             McpParentSelectorContext.selectorArgs(sfEntity, dalEntity, filteredBody, null, null),
-            adTab), log);
+            adTab), log, value -> false);
     if (fkError != null) {
       return wrapAsErrorContent(fkError);
     }
@@ -1139,8 +1147,9 @@ public class McpToolRouter {
       return wrapAsErrorContent(imageError);
     }
 
-    JSONObject fkError = McpFkResolver.resolveFkNames(filteredBody, dalEntity, adTab,
-        McpSelectorContextHelper.buildSelectorContextParams(null, adTab), log);
+    JSONObject fkError = McpFkResolver.resolveFkNames(filteredBody,
+        new McpFkResolver.Target(dalEntity, adTab, sfEntity),
+        McpSelectorContextHelper.buildSelectorContextParams(null, adTab), log, value -> false);
     if (fkError != null) {
       return wrapAsErrorContent(fkError);
     }
@@ -1290,7 +1299,9 @@ public class McpToolRouter {
     // ETP-4254: entity-level DELETE flag, refused before any DAL work happens.
     McpToolRouterSupport.requireMethodEnabled(spec, sfEntity, HTTP_METHOD_DELETE);
     Tab adTab = McpWriteRequestSupport.getAdTabOrThrow(sfEntity, entityName);
-    NeoResponse targetRefusal = NeoActionRecordGuard.writeRefusalFor(sfEntity, recordId);
+    NeoContext hookCtx = McpHookExecutor.buildHookContext(specName, entityName, HTTP_METHOD_DELETE, recordId, null, adTab, sfEntity);
+    // ETP-6365: same guard as REST (NeoWritePreflight), so both answer a refused delete alike.
+    NeoResponse targetRefusal = NeoActionRecordGuard.deleteRefusalFor(sfEntity, hookCtx);
     if (targetRefusal != null) {
       return McpHookExecutor.neoResponseToMcpResult(targetRefusal);
     }
@@ -1312,7 +1323,6 @@ public class McpToolRouter {
     // handler may fully handle the delete (e.g. a soft-archive) or reject it.
     // ETP-5415: routed through NeoExtensionDispatcher. Note this surface has NO post-hook — the
     // delete returns its own payload and never calls afterHandle. Preserved as-is; see D14.
-    NeoContext hookCtx = McpHookExecutor.buildHookContext(specName, entityName, HTTP_METHOD_DELETE, recordId, null, adTab, sfEntity);
     NeoExtensionResult preDispatch = NeoExtensionDispatcher.dispatch(NeoExtensionRequest.builder()
         .qualifier(sfEntity.getJavaQualifier())
         .specName(specName)
@@ -1410,7 +1420,8 @@ public class McpToolRouter {
         .surface(NeoExtensionSurface.SELECTOR)
         .channel(NeoExtensionChannel.MCP)
         .context(McpHookExecutor.buildSelectorHookContext(
-            specName, entityName, columnName, contextParams, adTab, sfEntity))
+            specName, entityName, columnName,
+            McpSelectorContextHelper.withSearch(contextParams, query), adTab, sfEntity))
         .build();
 
     NeoExtensionResult preDispatch = NeoExtensionDispatcher.dispatch(selectorRequest);
@@ -1655,6 +1666,11 @@ public class McpToolRouter {
     // ETP-6148: the property-path fields, read-only, at the same point and for the same reason.
     McpSchemaFieldBuilder.appendVirtualFields(fieldsArray,
         McpPathFieldSchema.build(sfEntity, dalEntity));
+    // ETP-5806 CP-13: the address lines the structured-address composer overwrites on every write
+    // are published read-only, so view:"create" stops offering them as values a caller may set.
+    // After both appendVirtualFields calls, so the wrapper path and the direct table walk are
+    // covered by the one overlay. No-op for every entity without these columns.
+    McpSchemaResponseHints.applyComposerOwnedVisibility(fieldsArray);
     McpSchemaFieldBuilder.applyPreconditionRequirements(fieldsArray, requiredWhenByField);
     // ETP-5473: what the entity's customization refuses a create without, although AD and
     // etendo_defaults do not say so. Flagged on the full array so every view agrees.
@@ -1867,14 +1883,22 @@ public class McpToolRouter {
       return wrapAsErrorContent("operations must be a non-empty array");
     }
     try {
+      // ETP-5810: a key an operation does not declare was dropped without a word, as a top-level
+      // one was before IMP-40. Refused before any access check, transaction or async job.
+      JSONObject unknownKey = McpBatchOperationKeys.rejectUnknown(operations);
+      if (unknownKey != null) {
+        return wrapAsTextContent(unknownKey);
+      }
       // Per-spec access check: a single batch can mix specs from different
       // windows, and the top-level authorizeSpecAccess(null) on etendo_batch is a
       // no-op. Authorise each distinct spec before any DAL work happens so an
       // LLM agent cannot smuggle writes into a spec it lacks CRUD access to.
-      // Every batch operation is a create (BatchService#processOperation only
-      // ever calls createRecord — there is no update/delete op type), so this
-      // is a write-tier ("POST") check: a read-only AD_Window_Access role must
-      // be denied here exactly as it would be for a direct etendo_create call.
+      // MCP batch is create-only (ETP-5810): every operation is a create, and the DELETE
+      // operation BatchService serves to the REST /sws/neo/batch caller (method/recordId) never
+      // gets here — McpBatchOperationKeys refuses those keys above, and a delete goes through
+      // etendo_delete and its DELETE-tier check. So this is a write-tier ("POST") check: a
+      // read-only AD_Window_Access role must be denied here exactly as it would be for a direct
+      // etendo_create call.
       java.util.Set<String> seen = new java.util.HashSet<>();
       for (int i = 0; i < operations.length(); i++) {
         JSONObject op = operations.optJSONObject(i);
@@ -2043,7 +2067,8 @@ public class McpToolRouter {
     // parent nowhere in the body yet — BatchService injects it only when the record is created —
     // exactly the reason McpLinePriceInjector below takes op.parentId() too. A placeholder that is
     // somehow still unresolved is skipped and the op resolves with the pre-ETP-5535 context.
-    JSONObject fkError = McpFkResolver.resolveFkNames(body, dalEntity, adTab,
+    JSONObject fkError = McpFkResolver.resolveFkNames(body,
+        new McpFkResolver.Target(dalEntity, adTab, sfEntity),
         McpSelectorContextHelper.buildSelectorContextParams(
             McpParentSelectorContext.selectorArgs(sfEntity, dalEntity, body, op.parentId(),
                 value -> value.startsWith(BatchService.REF_PREFIX)),

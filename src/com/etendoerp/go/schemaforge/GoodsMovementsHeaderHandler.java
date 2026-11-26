@@ -16,6 +16,8 @@
  */
 package com.etendoerp.go.schemaforge;
 
+import java.util.Map;
+
 import javax.inject.Inject;
 import javax.inject.Named;
 
@@ -29,6 +31,7 @@ import org.openbravo.erpCommon.utility.Utility;
 import org.openbravo.service.db.DalConnectionProvider;
 
 import com.etendoerp.go.schemaforge.handlers.DocumentPostingService;
+import com.etendoerp.go.schemaforge.util.NeoActionContract;
 
 /**
  * Hooks for the Goods Movements (M_Movement) header entity.
@@ -74,6 +77,15 @@ public class GoodsMovementsHeaderHandler implements NeoHandler {
   /** Package-private seam so unit tests can inject a mocked {@link DocumentPostingService}. */
   void setPostingService(DocumentPostingService postingService) {
     this.postingService = postingService;
+  }
+
+  /**
+   * {@inheritDoc} {@code post} / {@code unpost} (ETP-6406): the actions this handler serves through
+   * the posting service, published so an agent uses them instead of the AD {@code Posted} button.
+   */
+  @Override
+  public Map<String, NeoActionContract> actionContracts() {
+    return InventoryPostingContracts.byProcessed();
   }
 
   @Override

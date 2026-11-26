@@ -19,6 +19,7 @@ package com.etendoerp.go.schemaforge;
 
 import java.io.IOException;
 import java.util.List;
+import java.util.Locale;
 import java.util.Optional;
 
 import javax.servlet.http.HttpServletResponse;
@@ -30,11 +31,12 @@ import org.openbravo.base.exception.OBException;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.utility.Attachment;
 
+import com.etendoerp.go.schemaforge.email.DocShareLinkService;
 import com.etendoerp.go.schemaforge.email.DocumentDownloadTokenService;
 import com.etendoerp.go.schemaforge.email.DocumentDownloadTokenService.Claims;
 
 /**
- * Serves email document downloads from signed links.
+ * Serves email document downloads from share links and signed links.
  * <p>
  * The lookup and the streaming are {@link AnonymousAttachmentStreamer}'s, shared with the customer
  * portal's PDF (ETP-6209): both run without an Etendo session.
@@ -59,23 +61,95 @@ final class NeoDocumentDownloadService {
           + " AND e.isincluded = 'Y' AND tb.tablevel = 0"
           + " ORDER BY e.seqno LIMIT 1";
 
+  private static final String NOT_FOUND_MESSAGE = "Document not found";
+
+  /**
+   * User-Agent tokens of email security scanners and link-preview fetchers that announce
+   * themselves (ETP-5035): a download from one of them is served but not counted as an open of the
+   * share link. Matched as case-insensitive substrings, so each token must be one no browser
+   * sends. Conservative on purpose: many scanners present a plain browser User-Agent, and those
+   * still count.
+   * <ul>
+   * <li>Microsoft: Defender for Office 365 Safe Links ({@code SafeLinks}), Bing/Outlook link
+   * preview ({@code BingPreview}).</li>
+   * <li>Google: Gmail image proxy ({@code GoogleImageProxy}), Safe Browsing fetcher
+   * ({@code Google-Safety}).</li>
+   * <li>Gateways naming themselves: Mimecast, Proofpoint, Barracuda, Symantec / Broadcom
+   * (MessageLabs), Cisco IronPort, Trend Micro, Sophos.</li>
+   * </ul>
+   */
+  static final List<String> EMAIL_SCANNER_USER_AGENT_TOKENS = List.of("safelinks", "bingpreview",
+      "googleimageproxy", "google-safety", "mimecast", "proofpoint", "barracuda", "symantec",
+      "broadcom", "messagelabs", "ironport", "trendmicro", "trend micro", "sophos");
+
   private NeoDocumentDownloadService() {
   }
 
-  static void handle(String token, HttpServletResponse response) throws IOException {
-    Optional<Claims> claims = DocumentDownloadTokenService.validate(token);
+  /**
+   * Serves the document a download link points to.
+   *
+   * @param token the path segment after the download path: a share code or a signed token
+   * @param userAgent the request's {@code User-Agent} header, may be {@code null}
+   * @param response the response the file or the error is written to
+   * @throws IOException when the response cannot be written
+   */
+  static void handle(String token, String userAgent, HttpServletResponse response)
+      throws IOException {
+    // ETP-5035: a short share code is looked up in ETGO_Doc_Share_Link; anything else is a signed
+    // token from a link already in an inbox. An unknown, expired or revoked code answers the same
+    // 404 as a missing file, so the response does not tell whether the record exists.
+    boolean shareCode = DocShareLinkService.isShareCode(token);
+    Optional<Claims> claims = shareCode ? DocShareLinkService.resolve(token)
+        : DocumentDownloadTokenService.validate(token);
     if (!claims.isPresent()) {
-      writePlainError(response, HttpServletResponse.SC_FORBIDDEN, "Invalid or expired link");
+      if (shareCode) {
+        writePlainError(response, HttpServletResponse.SC_NOT_FOUND, NOT_FOUND_MESSAGE);
+      } else {
+        writePlainError(response, HttpServletResponse.SC_FORBIDDEN, "Invalid or expired link");
+      }
       return;
     }
     Claims validated = claims.get();
     Attachment attachment = resolveAttachment(validated);
     if (attachment == null) {
-      writePlainError(response, HttpServletResponse.SC_NOT_FOUND, "Document file not found");
+      writePlainError(response, HttpServletResponse.SC_NOT_FOUND,
+          shareCode ? NOT_FOUND_MESSAGE : "Document file not found");
       return;
+    }
+    if (shareCode && !isEmailScanner(userAgent)) {
+      recordOpenQuietly(token, validated);
     }
     AnonymousAttachmentStreamer.stream(attachment, response,
         "spec=" + validated.getSpecName() + " record=" + validated.getRecordId());
+  }
+
+  /**
+   * Whether a request comes from an email security scanner or link-preview fetcher that names
+   * itself in its User-Agent ({@link #EMAIL_SCANNER_USER_AGENT_TOKENS}).
+   *
+   * @param userAgent the request's {@code User-Agent} header, may be {@code null}
+   * @return {@code true} when the User-Agent holds a known scanner token
+   */
+  static boolean isEmailScanner(String userAgent) {
+    if (StringUtils.isBlank(userAgent)) {
+      return false;
+    }
+    String normalized = userAgent.toLowerCase(Locale.ROOT);
+    return EMAIL_SCANNER_USER_AGENT_TOKENS.stream().anyMatch(normalized::contains);
+  }
+
+  /**
+   * Counts an open of a share link without ever blocking the download: a failure is logged and the
+   * document is still served. The row is committed with the request's own transaction (the DAL
+   * request filter). The log names the document, never the code: the code is a live credential.
+   */
+  private static void recordOpenQuietly(String code, Claims validated) {
+    try {
+      DocShareLinkService.recordOpen(code);
+    } catch (RuntimeException e) {
+      log.warn("Could not record the open of a document share link (spec={} record={}): {}",
+          validated.getSpecName(), validated.getRecordId(), e.getMessage(), e);
+    }
   }
 
   /**

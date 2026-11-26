@@ -76,7 +76,8 @@ final class DalOrderEmailDocumentResolver implements EmailDocumentRecordResolver
         order.getDocumentNo(),
         amount,
         order.getClient().getId(),
-        buildDetails(order, amount))
+        buildDetails(order, DalEmailContractDataResolver.formatDisplayAmount(
+            order.getGrandTotalAmount(), order.getCurrency())))
         .withDocumentStatus(order.getDocumentStatus()));
   }
 

@@ -36,6 +36,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
+import org.openbravo.dal.core.DalThreadCleaner;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.datamodel.Table;
@@ -83,12 +84,14 @@ import com.etendoerp.go.schemaforge.data.SFSpec;
  *       the same record is joined, never duplicated ({@link #IN_FLIGHT}): the agent's usual "Complete,
  *       then ask for the PDF" waits for the eager render instead of starting a second one. Across
  *       nodes, the store takes {@code pg_advisory_xact_lock} on the record and re-checks whether a
- *       current PDF is already there, so two nodes never store two main files.</li>
+ *       current PDF is already there, so two nodes never store two main files. The lock covers only
+ *       that re-check and the store: the render's HTTP calls run with no transaction open, so two
+ *       nodes may render the same document.</li>
  *   <li><b>Bounded.</b> {@value #THREADS} daemon threads and a queue of {@value #QUEUE_CAPACITY}; a
  *       burst beyond it is dropped with one log line and the document gets its PDF on a later
  *       request.</li>
- *   <li><b>Never throws into the caller</b>, and every worker run ends with its session rolled back
- *       or committed and closed, and its context cleared.</li>
+ *   <li><b>Never throws into the caller</b>, and every worker run ends with every session of its
+ *       thread (the read-only pool's included) closed, and its context cleared.</li>
  *   <li><b>As the caller.</b> The worker runs under the caller's user, role, client and
  *       organization. The renderer refuses to store for a role without write access to the
  *       document's attachments (D23). The customer portal, which has no session, passes the identity
@@ -494,7 +497,7 @@ public final class NeoPrintAfterComplete {
     return created;
   }
 
-  /** The worker side: never throws, always leaves the session closed and the context clean. */
+  /** The worker side: never throws, always leaves every session of the thread closed and the context clean. */
   static NeoPrintableRenderer.Outcome run(Job job) {
     NeoPrintableRenderer.Outcome outcome = NeoPrintableRenderer.Outcome.FAILED;
     try {
@@ -511,13 +514,10 @@ public final class NeoPrintAfterComplete {
           causeChain(e));
       outcome = NeoPrintableRenderer.Outcome.FAILED;
     } finally {
-      // Whatever path ended the render (an early return included), its session ends here.
-      rollbackQuietly();
-      try {
-        OBContext.setOBContext((OBContext) null);
-      } catch (RuntimeException e) {
-        log.debug("[print] could not clear the worker context: {}", e.getClass().getSimpleName());
-      }
+      // Whatever path ended the render (an early return included), every session of the thread
+      // ends here: the read-only pool's too, or the reused worker would find it, and its stale
+      // connection, in the next job.
+      cleanThreadQuietly();
     }
     return outcome;
   }
@@ -546,17 +546,42 @@ public final class NeoPrintAfterComplete {
     entity = OBDal.getInstance().get(SFEntity.class, job.entityId);
     NeoAttachmentTarget target = NeoAttachmentTarget.resolve(entity.getETGOSFSpec(), entity,
         job.recordId, false);
-    // Across nodes: one store per document at a time, and none when a current PDF is already there
-    // (another node, or the eager render this request did not see in this JVM, stored it).
-    lockDocument(job.key());
+    // A first check without the lock: most renders end here.
     if (NeoDocumentPdf.resolveStored(target, entity).getStatus() == NeoDocumentPdf.Status.FOUND) {
       return NeoPrintableRenderer.Outcome.ALREADY_CURRENT;
     }
     String status = NeoDocumentPdf.documentStatus(target);
-    NeoPrintableRenderer.Outcome outcome = new NeoPrintableRenderer().renderAndStore(
-        entity.getETGOSFSpec(), entity, job.recordId, status, job.language);
+    NeoPrintableRenderer renderer = new NeoPrintableRenderer();
+    NeoPrintableRenderer.Prepared prepared =
+        renderer.prepare(entity.getETGOSFSpec(), entity, job.recordId, status);
+    if (prepared.getOutcome() != null) {
+      return prepared.getOutcome();
+    }
+    String document = NeoPdfSourceConfig.printDocumentOf(entity);
+    // The manifest and jsreport are slow HTTP calls: no transaction (no idle-in-transaction
+    // connection, no advisory lock) may be open meanwhile. The reads above are committed first, in
+    // both pools: the stored-PDF check reads the branding through the read-only pool, and that
+    // session would otherwise keep its connection (and its transaction) for the whole render.
+    OBDal.getInstance().commitAndClose();
+    OBDal.getReadOnlyInstance().commitAndClose();
+    byte[] pdf = renderer.renderPdf(prepared, job.language);
+    if (pdf.length == 0) {
+      return NeoPrintableRenderer.Outcome.FAILED;
+    }
+    // A new transaction: read the definitions again (the first session's are detached).
+    entity = OBDal.getInstance().get(SFEntity.class, job.entityId);
+    if (entity == null || entity.getETGOSFSpec() == null) {
+      return NeoPrintableRenderer.Outcome.NOT_PRINTABLE;
+    }
+    target = NeoAttachmentTarget.resolve(entity.getETGOSFSpec(), entity, job.recordId, false);
+    // Across nodes: one store per document at a time, and none when a current PDF is already there
+    // (another node, or the eager render this request did not see in this JVM, stored it meanwhile).
+    lockDocument(job.key());
+    if (NeoDocumentPdf.resolveStored(target, entity).getStatus() == NeoDocumentPdf.Status.FOUND) {
+      return NeoPrintableRenderer.Outcome.ALREADY_CURRENT;
+    }
+    NeoPrintableRenderer.Outcome outcome = renderer.store(prepared, pdf);
     if (outcome == NeoPrintableRenderer.Outcome.STORED) {
-      String document = NeoPdfSourceConfig.printDocumentOf(entity);
       OBDal.getInstance().commitAndClose();
       // ETP-5993: counted once committed, so a store that rolled back is never a generated PDF.
       if (job.countsAsMcpUsage) {
@@ -571,7 +596,8 @@ public final class NeoPrintAfterComplete {
   /**
    * {@code pg_advisory_xact_lock} on the document, held until the worker's transaction ends. Every
    * server-side store of a document takes it first and then re-checks the stored PDF, so two stores
-   * (on two nodes) never race.
+   * (on two nodes) never race. It covers only that re-check and the store, never the render: two
+   * nodes may render the same document, but only one file is stored.
    *
    * @param key {@link #keyOf}
    */
@@ -617,11 +643,18 @@ public final class NeoPrintAfterComplete {
     }
   }
 
-  private static void rollbackQuietly() {
+  /**
+   * The cleanup of a request thread, as {@code IsolatedDalRead} does it: the cleaner closes every
+   * session of the thread and, even when a close fails, drops the session handler and the context
+   * in its own {@code finally}; the admin-mode stack is the only state it leaves behind.
+   */
+  private static void cleanThreadQuietly() {
     try {
-      OBDal.getInstance().rollbackAndClose();
+      DalThreadCleaner.getInstance().cleanWithRollback();
     } catch (RuntimeException e) {
-      log.debug("[print] nothing to roll back: {}", e.getMessage());
+      log.debug("[print] could not clean the worker thread: {}", e.getClass().getSimpleName());
+    } finally {
+      OBContext.clearAdminModeStack();
     }
   }
 

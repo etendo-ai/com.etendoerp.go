@@ -21,6 +21,7 @@ import java.util.Optional;
 import java.util.function.Function;
 
 import org.apache.commons.lang3.StringUtils;
+import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.structure.BaseOBObject;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.system.Client;
@@ -138,7 +139,7 @@ public enum PortalDocumentKind {
    * @param document any portal document
    * @return {@code true} only for a rectificative invoice
    */
-  static boolean isCreditNote(BaseOBObject document) {
+  public static boolean isCreditNote(BaseOBObject document) {
     if (!(document instanceof Invoice)) {
       return false;
     }
@@ -221,6 +222,28 @@ public enum PortalDocumentKind {
     Invoice invoice = OBDal.getInstance().get(Invoice.class, recordId);
     DocumentType documentType = invoice == null ? null : invoice.getTransactionDocument();
     return documentType != null && isRectificative(documentType) ? COPY_KEY_CREDIT_NOTE : name();
+  }
+
+  /**
+   * The HQL condition that is true for a credit note's document type, the query twin of
+   * {@link #isCreditNote(BaseOBObject)}: a credit memo or return category, or the localization module's
+   * rectificative flag when that module is installed (ETP-6209 QA CP-16, the invoices' "tipo"
+   * quick filter). Parenthesised, so it can be negated.
+   *
+   * @param documentTypePath the HQL path of the invoice's document type, e.g.
+   *     {@code e.transactionDocument}
+   * @return the condition
+   */
+  static String creditNoteCondition(String documentTypePath) {
+    StringBuilder condition = new StringBuilder("(").append(documentTypePath)
+        .append(".documentCategory in ('").append(CATEGORY_CREDIT_MEMO).append("', '")
+        .append(CATEGORY_RETURN_MATERIAL).append("')");
+    if (ModelProvider.getInstance().getEntity(DocumentType.ENTITY_NAME)
+        .hasProperty(PROPERTY_RECTIFICATIVE)) {
+      condition.append(" or coalesce(").append(documentTypePath).append('.')
+          .append(PROPERTY_RECTIFICATIVE).append(", false) = true");
+    }
+    return condition.append(')').toString();
   }
 
   /**

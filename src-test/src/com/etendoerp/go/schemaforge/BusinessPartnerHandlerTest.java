@@ -1532,9 +1532,11 @@ class BusinessPartnerHandlerTest {
     requestBody.put("etgoEmail", "a@b.com");
     when(ctx.getRequestBody()).thenReturn(requestBody);
 
-    handler.afterHandle(ctx);
-    // No assertion beyond "did not throw" — reaching this line without an exception proves
-    // OBDal.getInstance() was never invoked in this unmocked-static context.
+    try (MockedStatic<OBDal> mDal = mockStatic(OBDal.class)) {
+      handler.afterHandle(ctx);
+      // The backfill is the only DAL work on this path: with neither flag sent it never starts.
+      mDal.verifyNoInteractions();
+    }
   }
 
   /**
@@ -1684,8 +1686,9 @@ class BusinessPartnerHandlerTest {
       when(obDalMock.getConnection()).thenThrow(new RuntimeException("connection pool exhausted"));
       mDal.when(OBDal::getInstance).thenReturn(obDalMock);
 
-      // Must not throw.
+      // Must not throw; the backfill was attempted and its failure absorbed.
       handler.afterHandle(ctx);
+      verify(obDalMock).getConnection();
     }
   }
 
@@ -2912,5 +2915,119 @@ class BusinessPartnerHandlerTest {
     assertEquals(400, result.getHttpStatus());
     JSONObject errors = result.getBody().getJSONObject("response").getJSONObject("errors");
     assertEquals(result.getBody().getJSONObject("error").getString("message"), errors.getString("etgoEmail"));
+  }
+
+  // ── handle() — formats and contact type judged inside the data envelope (ETP-6176) ───────────
+
+  private NeoResponse handlePost(JSONObject body) throws Exception {
+    when(ctx.getHttpMethod()).thenReturn("POST");
+    when(ctx.getRequestBody()).thenReturn(body);
+    return handler.handle(ctx);
+  }
+
+  /** The same invalid email is refused with the same message at the top level and in {@code data}. */
+  @Test
+  void testHandlePostRefusesAnInvalidEmailInsideTheEnvelopeLikeAtTheTopLevel() throws Exception {
+    NeoResponse topLevel = handlePost(new JSONObject().put("etgoEmail", "not-an-email"));
+    NeoResponse enveloped = handlePost(new JSONObject().put("data",
+        new JSONObject().put("etgoEmail", "not-an-email")));
+
+    assertNotNull(topLevel);
+    assertNotNull(enveloped);
+    assertEquals(400, enveloped.getHttpStatus());
+    assertEquals(topLevel.getBody().getJSONObject("error").getString("message"),
+        enveloped.getBody().getJSONObject("error").getString("message"));
+  }
+
+  /** A bad website or phone inside the envelope is refused too: every format rule reads the section. */
+  @Test
+  void testHandlePostRefusesAnInvalidWebsiteOrPhoneInsideTheEnvelope() throws Exception {
+    NeoResponse web = handlePost(new JSONObject().put("data",
+        new JSONObject().put("etgoWeb", "no-domain")));
+    NeoResponse phone = handlePost(new JSONObject().put("data",
+        new JSONObject().put("etgoPhone", "call me")));
+
+    assertNotNull(web);
+    assertEquals(400, web.getHttpStatus());
+    assertNotNull(phone);
+    assertEquals(400, phone.getHttpStatus());
+  }
+
+  /** A well-formed email inside the envelope is not refused by the format rules. */
+  @Test
+  void testHandlePostAcceptsAValidEmailInsideTheEnvelope() throws Exception {
+    try (MockedStatic<GoFeatureFlags> flag = contactTypeFlag(false)) {
+      assertNull(handlePost(new JSONObject().put("data",
+          new JSONObject().put("name", "Cliente SL").put("etgoEmail", "ventas@cliente.es"))));
+    }
+  }
+
+  /**
+   * An update whose enveloped email equals the stored one is not refused, even when the stored
+   * value is legacy dirt; the stored row is read through the readable-clients scope.
+   */
+  @Test
+  void testHandlePatchLetsAnUnchangedStoredEmailThroughInsideTheEnvelope() throws Exception {
+    JSONObject body = new JSONObject().put("data",
+        new JSONObject().put("etgoEmail", "legacy-dirt"));
+    when(ctx.getHttpMethod()).thenReturn("PATCH");
+    when(ctx.getRequestBody()).thenReturn(body);
+    when(ctx.getRecordId()).thenReturn("REC_001");
+    Connection connMock = mock(Connection.class);
+    ResultSet stored = mock(ResultSet.class);
+    when(stored.next()).thenReturn(true);
+    when(stored.getString(1)).thenReturn("legacy-dirt");
+    PreparedStatement psFormats = mock(PreparedStatement.class);
+    when(psFormats.executeQuery()).thenReturn(stored);
+    when(connMock.prepareStatement(
+        argThat(s -> s != null && s.contains("em_etgo_email")))).thenReturn(psFormats);
+    givenStoredContactTypes(connMock, "Y", "N");
+
+    try (MockedStatic<GoFeatureFlags> flag = contactTypeFlag(false);
+        MockedStatic<OBDal> mDal = mockStatic(OBDal.class)) {
+      OBDal obDalMock = mock(OBDal.class);
+      when(obDalMock.getConnection()).thenReturn(connMock);
+      mDal.when(OBDal::getInstance).thenReturn(obDalMock);
+
+      assertNull(handler.handle(ctx));
+    }
+    verify(psFormats).setString(1, "REC_001");
+  }
+
+  /** A contact sent with no type inside the envelope is refused, like one sent at the top level. */
+  @Test
+  void testHandlePostRejectsAnEnvelopedContactSentWithNoType() throws Exception {
+    JSONObject data = new JSONObject().put("name", "Sin tipo").put("customer", false)
+        .put("vendor", false);
+
+    try (MockedStatic<GoFeatureFlags> flag = contactTypeFlag(true);
+        MockedStatic<OBMessageUtils> msg = mockStatic(OBMessageUtils.class)) {
+      msg.when(() -> OBMessageUtils.messageBD(anyString())).thenAnswer(inv -> inv.getArgument(0));
+
+      assertContactTypeRejection(handlePost(new JSONObject().put("data", data)));
+    }
+  }
+
+  /** The types inherited from the category are written into the section that is persisted. */
+  @Test
+  void testHandlePostInheritsContactTypesIntoTheEnvelope() throws Exception {
+    JSONObject data = new JSONObject().put("name", "Proveedor SL")
+        .put("businessPartnerCategory", "CAT_VENDORS");
+    JSONObject body = new JSONObject().put("data", data);
+    Connection connMock = mock(Connection.class);
+    givenTypesRow(connMock, CATEGORY_TYPES_SQL_MARKER, "N", "Y");
+
+    try (MockedStatic<GoFeatureFlags> flag = contactTypeFlag(true);
+        MockedStatic<OBDal> mDal = mockStatic(OBDal.class)) {
+      OBDal obDalMock = mock(OBDal.class);
+      when(obDalMock.getConnection()).thenReturn(connMock);
+      mDal.when(OBDal::getInstance).thenReturn(obDalMock);
+
+      assertNull(handlePost(body));
+    }
+
+    assertFalse(data.getBoolean("customer"));
+    assertTrue(data.getBoolean("vendor"));
+    assertFalse(body.has("customer"));
   }
 }

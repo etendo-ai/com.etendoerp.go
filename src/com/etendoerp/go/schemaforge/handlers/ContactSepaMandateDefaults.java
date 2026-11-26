@@ -37,6 +37,7 @@ import org.openbravo.dal.service.OBDal;
 
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.SepaRemittancesFlag;
+import com.etendoerp.go.schemaforge.TenantOwnership;
 
 /**
  * ETP-6148 — the customer's SEPA direct-debit mandate on a contact write
@@ -356,8 +357,8 @@ public final class ContactSepaMandateDefaults {
       return null;
     }
     Connection conn = OBDal.getInstance().getConnection();
-    try (PreparedStatement ps = conn.prepareStatement(PERSISTED_SQL)) {
-      ps.setString(1, recordId);
+    try (PreparedStatement ps = TenantOwnership.prepareByIdForReadableClients(conn,
+        PERSISTED_SQL, recordId)) {
       try (ResultSet rs = ps.executeQuery()) {
         if (!rs.next()) {
           return null;

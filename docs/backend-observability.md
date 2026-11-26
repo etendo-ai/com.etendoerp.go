@@ -46,6 +46,11 @@ Current constants:
 - `backend_quotation_decided` (ETP-6209)
 - `backend_portal_opened` (ETP-6209)
 - `backend_portal_email_sent` (ETP-6209)
+- `backend_portal_document_opened` (ETP-6209 KPIs)
+- `backend_portal_value_interaction` (ETP-6209 KPIs)
+- `backend_portal_session_engaged` (ETP-6209 KPIs)
+- `backend_portal_pdf_downloaded` (ETP-6209 KPIs)
+- `backend_portal_etendo_click` (ETP-6209 KPIs)
 
 ### When the backend emits to Mixpanel (ETP-5466)
 
@@ -482,8 +487,13 @@ KPIs. Every event carries only allowlisted keys; the portal visit and email even
 | Event | Properties | Fires |
 |---|---|---|
 | `backend_portal_document_sent` | `account_id`, `type` | once per document: the first time a portal link of an email **send** (`LINK_ORIGIN = SEND`) is confirmed delivered and no other sent `SEND` link of the same record exists. Renewals, decision links and re-sends of the same document never fire |
-| `backend_portal_document_downloaded` | `account_id`, `type` | once per document: the first successful portal `/pdf` stream of a document that was sent with a portal link. "First" is the atomic stamp `ETGO_PORTAL_LINK.FIRST_DOWNLOADED` on the document's first sent `SEND` link — only the request whose `UPDATE … WHERE first_downloaded IS NULL` set it emits, so concurrent downloads emit once. A document never sent with a link emits nothing: it is outside the KPI's denominator |
-| `backend_portal_opened` | `account_id`, `third_party`, `entry_doc_type`, `origin` (`send`, `renewal`, `decision`, `shared`) | a portal **visit** opened from a link: `GET /sws/portal/me` answered `valid` and the same link had no valid `/me` in the last 30 minutes (sliding, in memory per node — a deploy starts every visit anew). A reload or the SPA's re-checks inside a visit do not count. `third_party` = `HMAC(per-purpose key "kpi-third-party:v1", C_BPartner_ID)` base64url — stable per customer, irreversible, omitted when the email signing secret is not configured. `entry_doc_type` is the link's document type, `credit_note` told apart from `invoice` |
+| `backend_portal_document_downloaded` | `account_id`, `type`, `purpose` (`preview`, `download`) | once per document: the first successful portal `/pdf` stream (the detail's automatic preview included — "downloaded" means "PDF served"; `purpose` tells them apart since the KPI design) of a document that was sent with a portal link. "First" is the atomic stamp `ETGO_PORTAL_LINK.FIRST_DOWNLOADED` on the document's first sent `SEND` link — only the request whose `UPDATE … WHERE first_downloaded IS NULL` set it emits, so concurrent downloads emit once. A document never sent with a link emits nothing: it is outside the KPI's denominator |
+| `backend_portal_opened` | `account_id`, `third_party`, `entry_doc_type`, `origin` (`send`, `renewal`, `decision`, `shared`), `portal_session`, `in_universe` | once per **portal session** (`PortalSessionTracker`, table `ETGO_PORTAL_SESSION`): the first token-validated request of a tab mints a session (30 minutes idle, sliding; 12 hours at most). A reload or the SPA's re-checks inside a session do not count; two tabs opened from the email are two sessions; a deploy no longer restarts visits. `third_party` = `HMAC(per-purpose key "kpi-third-party:v1", C_BPartner_ID)` base64url — stable per customer, irreversible, omitted when the email signing secret is not configured. `portal_session` = `HMAC("kpi-portal-session:v1", session id)`. `in_universe` = entered from a `send` or `renewal` link with an origin document. `entry_doc_type` is the link's document type, `credit_note` told apart from `invoice`. The value-session KPI's denominator (`in_universe = true`) |
+| `backend_portal_document_opened` | `account_id`, `portal_session`, `in_universe`, `origin` (`link`, `home`, `search`, `list`, `related`), `doc_type`, `is_origin_doc` | a document detail answered 200 for a user open (the page's `?origin=`; `refresh`, `action` and unknown origins are never recorded), once per session and document (in memory, per node) |
+| `backend_portal_value_interaction` | `account_id`, `portal_session`, `in_universe`, `interaction` (`home_document`, `related_document`, `quotation_decision`), `doc_type` | the first of its type in the session (rule v1), atomic stamp on `ETGO_PORTAL_SESSION` (`HOME_DOC_AT`, `RELATED_DOC_AT`, `DECISION_AT`): (a) a document other than the origin opened from Home or the search, (b) a related document other than the origin, (c) a quotation decision request sent in the session (its confirmation, later and from the email, is not). A list open, and the origin document, never count |
+| `backend_portal_session_engaged` | `account_id`, `portal_session`, `in_universe`, `first_interaction`, `entry_doc_type`, `rule` (`v1`) | the session's first value interaction (stamp `ENGAGED_AT`): the value-session KPI's numerator (`in_universe = true`) |
+| `backend_portal_pdf_downloaded` | `account_id`, `portal_session`, `in_universe`, `doc_type`, `is_origin_doc`, `origin` (`detail`, `list`, `unknown`) | a `/pdf?purpose=download` served (the Download button or the card menu — never the detail's automatic preview), once per session and document; stamps `DOWNLOADED_AT`. Never a value interaction |
+| `backend_portal_etendo_click` | `account_id`, `portal_session`, `in_universe`, `reference` (`learnMore`, `startFree`), `location` (`header`, `mobile`, `rail`) | `POST /sws/portal/events/etendo-click` (portal token, rate limited), once per (session, `reference`) — stamps `LEARN_MORE_CLICK_AT` / `START_FREE_CLICK_AT`, plus `ETENDO_CLICK_AT` for the session's first. A later click on the same `reference` from another `location` is not visible: only the first click's `location` is recorded. The endpoint only resumes a live session (never mints one); with none, the click is dropped. No URL, no recipient data, no cookie |
 | `backend_portal_email_sent` | `account_id`, `piece` (`document_send`, `link_renewal`, `decision_accept`, `decision_reject`), `doc_type` (`document_send` only) | every portal email that actually left, on delivery after its commit: `PortalLinkService#confirm` for a document send carrying a portal link (`SEND`) and a renewal (`RENEWAL`); `PortalDecisionService#markSent` for a decision confirmation. Throttled, duplicate or failed sends never fire. Every send counts (unlike `backend_portal_document_sent`, first per document, unchanged) |
 | `backend_quotation_decided` | `account_id`, `decision` (`accepted`, `rejected`), `source` (`portal`, `app`) | `portal`: a portal decision applied by its confirmation (`appliedNow`), **once per quotation and only for a quotation emailed with a portal link** — the quotation has a confirmed `SEND` link and this is its first `CONFIRMED` portal decision (checked read-only after the commit; a shared-link or other-document entry, or a second decision after a re-open, never fires), so the numerator stays inside the `backend_portal_document_sent` denominator. `app`: a rejection (`RejectQuotationHandler#reject`, so also MCP and `DocAction = RJ`), or a conversion into an order (`Convertquotation`) or an invoice (`createDraftInvoice` on a quotation) — **not** when the quotation was `ETGO_AC`, i.e. already accepted from the portal and counted then |
 
@@ -511,8 +521,22 @@ are unchanged.
   `source = portal`, broken down by `decision`, ÷ count of `backend_portal_document_sent` where
   `type = quotation` (target ≥ 20 %). Manual decisions (`source = app`) are excluded from the
   metric and kept for comparison.
+- **Primary (KPI design, rule v1) — sessions with a value interaction:** count of
+  `backend_portal_session_engaged` where `in_universe = true` ÷ count of `backend_portal_opened`
+  where `in_universe = true`, same month (target ≥ 40 %). Breakdowns: `backend_portal_value_interaction`
+  by `interaction`. Cross-check by SQL on `ETGO_PORTAL_SESSION` (`ENGAGED_AT IS NOT NULL` over the
+  universe rows), which also recomputes the KPI if Mixpanel dropped events.
+- **Counting the per-document session events:** `backend_portal_document_opened` and
+  `backend_portal_pdf_downloaded` are deduplicated per (session, document) **in memory, per node**:
+  two nodes (a deploy overlap) or a restart can repeat one. Report them as distinct
+  `portal_session` (or distinct `portal_session` × `doc_type`), never as raw event counts. The
+  stamp-backed events (`backend_portal_opened`, `…_value_interaction`, `…_session_engaged`,
+  `…_etendo_click`) are exact across nodes.
+- **Interest in Etendo (marketing):** count of `backend_portal_etendo_click` (by `reference`,
+  `location`); sessions with any click: `ETENDO_CLICK_AT IS NOT NULL` on `ETGO_PORTAL_SESSION`.
 - **Portal reach (marketing):** distinct `third_party` on `backend_portal_opened` = customers who
-  opened the portal; count of `backend_portal_opened` = visits, by `entry_doc_type` / `origin`.
+  opened the portal; count of `backend_portal_opened` = sessions, by `entry_doc_type` / `origin`.
+  Sessions per account (marketing export): `backend_portal_opened` by `account_id` and month.
 - **Portal emails by piece (marketing):** count of `backend_portal_email_sent` broken down by
   `piece` (and `doc_type` for `document_send`). Visits per email sent = `backend_portal_opened`
   ÷ `backend_portal_email_sent`, same period.

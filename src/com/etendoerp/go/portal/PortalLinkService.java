@@ -110,11 +110,37 @@ public class PortalLinkService {
     private final String id;
     private final String url;
     private final Duration validity;
+    private final String clientId;
+    private final String clientName;
+    private final String organizationId;
 
     MintedLink(String id, String url, Duration validity) {
+      this(id, url, validity, null, null, null);
+    }
+
+    MintedLink(String id, String url, Duration validity, String clientId, String clientName,
+        String organizationId) {
       this.id = id;
       this.url = url;
       this.validity = validity;
+      this.clientId = clientId;
+      this.clientName = clientName;
+      this.organizationId = organizationId;
+    }
+
+    /** @return the issuing tenant ({@code AD_Client_ID}), for the email's issuer block */
+    public String getClientId() {
+      return clientId;
+    }
+
+    /** @return the issuing tenant's name, the company the email's card names */
+    public String getClientName() {
+      return clientName;
+    }
+
+    /** @return the document's organization, whose logo the email's card shows */
+    public String getOrganizationId() {
+      return organizationId;
     }
 
     public String getId() {
@@ -334,17 +360,34 @@ public class PortalLinkService {
    * @return the state; unknown, pending, deactivated and blank tokens are all {@link State#INVALID}
    */
   public Validation validate(String rawToken) {
+    return validate(rawToken, null);
+  }
+
+  /**
+   * Validates a presented token together with the tenant id of the URL it came from
+   * ({@code /portal/{AD_Client_ID}/{token}}, ETP-6209 QA CP-43).
+   *
+   * <p>A client id that does not match the token's own client makes the token
+   * {@link State#INVALID} — the exact answer of an unknown token, so the check reveals nothing
+   * about which tenant a token belongs to. No client id (a link in the MVP shape) validates the
+   * token alone.
+   *
+   * @param rawToken the token from the {@code X-Portal-Token} header or the URL path
+   * @param presentedClientId the tenant id the caller presented, or {@code null}
+   * @return the state
+   */
+  public Validation validate(String rawToken, String presentedClientId) {
     // S1: in admin mode on its own, like mintForSend, so it never depends on the caller's mode.
     OBContext.setAdminMode(true);
     try {
-      return validateInAdminMode(rawToken);
+      return validateInAdminMode(rawToken, presentedClientId);
     } finally {
       OBContext.restorePreviousMode();
     }
   }
 
-  private Validation validateInAdminMode(String rawToken) {
-    Optional<PortalLink> sent = findSentLink(rawToken);
+  private Validation validateInAdminMode(String rawToken, String presentedClientId) {
+    Optional<PortalLink> sent = findSentLink(rawToken, presentedClientId);
     if (!sent.isPresent()) {
       return new Validation(State.INVALID, null);
     }
@@ -376,6 +419,23 @@ public class PortalLinkService {
    * @return the link, or empty for anything {@link #validate} calls invalid
    */
   public Optional<PortalLink> findSentLink(String rawToken) {
+    return findSentLink(rawToken, null);
+  }
+
+  /**
+   * As {@link #findSentLink(String)}, and empty as well when a presented tenant id does not match
+   * the link's client (see {@link #validate(String, String)}).
+   *
+   * @param rawToken the presented token
+   * @param presentedClientId the tenant id of the URL, or {@code null}
+   * @return the link, or empty
+   */
+  public Optional<PortalLink> findSentLink(String rawToken, String presentedClientId) {
+    return findUsableLink(rawToken)
+        .filter(link -> PortalLinkPolicy.clientMatches(presentedClientId, link.getClientId()));
+  }
+
+  private Optional<PortalLink> findUsableLink(String rawToken) {
     String tokenHash = PortalTokens.hash(rawToken);
     if (tokenHash == null) {
       return Optional.empty();
@@ -441,16 +501,28 @@ public class PortalLinkService {
    * @return what happened
    */
   public RenewalOutcome renew(String rawToken) {
+    return renew(rawToken, null);
+  }
+
+  /**
+   * As {@link #renew(String)}, with the tenant id of the URL: a mismatch is
+   * {@link RenewalOutcome#INVALID}, like an unknown token (see {@link #validate(String, String)}).
+   *
+   * @param rawToken the expired token the customer opened
+   * @param presentedClientId the tenant id of the URL, or {@code null}
+   * @return what happened
+   */
+  public RenewalOutcome renew(String rawToken, String presentedClientId) {
     OBContext.setAdminMode(true);
     try {
-      return renewInAdminMode(rawToken);
+      return renewInAdminMode(rawToken, presentedClientId);
     } finally {
       OBContext.restorePreviousMode();
     }
   }
 
-  private RenewalOutcome renewInAdminMode(String rawToken) {
-    Optional<PortalLink> sent = findSentLink(rawToken);
+  private RenewalOutcome renewInAdminMode(String rawToken, String presentedClientId) {
+    Optional<PortalLink> sent = findSentLink(rawToken, presentedClientId);
     if (!sent.isPresent()) {
       return RenewalOutcome.INVALID;
     }
@@ -524,7 +596,7 @@ public class PortalLinkService {
   private Optional<MintedLink> insert(PortalLinkDal.NewLink link) {
     String token = PortalTokens.newToken();
     // Built before the insert so a misconfigured environment never writes a row it has no link for.
-    Optional<String> url = PortalLinkPolicy.buildLink(token);
+    Optional<String> url = PortalLinkPolicy.buildLink(link.client.getId(), token);
     if (!url.isPresent()) {
       return Optional.empty();
     }
@@ -532,7 +604,9 @@ public class PortalLinkService {
     PortalLinkDal.insertPending(link);
     log.info("Minted pending portal link {} ({}) for business partner {} of client {}", link.id,
         link.origin, link.businessPartner.getId(), link.client.getId());
-    return Optional.of(new MintedLink(link.id, url.get(), PortalLinkConfig.ttl()));
+    return Optional.of(new MintedLink(link.id, url.get(), PortalLinkConfig.ttl(),
+        link.client.getId(), link.client.getName(),
+        link.organization == null ? null : link.organization.getId()));
   }
 
   /**
