@@ -53,8 +53,8 @@ class GoAccessNativeWritersTest {
   /** An actual call, not an import or a mention in a comment. */
   private static final Pattern MIRROR_CALL = Pattern.compile(
       "GoAccessLegacyMirror\\s*\\.\\s*(snapshot|syncChanged|onClassicGrantChange)\\s*\\(");
-  /** Files that name a classic access table next to a write keyword but never write it. */
-  private static final Set<String> CONFIRMED_READ_ONLY = Set.of(
+  /** Writers of the classic access tables the mirror does not need to follow, with the reason for each. */
+  private static final Set<String> EXEMPT_WRITERS = Set.of(
       // the mirror itself: it only reads the classic tables and writes ETGO_GO_ACCESS
       "src/com/etendoerp/go/roles/goaccess/GoAccessLegacyMirror.java",
       // module scripts: each writes grants of its own roles only, and none grants a role a GO
@@ -78,7 +78,7 @@ class GoAccessNativeWritersTest {
               new String(Files.readAllBytes(file), StandardCharsets.UTF_8)).replaceAll("");
           String relative = root.relativize(file).toString();
           if (CLASSIC_TABLE.matcher(source).find() && WRITE_KEYWORD.matcher(source).find()
-              && !MIRROR_CALL.matcher(source).find() && !CONFIRMED_READ_ONLY.contains(relative)) {
+              && !MIRROR_CALL.matcher(source).find() && !EXEMPT_WRITERS.contains(relative)) {
             offenders.add(relative);
           }
         }
@@ -87,7 +87,7 @@ class GoAccessNativeWritersTest {
     assertTrue(offenders.isEmpty(),
         "files that name AD_Window_Access / OBUIAPP_Process_Access next to a write keyword and do "
             + "not call GoAccessLegacyMirror.snapshot/syncChanged/onClassicGrantChange (add them "
-            + "to CONFIRMED_READ_ONLY only when they never write the table): " + offenders);
+            + "to EXEMPT_WRITERS only when the grants they write cannot reach a GO feature): " + offenders);
   }
 
   private static Path moduleRoot() {
