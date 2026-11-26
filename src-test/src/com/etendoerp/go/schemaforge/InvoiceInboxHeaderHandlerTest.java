@@ -468,19 +468,26 @@ class InvoiceInboxHeaderHandlerTest {
   @Test
   void currencyOptionsUsesTheStoredInvoiceDateAndTheDateParameterOverridesIt() throws Exception {
     flag(true);
+    // ConversionRateLookup.bindDay binds the day as [start of next day, start of day].
     OptionsRun stored = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
     assertEquals(200, stored.run("ROW-1", null).getHttpStatus());
-    verify(stored.ps, org.mockito.Mockito.atLeastOnce()).setDate(
-        org.mockito.ArgumentMatchers.anyInt(),
-        org.mockito.ArgumentMatchers.eq(java.sql.Date.valueOf("2026-03-15")));
+    verifyDayBound(stored.ps, "2026-03-15", true);
 
     OptionsRun override = new OptionsRun(java.sql.Date.valueOf("2026-03-15"));
     assertEquals(200, override.run("ROW-1", java.util.Map.of("date", "2026-06-30")).getHttpStatus());
-    verify(override.ps, org.mockito.Mockito.atLeastOnce()).setDate(
-        org.mockito.ArgumentMatchers.anyInt(),
-        org.mockito.ArgumentMatchers.eq(java.sql.Date.valueOf("2026-06-30")));
-    verify(override.ps, never()).setDate(org.mockito.ArgumentMatchers.anyInt(),
-        org.mockito.ArgumentMatchers.eq(java.sql.Date.valueOf("2026-03-15")));
+    verifyDayBound(override.ps, "2026-06-30", true);
+    verifyDayBound(override.ps, "2026-03-15", false);
+  }
+
+  private static void verifyDayBound(java.sql.PreparedStatement ps, String day, boolean bound)
+      throws Exception {
+    java.time.LocalDate d = java.time.LocalDate.parse(day);
+    org.mockito.verification.VerificationMode mode = bound
+        ? org.mockito.Mockito.atLeastOnce() : never();
+    verify(ps, mode).setTimestamp(org.mockito.ArgumentMatchers.anyInt(),
+        org.mockito.ArgumentMatchers.eq(java.sql.Timestamp.valueOf(d.plusDays(1).atStartOfDay())));
+    verify(ps, mode).setTimestamp(org.mockito.ArgumentMatchers.anyInt(),
+        org.mockito.ArgumentMatchers.eq(java.sql.Timestamp.valueOf(d.atStartOfDay())));
   }
 
   @Test
