@@ -33,7 +33,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONArray;
@@ -212,7 +212,7 @@ final class BankBounceAiQuestions {
    *         {@value #MAX_QUESTIONS_PER_CALL} questions, is not included
    */
   static List<Component> components(List<Pair> nominal, Set<String> offeredBounceIds,
-      Function<String, String> reference, String model, String clientId) {
+      UnaryOperator<String> reference, String model, String clientId) {
     List<Question> questions = new ArrayList<>();
     for (Pair p : nominal) {
       if (!p.high()) {
@@ -247,7 +247,7 @@ final class BankBounceAiQuestions {
    * @param clientId  the tenant, part of the key
    * @return the question
    */
-  private static Question question(Pair p, Function<String, String> reference, String model,
+  private static Question question(Pair p, UnaryOperator<String> reference, String model,
       String clientId) {
     List<Candidate> raw = p.ambiguous() ? p.candidates()
         : List.of(new Candidate(p.original(), p.signals()));
@@ -270,7 +270,7 @@ final class BankBounceAiQuestions {
    * @param reference the reference of a line by id
    * @return the view
    */
-  private static LineView view(StatementLine line, Function<String, String> reference) {
+  private static LineView view(StatementLine line, UnaryOperator<String> reference) {
     return new LineView(line.id(), line.date(), line.lineNo(), line.amount(),
         sanitize(line.description()), sanitize(line.partnerName()),
         sanitize(reference != null ? reference.apply(line.id()) : null));
@@ -625,17 +625,20 @@ final class BankBounceAiQuestions {
     Map<String, Map<String, Raw>> evaluate(DecisionResult result) {
       Map<String, Map<String, Raw>> out = new LinkedHashMap<>();
       for (Component c : components) {
-        out.put(c.key(), evaluateComponent(c, result));
+        Map<String, Raw> assessed = evaluateComponent(c, result);
+        // A component always has at least one question, so an empty map is only ever "invalid".
+        out.put(c.key(), assessed.isEmpty() ? null : assessed);
       }
       return out;
     }
 
     /**
-     * The assessments of one component, or {@code null} when any of its answers is not valid.
+     * The assessments of one component, or an empty map when any of its answers is not valid.
      *
-     * @param c      the component
+     * @param c      the component (at least one question, as
+     *               {@link BankBounceAiQuestions#components} builds them)
      * @param result the decision result
-     * @return the raw answers by rejection id, or {@code null}
+     * @return the raw answers by rejection id, or an empty map when any answer is not valid
      */
     private Map<String, Raw> evaluateComponent(Component c, DecisionResult result) {
       Map<String, Raw> byBounce = new LinkedHashMap<>();
@@ -643,7 +646,7 @@ final class BankBounceAiQuestions {
         DecisionAnswer answer = answerOf(result, rejectionAlias.get(q.rejection().id()));
         Raw raw = answer != null ? raw(q, answer) : null;
         if (raw == null) {
-          return null;
+          return Map.of();
         }
         byBounce.put(q.rejection().id(), raw);
       }

@@ -32,6 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
@@ -317,8 +318,17 @@ final class BankBounceAi {
     }
   }
 
-  private static volatile State state = runtimeState();
-  private static volatile RuntimeDecider runtimeDecider;
+  /**
+   * The current state. Held in an {@link AtomicReference} so a replacement by {@link #setSeams} or
+   * {@link #reset} is safely published to every thread, which reads it once per request.
+   */
+  private static final AtomicReference<State> STATE = new AtomicReference<>(runtimeState());
+
+  /**
+   * The single runtime decider, created on first use by {@link LazyRuntimeDecider#runtime()};
+   * {@code null} until then.
+   */
+  private static final AtomicReference<RuntimeDecider> RUNTIME_DECIDER = new AtomicReference<>();
 
   /** Utility class: static members only, never instantiated. */
   private BankBounceAi() {
@@ -338,12 +348,12 @@ final class BankBounceAi {
    * @param clock    the wall clock of the daily cap
    */
   static void setSeams(Decider decider, ConnectionReleaser releaser, Ticker ticker, Clock clock) {
-    state = new State(decider, releaser, ticker, clock);
+    STATE.set(new State(decider, releaser, ticker, clock));
   }
 
   /** Package-private seam for tests: restores the runtime seams and empties every state. */
   static void reset() {
-    state = runtimeState();
+    STATE.set(runtimeState());
   }
 
   /**
@@ -439,22 +449,19 @@ final class BankBounceAi {
     }
 
     /**
-     * The single runtime decider.
+     * The single runtime decider. The first caller creates it; a concurrent first caller that
+     * loses the race discards its own (it holds nothing yet) and uses the winner's, so every
+     * caller shares one instance.
      *
      * @return the decider
      */
     private static RuntimeDecider runtime() {
-      RuntimeDecider local = runtimeDecider;
-      if (local == null) {
-        synchronized (BankBounceAi.class) {
-          local = runtimeDecider;
-          if (local == null) {
-            local = new RuntimeDecider();
-            runtimeDecider = local;
-          }
-        }
+      RuntimeDecider local = RUNTIME_DECIDER.get();
+      if (local != null) {
+        return local;
       }
-      return local;
+      return RUNTIME_DECIDER.updateAndGet(
+          current -> current != null ? current : new RuntimeDecider());
     }
   }
 
@@ -478,7 +485,7 @@ final class BankBounceAi {
         return;
       }
       Map<String, JSONObject> offered = offeredReviewGroups(data);
-      State st = state;
+      State st = STATE.get();
       if (offered.isEmpty() || !st.decider.configured()) {
         return;
       }
@@ -583,23 +590,7 @@ final class BankBounceAi {
       Map<String, Map<String, Raw>> raws) {
     Map<String, CompletableFuture<Map<String, Raw>>> owned = new LinkedHashMap<>();
     Map<String, CompletableFuture<Map<String, Raw>>> awaited = new LinkedHashMap<>();
-    List<Component> ownedComponents = new ArrayList<>();
-    for (Component c : toAsk) {
-      CompletableFuture<Map<String, Raw>> mine = new CompletableFuture<>();
-      CompletableFuture<Map<String, Raw>> theirs = st.inFlight.putIfAbsent(c.key(), mine);
-      if (theirs != null) {
-        awaited.put(c.key(), theirs);
-        continue;
-      }
-      owned.put(c.key(), mine);
-      // Another request may have finished this very call between our lookup and our claim.
-      Map<String, Raw> already = st.lookupComponent(c);
-      if (already != null) {
-        mine.complete(already);
-      } else {
-        ownedComponents.add(c);
-      }
-    }
+    List<Component> ownedComponents = claimComponents(st, toAsk, owned, awaited);
     long deadline = st.ticker.read() + TimeUnit.MILLISECONDS.toNanos(TIMEOUT_MS + WAIT_MARGIN_MS);
     boolean admitted = false;
     try {
@@ -629,6 +620,41 @@ final class BankBounceAi {
         st.inFlight.remove(e.getKey(), e.getValue());
       }
     }
+  }
+
+  /**
+   * Claims, in {@code inFlight}, every component nobody is asking about yet. A component another
+   * request already claimed goes to {@code awaited}; a claimed one goes to {@code owned} and, unless
+   * the cache already holds its answer (another request finished between our lookup and our
+   * claim, which completes the future right here), to the returned list.
+   *
+   * @param st      the state
+   * @param toAsk   the components that fit in one call
+   * @param owned   receives the futures this request claimed, by component key
+   * @param awaited receives the futures another request owns, by component key
+   * @return the claimed components that still need the decision call, in {@code toAsk} order
+   */
+  private static List<Component> claimComponents(State st, List<Component> toAsk,
+      Map<String, CompletableFuture<Map<String, Raw>>> owned,
+      Map<String, CompletableFuture<Map<String, Raw>>> awaited) {
+    List<Component> ownedComponents = new ArrayList<>();
+    for (Component c : toAsk) {
+      CompletableFuture<Map<String, Raw>> mine = new CompletableFuture<>();
+      CompletableFuture<Map<String, Raw>> theirs = st.inFlight.putIfAbsent(c.key(), mine);
+      if (theirs != null) {
+        awaited.put(c.key(), theirs);
+        continue;
+      }
+      owned.put(c.key(), mine);
+      // Another request may have finished this very call between our lookup and our claim.
+      Map<String, Raw> already = st.lookupComponent(c);
+      if (already != null) {
+        mine.complete(already);
+      } else {
+        ownedComponents.add(c);
+      }
+    }
+    return ownedComponents;
   }
 
   /**
@@ -894,7 +920,7 @@ final class BankBounceAi {
    * @throws Exception when the detection cannot be read
    */
   private static Assessment assessmentOf(Detection detection, String bounceId) throws Exception {
-    State st = state;
+    State st = STATE.get();
     for (Component c : nominalComponents(detection, st)) {
       if (c.bounceIds().contains(bounceId)) {
         Map<String, Raw> raws = new HashMap<>();

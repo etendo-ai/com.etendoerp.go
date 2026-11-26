@@ -2400,22 +2400,35 @@ class BankBouncePairServiceTest {
     @Test
     @DisplayName("the message the 409 points to ships in the module's AD_MESSAGE sourcedata")
     void staleMessageShips() throws Exception {
-      Path dir = Paths.get("").toAbsolutePath();
-      Path xml = null;
-      for (Path d = dir; d != null && xml == null; d = d.getParent()) {
-        for (String rel : new String[] { "src-db/database/sourcedata/AD_MESSAGE.xml",
-            "modules/com.etendoerp.go/src-db/database/sourcedata/AD_MESSAGE.xml" }) {
-          if (Files.exists(d.resolve(rel))) {
-            xml = d.resolve(rel);
-            break;
-          }
-        }
-      }
-      assertNotNull(xml, "AD_MESSAGE.xml not found from " + dir);
+      Path xml = moduleAdMessageXml();
+      assertNotNull(xml, "AD_MESSAGE.xml not found from " + Paths.get("").toAbsolutePath());
       String text = new String(Files.readAllBytes(xml), StandardCharsets.UTF_8);
 
       assertTrue(text.contains("<VALUE><![CDATA["
           + BankBounceErrors.messageKey(BankBounceErrors.CODE_AI_SUGGESTION_STALE) + "]]></VALUE>"));
+    }
+
+    /**
+     * This module's {@code AD_MESSAGE.xml}, never the core one: from the Etendo root the
+     * unqualified {@code src-db/...} path is core's, so the module-qualified path is tried first,
+     * relative to the working directory and then at every level up; the unqualified path only
+     * counts once the walk is inside the module. Mirrors {@code McpConfigSourcedataTest}.
+     */
+    private Path moduleAdMessageXml() {
+      String local = "src-db/database/sourcedata/AD_MESSAGE.xml";
+      String qualified = "modules/com.etendoerp.go/" + local;
+      if (Files.isRegularFile(Paths.get(qualified))) {
+        return Paths.get(qualified);
+      }
+      for (Path d = Paths.get("").toAbsolutePath(); d != null; d = d.getParent()) {
+        if (Files.isRegularFile(d.resolve(qualified))) {
+          return d.resolve(qualified);
+        }
+        if (Files.isRegularFile(d.resolve(local))) {
+          return d.resolve(local);
+        }
+      }
+      return null;
     }
   }
 

@@ -36,6 +36,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
+import java.util.function.UnaryOperator;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
@@ -61,6 +62,9 @@ import com.etendoerp.go.schemaforge.BankBounceDetector.StatementLine;
  *
  * @covers com.etendoerp.go.schemaforge.BankBounceAiQuestions
  */
+// Test methods live in the @Nested inner classes below; S2187 only inspects
+// the outer class for @Test methods, hence the suppression.
+@SuppressWarnings("java:S2187")
 @DisplayName("Bounce AI — components, prompt, key, validation and the 80/30 rule")
 class BankBounceAiQuestionsTest {
 
@@ -751,7 +755,7 @@ class BankBounceAiQuestionsTest {
           Set.of(bounce.id()), id -> "", MODEL, CLIENT).get(0).questions().get(0);
     }
 
-    private String keyOf(List<Pair> pairs, Function<String, String> reference, String model,
+    private String keyOf(List<Pair> pairs, UnaryOperator<String> reference, String model,
         String client) {
       return BankBounceAiQuestions.components(pairs, ids(pairs), reference, model, client)
           .get(0).key();

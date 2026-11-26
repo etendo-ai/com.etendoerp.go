@@ -31,6 +31,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
@@ -88,6 +90,11 @@ class LlmDeciderTest {
   private String cost = "0.0000401";
   /** How long the server holds an answer back, to exercise the request timeout. */
   private volatile long delayMs;
+  /**
+   * What a held-back answer waits on: nothing opens it while a test runs, so the server answers
+   * after {@link #delayMs}; teardown opens it so a held handler does not outlive the test.
+   */
+  private final CountDownLatch holdBack = new CountDownLatch(1);
 
   @BeforeEach
   void start() throws Exception {
@@ -96,7 +103,10 @@ class LlmDeciderTest {
       calls.incrementAndGet();
       if (delayMs > 0) {
         try {
-          Thread.sleep(delayMs);
+          if (holdBack.await(delayMs, TimeUnit.MILLISECONDS)) {
+            exchange.close(); // the test is over: nobody is waiting for this answer
+            return;
+          }
         } catch (InterruptedException e) {
           Thread.currentThread().interrupt();
         }
@@ -123,6 +133,7 @@ class LlmDeciderTest {
 
   @AfterEach
   void stop() {
+    holdBack.countDown();
     server.stop(0);
   }
 

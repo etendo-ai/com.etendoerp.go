@@ -878,11 +878,15 @@ class BankBounceAiTest {
     void singleFlight() throws Exception {
       BankBounceSuggestions.Plan plan = plan(review("P1"));
       CountDownLatch gate = new CountDownLatch(1);
-      decider.beforeAnswer = () -> await(gate);
+      CountDownLatch called = new CountDownLatch(1);
+      decider.beforeAnswer = () -> {
+        called.countDown();
+        await(gate);
+      };
       ExecutorService pool = Executors.newFixedThreadPool(2);
       try {
         Future<JSONObject> first = pool.submit(() -> annotated(plan));
-        waitUntil(() -> decider.calls.get() == 1);
+        await(called);
         Future<JSONObject> second = pool.submit(() -> annotated(plan));
         // The second request has missed, found the flight of the first and released its
         // connection to wait.
@@ -930,7 +934,11 @@ class BankBounceAiTest {
     void sharedDeadlineWhenWaitingOnSeveralFlights() throws Exception {
       BankBounceSuggestions.Plan plan = plan(review("P1"), review("P2"));
       CountDownLatch gate = new CountDownLatch(1);
-      decider.beforeAnswer = () -> await(gate);
+      CountDownLatch called = new CountDownLatch(1);
+      decider.beforeAnswer = () -> {
+        called.countDown();
+        await(gate);
+      };
       AtomicInteger releases = new AtomicInteger();
       // The owner releases first; the waiter's release lands between its deadline being fixed and
       // its wait starting: the fake ticker then says 8.5 s of the 10 s deadline are gone.
@@ -943,7 +951,7 @@ class BankBounceAiTest {
       ExecutorService pool = Executors.newFixedThreadPool(2);
       try {
         Future<JSONObject> owner = pool.submit(() -> annotated(plan));
-        waitUntil(() -> decider.calls.get() == 1);
+        await(called);
 
         long started = System.nanoTime();
         JSONObject waiter = annotated(plan);
@@ -966,7 +974,11 @@ class BankBounceAiTest {
     @DisplayName("a call is never made with every concurrency slot taken: the answer goes out without the field")
     void slotsExhausted() throws Exception {
       CountDownLatch gate = new CountDownLatch(1);
-      decider.beforeAnswer = () -> await(gate);
+      CountDownLatch called = new CountDownLatch(BankBounceAi.MAX_CONCURRENT_CALLS);
+      decider.beforeAnswer = () -> {
+        called.countDown();
+        await(gate);
+      };
       ExecutorService pool = Executors.newFixedThreadPool(BankBounceAi.MAX_CONCURRENT_CALLS);
       try {
         List<Future<JSONObject>> running = new ArrayList<>();
@@ -974,7 +986,7 @@ class BankBounceAiTest {
           BankBounceSuggestions.Plan plan = plan(review("S" + i));
           running.add(pool.submit(() -> annotated(plan)));
         }
-        waitUntil(() -> decider.calls.get() == BankBounceAi.MAX_CONCURRENT_CALLS);
+        await(called);
 
         JSONObject fifth = annotated(plan(review("S-FIFTH")));
 
@@ -1788,9 +1800,9 @@ class BankBounceAiTest {
     }
 
     private void resetRuntimeDecider() throws Exception {
-      Field f = BankBounceAi.class.getDeclaredField("runtimeDecider");
+      Field f = BankBounceAi.class.getDeclaredField("RUNTIME_DECIDER");
       f.setAccessible(true);
-      f.set(null, null);
+      ((AtomicReference<?>) f.get(null)).set(null);
     }
 
     private LlmConfig gateway() {
@@ -1957,12 +1969,12 @@ class BankBounceAiTest {
 
     /** The {@code LlmDecider} the runtime decider holds now (null before the first call). */
     private Object currentLlmDecider() throws Exception {
-      Field holder = BankBounceAi.class.getDeclaredField("runtimeDecider");
+      Field holder = BankBounceAi.class.getDeclaredField("RUNTIME_DECIDER");
       holder.setAccessible(true);
-      Object runtime = holder.get(null);
-      Field decider = runtime.getClass().getDeclaredField("decider");
-      decider.setAccessible(true);
-      return decider.get(runtime);
+      Object runtime = ((AtomicReference<?>) holder.get(null)).get();
+      Field deciderField = runtime.getClass().getDeclaredField("decider");
+      deciderField.setAccessible(true);
+      return deciderField.get(runtime);
     }
 
     @Test
@@ -1992,16 +2004,6 @@ class BankBounceAiTest {
       }
     } catch (InterruptedException e) {
       Thread.currentThread().interrupt();
-    }
-  }
-
-  private static void waitUntil(java.util.function.BooleanSupplier condition) throws Exception {
-    long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
-    while (!condition.getAsBoolean()) {
-      if (System.nanoTime() > deadline) {
-        throw new AssertionError("condition not reached");
-      }
-      Thread.sleep(5);
     }
   }
 
