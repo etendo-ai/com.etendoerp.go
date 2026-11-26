@@ -43,6 +43,8 @@ import org.openbravo.model.materialmgmt.transaction.ShipmentInOut;
 import org.openbravo.model.materialmgmt.transaction.ShipmentInOutLine;
 import org.openbravo.service.db.DalConnectionProvider;
 
+import com.etendoerp.go.schemaforge.util.NeoActionContract;
+
 /**
  * Rectificative-invoice flow of the return documents (ETP-5381, ETP-5712): resolves the invoices
  * to rectify, prices and builds the invoice lines, refuses a zero-amount document, links, completes
@@ -54,7 +56,38 @@ final class ReturnInvoiceSupport {
 
   private static final Logger log = LogManager.getLogger(ReturnInvoiceSupport.class);
 
+  /**
+   * ETP-6179 CP-12: the body key that turns {@code createReturnInvoice} into a dry run. Only the
+   * JSON boolean {@code true} switches it on.
+   */
+  static final String PARAM_VALIDATE_ONLY = "validateOnly";
+
   private ReturnInvoiceSupport() {}
+
+  /**
+   * Whether the request is a dry run of the rectificativa ({@link #PARAM_VALIDATE_ONLY}).
+   *
+   * @param body the request body; {@code null} reads as no
+   * @return {@code true} only for the JSON boolean {@code true}
+   */
+  static boolean isValidateOnly(JSONObject body) {
+    return body != null && Boolean.TRUE.equals(body.opt(PARAM_VALIDATE_ONLY));
+  }
+
+  /**
+   * The {@code validateOnly} parameter a return header's {@code createReturnInvoice} declares.
+   *
+   * @return the descriptor
+   */
+  static NeoActionContract.Param validateOnlyParam() {
+    return NeoActionContract.Param.optional(PARAM_VALIDATE_ONLY, NeoActionContract.TYPE_BOOLEAN,
+        "true runs every check that refuses the factura rectificativa before anything is "
+            + "created (one per return, which invoices it rectifies, the customer's payment "
+            + "terms and method, price list, a price for every product) and creates nothing: "
+            + "{data:{validateOnly:true, rectifiedInvoices:[id]}} when it could be created, the "
+            + "same refusal as the real call otherwise. Works on a DRAFT return too, so it can "
+            + "be asked before confirming the return, which cannot be undone.");
+  }
 
   // ---------------------------------------------------------------------------
   // Invoice finalization – shared between both return header handlers
@@ -219,8 +252,16 @@ final class ReturnInvoiceSupport {
    *     return to a vendor
    * @param acceptsAllowDuplicate whether {@code allowDuplicate:true} lets a second rectificativa
    *     through; {@code false} keeps the one-per-return rule unconditionally
+   * @param acceptsValidateOnly whether its contract declares {@link #PARAM_VALIDATE_ONLY} (ETP-6179
+   *     CP-12); when it does not, the key, if sent anyway, is not read and the real call runs
    */
-  record ReturnInvoiceKind(boolean isSales, boolean acceptsAllowDuplicate) {
+  record ReturnInvoiceKind(boolean isSales, boolean acceptsAllowDuplicate,
+      boolean acceptsValidateOnly) {
+
+    /** A kind whose contract does not declare {@code validateOnly}. */
+    ReturnInvoiceKind(boolean isSales, boolean acceptsAllowDuplicate) {
+      this(isSales, acceptsAllowDuplicate, false);
+    }
   }
 
   /**
@@ -254,6 +295,14 @@ final class ReturnInvoiceSupport {
     NeoResponse refused = refuseIfUnpriced(lines, invoice, createDraftInvoiceHandler, rectifiedIds);
     if (refused != null) {
       return refused;
+    }
+    // ETP-6179 CP-12: everything above only reads (the header is still transient), so a dry run
+    // stops here having judged exactly what the real call judges before its first save. Only for
+    // a caller whose contract declares the key (the customer return): elsewhere it is not read.
+    if (kind.acceptsValidateOnly() && isValidateOnly(body)) {
+      return ReturnShipmentUtils.wrapOkData(new JSONObject()
+          .put(PARAM_VALIDATE_ONLY, true)
+          .put("rectifiedInvoices", new JSONArray(rectifiedIds)));
     }
     try {
       OBDal.getInstance().save(invoice);

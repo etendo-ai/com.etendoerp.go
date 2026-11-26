@@ -75,7 +75,11 @@ public final class NeoActionContract {
   public static final String TYPE_DATE = "date";
   /** JSON Schema type for a list parameter; the item type is declared separately. */
   public static final String TYPE_ARRAY = "array";
-  /** JSON Schema type for a nested object item. */
+  /**
+   * A JSON object: as an array item type, or as a parameter of its own ({@code {field: value}}).
+   * A parameter of this type also accepts a string holding a JSON object, because some MCP clients
+   * serialize nested objects; the handler reads it with {@link #asObject(Object)} (ETP-6179).
+   */
   public static final String TYPE_OBJECT = "object";
 
   /** HTTP 422: the call does not match the declared contract. */
@@ -386,6 +390,31 @@ public final class NeoActionContract {
         || (v instanceof JSONArray && ((JSONArray) v).length() == 0);
   }
 
+  /**
+   * The value of a {@link #TYPE_OBJECT} parameter as an object: the object itself, or the object a
+   * string holds when it parses as one.
+   *
+   * @param value the parameter's value as sent
+   * @return the object, or {@code null} when the value is neither
+   */
+  public static JSONObject asObject(Object value) {
+    if (value instanceof JSONObject) {
+      return (JSONObject) value;
+    }
+    if (value instanceof String s) {
+      String trimmed = s.trim();
+      if (!trimmed.startsWith("{")) {
+        return null;
+      }
+      try {
+        return new JSONObject(trimmed);
+      } catch (JSONException e) {
+        return null;
+      }
+    }
+    return null;
+  }
+
   private static JSONObject errorBody(String message) throws JSONException {
     JSONObject err = new JSONObject();
     err.put(KEY_MESSAGE, message);
@@ -628,6 +657,8 @@ public final class NeoActionContract {
               : "a date in yyyy-MM-dd format";
         case TYPE_ARRAY:
           return isArrayOf(value) ? null : "an array of " + itemType + "s";
+        case TYPE_OBJECT:
+          return asObject(value) != null ? null : "a JSON object";
         default:
           return value instanceof String ? null : "a string";
       }
