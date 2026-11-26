@@ -611,7 +611,6 @@ com.etendoerp.go.startup.UsageAggregationScheduleStartupTest
 com.etendoerp.go.support.SupportConversationsServletTest
 com.etendoerp.go.support.SupportIntegrationClientTest
 com.etendoerp.go.support.SupportJiraWebhookHandlerTest
-com.etendoerp.go.supportaccess.SupportAccessGuardChangesAccessFieldsEdgeTest
 com.etendoerp.go.supportaccess.SupportAccessGuardTest
 com.etendoerp.go.supportaccess.SupportAccessServiceTest
 com.etendoerp.go.supportaccess.SupportHandoffServiceTest
