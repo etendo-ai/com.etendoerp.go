@@ -19,6 +19,7 @@ package com.etendoerp.go.schemaforge.handlers;
 
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.temporal.ChronoUnit;
 import java.util.Collections;
 import java.util.Date;
@@ -54,7 +55,8 @@ import com.etendoerp.go.schemaforge.util.NeoDateFormat;
  *   <li>{@value #PREVIEW_MANUAL_RATE}: what a create with the same parameters would do — the two
  *       rows it inserts and the rows it closes — or the refusal it would get, without writing.</li>
  *   <li>{@value #CURRENT_RATES}: one entry per currency with a range in force now.</li>
- *   <li>{@value #SERVER_CLOCK}: the server's current minute, the default start of a new rate.</li>
+ *   <li>{@value #SERVER_CLOCK}: the server's current minute, the default start of a new rate, and
+ *       the server's time zone id — the zone every wall-clock datetime of these actions is in.</li>
  * </ul>
  */
 final class ConversionRateActions {
@@ -78,6 +80,11 @@ final class ConversionRateActions {
   private static final String K_TO_ISO = "toIso";
   private static final String K_RATE = "rate";
   private static final String K_VALID_FROM = "validFrom";
+  private static final String K_TIME_ZONE = "timeZone";
+
+  /** Says in which zone the wall-clock datetimes of these actions are read and written. */
+  private static final String SERVER_ZONE_NOTE = " Datetimes are wall clock of the server's"
+      + " time zone (timeZone of serverClock), with no offset.";
 
   /** Optional option of {@value #PREVIEW_MANUAL_RATE}: which create to preview. */
   static final String P_MODE = "mode";
@@ -129,6 +136,7 @@ final class ConversionRateActions {
             + " error, errorKey, errorField} when the create would be refused (e.g. an"
             + " overlapping range: error names the colliding range and the start to choose"
             + " instead; errorField is the parameter at fault)."
+            + SERVER_ZONE_NOTE
             + CREATE_HINT,
         Param.required(ConversionRateWrites.F_TO_CURRENCY, NeoActionContract.TYPE_STRING,
             "Destination currency: C_Currency id or ISO code (e.g. CHF)."),
@@ -136,8 +144,9 @@ final class ConversionRateActions {
             "Units of the destination currency per 1 unit of the organization currency;"
                 + " greater than zero."),
         Param.optional(ConversionRateWrites.F_VALID_FROM, NeoActionContract.TYPE_STRING,
-            "Start of the range, server-local wall clock yyyy-MM-ddTHH:mm:ss (minutes are"
-                + " kept, seconds dropped; a bare yyyy-MM-dd means 00:00); default: now."),
+            "Start of the range, wall clock yyyy-MM-ddTHH:mm:ss in the server's time zone"
+                + " (timeZone of serverClock; minutes are kept, seconds dropped; a bare yyyy-MM-dd"
+                + " means 00:00); default: now."),
         Param.options(P_MODE, "newCurrency: preview createManualCurrency (refused when the"
             + " currency already has rates); newRate: preview createManualRate (refused when it"
             + " has none). Absent: no check on the existing rates.",
@@ -148,12 +157,15 @@ final class ConversionRateActions {
             + " origin: AUTO|MANUAL, rate (1 organization currency = rate units), validFrom,"
             + " lastDownloadAt}]. lastDownloadAt (AUTO only) is the latest fully successful run"
             + " of the rate downloader, or the time the row was last written when there is no"
-            + " such run.")
+            + " such run."
+            + SERVER_ZONE_NOTE)
         .withIdDescription(ID_NOT_USED));
     contracts.put(SERVER_CLOCK, NeoActionContract.read(SERVER_CLOCK,
-        "Returns {now: yyyy-MM-ddTHH:mm:00}, the server's current minute (server-local wall clock,"
-            + " the time zone validFromDate is read in). A rate cannot start later than this"
-            + " minute: use it as the default validFromDate of a new rate.")
+        "Returns {now: yyyy-MM-ddTHH:mm:00, timeZone}: now is the server's current minute, as"
+            + " wall clock of the server's time zone; timeZone is that zone's id (e.g. UTC,"
+            + " Europe/Madrid), the zone every datetime of the conversion-rate actions is read and"
+            + " written in (validFromDate, validFrom, validTo, lastDownloadAt). A rate cannot start"
+            + " later than now: use it as the default validFromDate of a new rate.")
         .withIdDescription(ID_NOT_USED));
     ConversionRateWriteActions.addContracts(contracts);
     return Collections.unmodifiableMap(contracts);
@@ -322,11 +334,17 @@ final class ConversionRateActions {
     return rates;
   }
 
-  /** {@code {now}}: the server's current minute, seconds zeroed, server-local wall clock. */
+  /**
+   * {@code {now, timeZone}}: the server's current minute, seconds zeroed, as wall clock of the
+   * server's zone, and that zone's id — what a client needs to show the wall-clock datetimes of
+   * these actions in its own zone and to convert its input back (ETP-6365).
+   */
   static JSONObject serverClock(ConversionRateStore store) throws JSONException {
     LocalDateTime minute = store.now().truncatedTo(ChronoUnit.MINUTES);
-    return new JSONObject().put("now", NeoDateFormat.toWireDateTime(
-        ConversionRateStore.toDate(minute)));
+    ZoneId zone = store.zone();
+    return new JSONObject()
+        .put("now", NeoDateFormat.toWireDateTime(ConversionRateStore.toDate(minute)))
+        .put(K_TIME_ZONE, zone.getId());
   }
 
   /** The downloader's last successful run, unless the row itself is newer (or there is no run). */

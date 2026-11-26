@@ -10612,6 +10612,14 @@ so a rate is never left without its inverse.
 server's current minute (`HH:mm:59` of the current minute is still accepted;
 `ETGO_ConvRateFutureStart`). The `serverClock` action gives the SPA that minute as its default.
 
+**Datetimes are wall clock of the server's zone, on every channel.** Stored values, action
+parameters and answers (`validFromDate`, `validFrom`, `validTo`, `newValidTo`, `lastDownloadAt`)
+carry no offset and are read in the JVM default zone. `serverClock` also answers that zone's id
+(`timeZone`, additive since the ETP-6365 QA), so a client can convert: the SPA shows and takes
+every datetime of the window in the browser's zone (converting with `Intl`, DST-correct) and sends
+the server's wall clock back. The MCP is unchanged — its values stay server wall clock, and the
+action descriptions point to `serverClock` for the zone.
+
 **Every manual range is editable and deletable, postings or not** — changing a rate only affects
 documents that look a rate up afterwards; a posted invoice keeps the rate it was posted with
 (`C_Conversion_Rate_Document` / the header rate). Only a downloaded row stays locked. Core's
@@ -10702,7 +10710,7 @@ follow. The function is total (every edge case answers `HISTORIC`).
 |---|---|---|
 | `manualCurrencyOptions` | optional `withoutRates` (boolean, default `false`; `"true"`/`"false"` accepted on the query string) | `[{id, isoCode, name, symbol}]`: active currencies minus the organization currency and the automatic ones; with `withoutRates: true` also minus every currency that already has an active `C_Conversion_Rate` row of the client (or of System) with the organization currency, in either direction and on any date — the list of the "Nueva divisa" popup (a currency that already has rates gets a new range from its own "Nueva tasa · ISO" entry). `name`/`symbol` in the request language |
 | `previewManualRate` | `toCurrency`, `multipleRateBy`, optional `validFromDate` (default now), optional `mode` (`newCurrency` = the checks of `createManualCurrency`, `newRate` = those of `createManualRate`; absent = no check on existing rates) | `{creates:[{fromIso, toIso, rate, validFrom}], closes:[{id, fromIso, toIso, validFrom, newValidTo}]}` — or `{creates:[], closes:[], error, errorKey, errorField}` with the refusal a create would get (same text as the create; `errorField` as `error.field` above, absent for refusals bound to no field). Writes nothing |
-| `serverClock` | — | `{now: "yyyy-MM-dd'T'HH:mm:00"}` — the server's current minute, server-local wall clock (the zone `validFromDate` is read in); the default start of a new rate |
+| `serverClock` | — | `{now: "yyyy-MM-dd'T'HH:mm:00", timeZone: "<zone id>"}` — the server's current minute, server-local wall clock, and the id of that zone (JVM default, e.g. `UTC`; the zone `validFromDate` and every range datetime are read in); the default start of a new rate |
 | `currentRates` | — | `[{currencyId, isoCode, name, symbol, origin: AUTO\|MANUAL, rate, validFrom, lastDownloadAt}]` — one per currency with a range in force now, of the client or of System (the downloader's rows): the client's row wins over the System one, as in `ConversionRateLookup`, then the latest start; `rate` is always "1 organization currency = rate"; `lastDownloadAt` (AUTO only) is the latest `SUCCESS` run in `SMFCR_SYNC_LOG` of the client or of System, or the row's `updated` when that is newer or there is no run (the log is per run, not per pair) |
 
 A generic create or update on `conversion-rates` (REST `POST`/`PUT`/`PATCH`, MCP `etendo_create` /
