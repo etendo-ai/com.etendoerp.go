@@ -66,9 +66,12 @@ import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 
+import com.etendoerp.go.schemaforge.util.NeoLanguage;
 import com.etendoerp.psd2.bank.integration.data.FinaccConnection;
 import com.etendoerp.psd2.bank.integration.data.Provider;
 import com.etendoerp.psd2.bank.integration.utils.AccountSyncLock;
+import com.etendoerp.psd2.bank.integration.utils.AccountTransactionsSync;
+import com.etendoerp.psd2.bank.integration.utils.BankIntegrationConstants;
 import com.etendoerp.psd2.bank.integration.utils.SaltEdgeAccountLinkHelper;
 
 /**
@@ -897,6 +900,158 @@ public class FinancialAccountBankConnectionHandlerRoutingTest {
       assertTrue(empty.isNull("status"));
       assertTrue(empty.isNull("message"));
       assertTrue(empty.isNull("at"));
+    }
+  }
+
+  /**
+   * ETP-6154: the outcome recorded by the last sync of an account (UI or MCP) takes precedence over
+   * the Salt Edge fetch health, per account, and a WARNING is reported as such; without a recorded
+   * outcome the connection health is used.
+   */
+  @Test
+  public void testLastResultPrefersTheRecordedSyncOutcome() throws Exception {
+    BankSyncResultStore.clear();
+    try {
+      BankSyncResultStore.saveResult(ACCOUNT_ID, "WARNING", "2 lines imported, 1 skipped");
+      JSONObject recorded = FinancialAccountBankConnectionHandler
+          .lastResultJson(ACCOUNT_ID, connectionWith(LATER, EARLIER, "old failure"));
+      JSONObject otherAccount = FinancialAccountBankConnectionHandler
+          .lastResultJson(OTHER_ACCOUNT_ID, connectionWith(LATER, EARLIER, "old failure"));
+
+      assertEquals("WARNING", recorded.getString("status"));
+      assertEquals("2 lines imported, 1 skipped", recorded.getString("message"));
+      assertTrue(recorded.getString("at").endsWith("Z"));
+      assertEquals("OK", otherAccount.getString("status"));
+    } finally {
+      BankSyncResultStore.clear();
+    }
+  }
+
+  /** Runs the sync action with the given fetch behaviour; the fetch answers {@code fetch}. */
+  private NeoResponse runSync(FIN_FinancialAccount finAcc,
+      org.mockito.stubbing.Answer<AccountTransactionsSync.SyncResult> fetch) throws Exception {
+    doReturn(finAcc).when(handler).loadAccount(ACCOUNT_ID);
+    try (MockedStatic<OBContext> obContext = mockStatic(OBContext.class);
+        MockedStatic<NeoLanguage> lang = mockStatic(NeoLanguage.class);
+        MockedStatic<AccountTransactionsSync> syncStatic =
+            mockStatic(AccountTransactionsSync.class)) {
+      BankConnectionHandlerTestSupport.stubObContext(obContext);
+      lang.when(NeoLanguage::currentCode).thenReturn("en_US");
+      syncStatic.when(() -> AccountTransactionsSync.fetchAccountTransactionsWithResult(any(), any()))
+          .thenAnswer(fetch);
+      return handler.handle(postContext("sync", new JSONObject().put(PARAM_ACCOUNT_ID, ACCOUNT_ID)));
+    }
+  }
+
+  /** ETP-6154: a sync that ran to its end records OK, WARNING and ERROR as the last result. */
+  @Test
+  public void testSyncRecordsOkWarningAndError() throws Exception {
+    BankSyncResultStore.clear();
+    try {
+      FIN_FinancialAccount finAcc = account(ACCOUNT_ID);
+      String[][] cases = {{BankIntegrationConstants.SUCCESS, "OK"}, {"WARNING", "WARNING"}, {"ERROR", "ERROR"}};
+      for (String[] c : cases) {
+        runSync(finAcc, inv -> {
+          ((StringBuilder) inv.getArgument(1)).append("  msg-" + c[1] + "  ");
+          return new AccountTransactionsSync.SyncResult(c[0], false);
+        });
+        BankSyncResultStore.Result last = BankSyncResultStore.last(ACCOUNT_ID);
+        assertEquals(c[1], last.getStatus());
+        assertEquals("msg-" + c[1], last.getMessage());
+      }
+    } finally {
+      BankSyncResultStore.clear();
+    }
+  }
+
+  /** ETP-6154: an IN_PROGRESS answer never overwrites the recorded result. */
+  @Test
+  public void testSyncDoesNotRecordInProgress() throws Exception {
+    BankSyncResultStore.clear();
+    try {
+      BankSyncResultStore.saveResult(ACCOUNT_ID, "OK", "previous");
+      runSync(account(ACCOUNT_ID), inv -> new AccountTransactionsSync.SyncResult(
+          BankIntegrationConstants.SYNC_IN_PROGRESS, false));
+      assertEquals("previous", BankSyncResultStore.last(ACCOUNT_ID).getMessage());
+      BankSyncResultStore.clear();
+      runSync(account(ACCOUNT_ID), inv -> new AccountTransactionsSync.SyncResult(
+          BankIntegrationConstants.SYNC_IN_PROGRESS, false));
+      assertNull(BankSyncResultStore.last(ACCOUNT_ID));
+    } finally {
+      BankSyncResultStore.clear();
+    }
+  }
+
+  /** ETP-6154: the lock-unavailable answer is the last result (ERROR, translated message). */
+  @Test
+  public void testSyncRecordsLockUnavailable() throws Exception {
+    BankSyncResultStore.clear();
+    try {
+      runSync(account(ACCOUNT_ID), inv -> new AccountTransactionsSync.SyncResult(
+          BankIntegrationConstants.SYNC_LOCK_UNAVAILABLE, false));
+      BankSyncResultStore.Result last = BankSyncResultStore.last(ACCOUNT_ID);
+      assertEquals("ERROR", last.getStatus());
+      assertTrue(last.getMessage().startsWith("The statements could not be fetched"));
+    } finally {
+      BankSyncResultStore.clear();
+    }
+  }
+
+  /**
+   * ETP-6154: an exception from the fetch records ERROR with the generic message, never the
+   * exception text (it may carry SQL), and is rethrown (handle turns it into a 500).
+   */
+  @Test
+  public void testSyncExceptionRecordsGenericErrorAndRethrows() throws Exception {
+    BankSyncResultStore.clear();
+    try {
+      FIN_FinancialAccount finAcc = account(ACCOUNT_ID);
+      doReturn(finAcc).when(handler).loadAccount(ACCOUNT_ID);
+      NeoResponse response = runSync(finAcc, inv -> {
+        throw new IllegalStateException("could not execute statement; SQL [select secret]");
+      });
+
+      assertEquals(500, response.getHttpStatus());
+      BankSyncResultStore.Result last = BankSyncResultStore.last(ACCOUNT_ID);
+      assertEquals("ERROR", last.getStatus());
+      assertTrue(last.getMessage().startsWith("An unexpected error occurred"));
+      assertFalse(last.getMessage().contains("SQL"));
+    } finally {
+      BankSyncResultStore.clear();
+    }
+  }
+
+  /**
+   * ETP-6154: a recorded result older than the connection's newest fetch record is stale and the
+   * connection health wins; a newer one (or no dates / no connection) keeps the recorded result.
+   */
+  @Test
+  public void testLastResultStalenessAgainstConnection() throws Exception {
+    BankSyncResultStore.clear();
+    try {
+      BankSyncResultStore.saveResult(ACCOUNT_ID, "WARNING", "recorded");
+      Instant recordedAt = BankSyncResultStore.last(ACCOUNT_ID).getAt();
+
+      JSONObject staleBySuccess = FinancialAccountBankConnectionHandler.lastResultJson(ACCOUNT_ID,
+          connectionWith(recordedAt.plusSeconds(60), null, null));
+      JSONObject staleByFail = FinancialAccountBankConnectionHandler.lastResultJson(ACCOUNT_ID,
+          connectionWith(null, recordedAt.plusSeconds(60), "bank down"));
+      JSONObject newer = FinancialAccountBankConnectionHandler.lastResultJson(ACCOUNT_ID,
+          connectionWith(recordedAt.minusSeconds(60), recordedAt.minusSeconds(30), "old"));
+      JSONObject noDates = FinancialAccountBankConnectionHandler.lastResultJson(ACCOUNT_ID,
+          connectionWith(null, null, null));
+      JSONObject noConnection =
+          FinancialAccountBankConnectionHandler.lastResultJson(ACCOUNT_ID, null);
+
+      assertEquals("OK", staleBySuccess.getString("status"));
+      assertEquals("ERROR", staleByFail.getString("status"));
+      assertEquals("bank down", staleByFail.getString("message"));
+      for (JSONObject kept : new JSONObject[] {newer, noDates, noConnection}) {
+        assertEquals("WARNING", kept.getString("status"));
+        assertEquals("recorded", kept.getString("message"));
+      }
+    } finally {
+      BankSyncResultStore.clear();
     }
   }
 
