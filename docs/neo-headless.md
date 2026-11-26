@@ -8398,8 +8398,8 @@ below (ETP-5639); it used to be a fixed `2024-11-05`. None of this is what a
 client lists the server as — that is the alias chosen at registration (`claude mcp add <alias>`,
 `[mcp_servers.<alias>]`), and Claude does not render `serverInfo.icons` for custom connectors today.
 
-`tools/list` gives every tool a `title` next to its `name`, in the language of the user the token
-belongs to (`OBContext` language — MCP carries no client locale). Only the title is localized; the
+`tools/list` gives every tool a `title` next to its `name`, in the request language (`Accept-Language`,
+else the user's default language, §4.12.45). Only the title is localized; the
 `description` is read by the model and stays in English. Resolution (`McpToolTitles`):
 
 | Tool kind | Title source |
@@ -16660,8 +16660,8 @@ get a stored PDF (`storesFor`, default: completed `CO`; a quotation: any non-dra
 **Language — the same rule as the email.** A PDF the server renders through the MCP is printed in **Spanish (`es_ES`) by default**, the
 default of `etendo_send_document_email` (`McpDocumentEmailRequest.DEFAULT_LANGUAGE`, one constant): the eager render after `etendo_action` /
 `etendo_action_batch` and the render of `etendo_get_document_pdf` use it. `etendo_send_document_email` renders in **the email's own language**
-(`language`, `es_ES` when omitted), so an email and the PDF it carries always match. An MCP call carries no `Accept-Language`, so the
-context's language would have been the user's AD default (an `en_US` admin got an English PDF inside a Spanish email). **A stored PDF that is
+(`language`, `es_ES` when omitted), so an email and the PDF it carries always match. Without that fixed default the
+context's language would have been the call's request language or the user's AD default (§4.12.45; an `en_US` admin got an English PDF inside a Spanish email). **A stored PDF that is
 current is served as it is, whatever its language** — it is never re-rendered only to change language (kept simple on purpose).
 
 **Never two stores of one document.** A render queued or running in this JVM is joined, not duplicated (the agent's usual "Complete, then ask
@@ -17027,8 +17027,8 @@ the database) could be saved as `null` through the MCP, which the form never all
   ETP-5840 and ETP-5473 refusals: an `IsTranslated='Y'` `AD_MESSAGE_TRL` row of the request
   language, else `messages/neo_hints_<lang>.properties` (the versioned Spanish; `es_ES` and
   `es_AR` both read `neo_hints_es`), else the English `AD_MESSAGE` text. The request language is
-  the GO locale (`NeoLanguage.currentCode()`), which on MCP is the AD user's `default_ad_language`
-  (MCP clients send no `Accept-Language`): the user must be `es_ES` to read Spanish. Status, error
+  the GO locale (`NeoLanguage.currentCode()`), which on MCP is the call's valid `Accept-Language`,
+  else the AD user's `default_ad_language` (§4.12.45). Status, error
   code and `missingFields` are unchanged. Other 422 messages of `McpToolRouter` (for example the
   shared write preflight) are still English-only; this change localizes only this rule.
 - **What this newly refuses on every spec:** a GET-then-PUT echo of a mandatory field that is already
@@ -17352,6 +17352,34 @@ version), `ETGO_MCP_ROUTINE_VERSION` (parameters and steps per version, cascade-
 no DAL entity — so saving a routine or recording an execution never joins or rolls back with the steps' business
 transaction. A failure to record an execution is logged and the answer carries no `executionId`; the steps' outcome
 is unchanged. Executions are kept indefinitely for now.
+
+#### 4.12.45 Response language: `Accept-Language` on the MCP endpoint (ETP-6401)
+
+An MCP call is answered in the language of its `Accept-Language` header when that language is valid
+and active; otherwise in the AD user's default language (`AD_User.Default_AD_Language`). The header
+is applied to the call's `OBContext` before `NeoLanguage.captureRequestCode()`, so messages remapped
+from Classic follow it too. It covers `tools/list`, `tools/call`, `resources/list` and
+`resources/read`, per request: the previous language is restored in `finally`, so nothing persists
+across calls of the same `Mcp-Session-Id`. There is no per-call language argument.
+
+- **Accepted formats:** `en-US` and `en_US`. In a list (`en-US,en;q=0.9`) the **first** entry wins
+  and q-values are ignored (`NeoLanguage.fromAcceptLanguage`, the same validation `NeoLanguage` applies
+  on the REST surfaces, which pass the raw header and accept only `xx_YY`).
+- **Fallback:** an absent or blank header, a bare tag (`en`), `*`, malformed input, or an unknown or
+  inactive `xx_YY` code keeps the user's default language, silently. The header never fails a call.
+- **What is localized:** business validation messages (Classic/DAL messages, `NeoMessageText` hints)
+  and the tool titles of §4.12.15. **Router contract errors** (`McpRouterErrorBodies`,
+  `McpToolResponses`) stay in English with stable machine-readable codes; tool `description`s stay in
+  English; the PDF/email language keeps its own rule (§4.12.38, §4.12.39).
+- **External MCP clients** do not follow the Etendo UI locale (it lives only in the browser's
+  `localStorage`); only the embedded GO chat sends the header. Configure it on the server entry, e.g.
+  `claude mcp add --transport http <alias> <url> --header "Accept-Language: en-US"`, or
+  `"headers": {"Accept-Language": "en-US"}` in a JSON client config.
+- **QA:** user with `Default_AD_Language = es_ES`, server registered with `Accept-Language: en-US`;
+  make `etendo_update` fail a business validation (e.g. clear a required header field, §4.12.41) and
+  call `etendo_action` with an action not allowed in the document's state: the messages come back in
+  English. Without the header, or with `en` / `*`: Spanish. An unknown field keeps its English
+  contract error and stable code in every case.
 
 #### Classic process buttons with a scheduling bundle — verdict per button (ETP-5812)
 

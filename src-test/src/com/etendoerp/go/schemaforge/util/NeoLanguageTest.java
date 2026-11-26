@@ -337,4 +337,21 @@ class NeoLanguageTest {
     switchLanguage(ctx, "en_US");
     assertEquals("en_US", NeoLanguage.requestCode());
   }
+
+  @Test
+  @DisplayName("fromAcceptLanguage reduces the header to its first xx_YY entry")
+  void fromAcceptLanguageReducesTheHeader() {
+    assertEquals("en_US", NeoLanguage.fromAcceptLanguage("en-US"));
+    assertEquals("en_US", NeoLanguage.fromAcceptLanguage("en_US"));
+    assertEquals("en_US", NeoLanguage.fromAcceptLanguage("en-US,en;q=0.9"));
+    assertEquals("es_ES", NeoLanguage.fromAcceptLanguage(" es-ES ;q=0.8"));
+  }
+
+  @Test
+  @DisplayName("fromAcceptLanguage returns null for absent, bare, wildcard or malformed input")
+  void fromAcceptLanguageFallsBackToNull() {
+    for (String bad : new String[] { null, "", "  ", "en", "*", "en-US-x", ";q=0.9", "_", "e_US" }) {
+      assertNull(NeoLanguage.fromAcceptLanguage(bad), String.valueOf(bad));
+    }
+  }
 }
