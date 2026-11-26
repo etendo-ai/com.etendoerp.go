@@ -19,7 +19,6 @@ package com.etendoerp.go.schemaforge;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -43,7 +42,6 @@ import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.openbravo.model.ad.system.Client;
-import org.openbravo.model.ad.utility.Attachment;
 import org.openbravo.model.common.businesspartner.BusinessPartner;
 import org.openbravo.model.common.currency.Currency;
 import org.openbravo.model.common.enterprise.Organization;
@@ -67,12 +65,12 @@ import com.etendoerp.go.schemaforge.util.NeoLanguage;
  * a well-formed BIC, euros), the line checks it delegates per line, the sum of the lines of one
  * due against its outstanding amount (reported once per due, only while unprocessed, only when
  * every line fits alone), the {@code summary} (distinct
- * invoices, lines, total, currency, due date) and the {@code latestFile} (the main {@code .xml}
- * attachment only).
+ * invoices, lines, total, currency, due date) and the {@code returnedCount} (the returned
+ * receipts a download still lists; ETP-6247, the file is never stored).
  *
  * <p>The organization and account rules run for real on mocked entities (SEPAUtil's address
  * predicates, the account form's IBAN pair check, the creditor identifier); the scheme, the
- * creditor business code, the lines, the per-line check and the main attachment are static seams
+ * creditor business code, the lines, the per-line check and the returned receipts are static seams
  * mocked here. {@code RemittanceFileLineCheckTest} specifies the line checks.
  *
  * <p>A class of its own: {@code RemittanceFileReadiness} is a new production class.
@@ -87,7 +85,7 @@ class RemittanceFileReadinessTest {
   private MockedStatic<RemittanceSepaProvisioning> provisioning;
   private MockedStatic<RemittanceFileReadiness> readiness;
   private MockedStatic<RemittanceFileLineCheck> lineCheck;
-  private MockedStatic<NeoAttachmentsHelper> attachments;
+  private MockedStatic<RemittanceReturnState> returns;
   private MockedStatic<NeoLanguage> language;
 
   /** A valid creditor identifier saved on the account (ETP-6247). */
@@ -106,7 +104,8 @@ class RemittanceFileReadinessTest {
     provisioning = mockStatic(RemittanceSepaProvisioning.class, Mockito.CALLS_REAL_METHODS);
     readiness = mockStatic(RemittanceFileReadiness.class, Mockito.CALLS_REAL_METHODS);
     lineCheck = mockStatic(RemittanceFileLineCheck.class, Mockito.CALLS_REAL_METHODS);
-    attachments = mockStatic(NeoAttachmentsHelper.class);
+    returns = mockStatic(RemittanceReturnState.class);
+    returns.when(() -> RemittanceReturnState.returnedCount(any())).thenReturn(0);
     language = mockStatic(NeoLanguage.class);
     language.when(NeoLanguage::requestCode).thenReturn("en_US");
 
@@ -157,7 +156,7 @@ class RemittanceFileReadinessTest {
   @AfterEach
   void tearDown() {
     language.close();
-    attachments.close();
+    returns.close();
     lineCheck.close();
     readiness.close();
     provisioning.close();
@@ -434,28 +433,18 @@ class RemittanceFileReadinessTest {
         summary.get("totalAmount").toString())));
     assertEquals("EUR", summary.getString("currency"));
     assertEquals("2026-12-15", summary.getString("dueDate"));
-    assertTrue(body.isNull("latestFile"));
+    assertEquals(0, body.getInt("returnedCount"));
+    assertFalse(body.has("latestFile"), "the file is never stored (ETP-6247)");
   }
 
+  /** ETP-6247: the returned receipts a download still lists, for the SPA's warning. */
   @Test
-  void theLatestFileIsTheMainXmlAttachmentOnly() throws Exception {
-    Attachment main = mock(Attachment.class);
-    when(main.getId()).thenReturn("ATT-1");
-    when(main.getName()).thenReturn("REM-001_Cobros.XML");
-    attachments.when(() -> NeoAttachmentsHelper.findMainAttachment(
-        RemittanceSepaProvisioning.REMITTANCE_TABLE_ID, "REM-1")).thenReturn(main);
+  void theBodyCountsTheReturnedReceiptsADownloadStillLists() throws Exception {
+    returns.when(() -> RemittanceReturnState.returnedCount(remittance)).thenReturn(2);
 
-    JSONObject latest = RemittanceFileReadiness.latestFile(remittance);
-    assertEquals("ATT-1", latest.getString("attachmentId"));
-    assertEquals("REM-001_Cobros.XML", latest.getString("fileName"));
+    JSONObject body = RemittanceFileReadiness.body(remittance);
 
-    when(main.getName()).thenReturn("contract.pdf");
-    assertNull(RemittanceFileReadiness.latestFile(remittance), "not a SEPA file");
-    when(main.getName()).thenReturn(null);
-    assertNull(RemittanceFileReadiness.latestFile(remittance));
-    attachments.when(() -> NeoAttachmentsHelper.findMainAttachment(
-        RemittanceSepaProvisioning.REMITTANCE_TABLE_ID, "REM-1")).thenReturn(null);
-    assertNull(RemittanceFileReadiness.latestFile(remittance));
+    assertEquals(2, body.getInt("returnedCount"));
   }
 
   @Test

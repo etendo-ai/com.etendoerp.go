@@ -60,6 +60,8 @@ com.etendoerp.go.schemaforge.FinancialAccountTransferActionsTest
 com.etendoerp.go.schemaforge.FinancialAccountsPageHandlerTest
 com.etendoerp.go.schemaforge.GenericCsvBankStatementImporterTest
 com.etendoerp.go.schemaforge.InvoiceExchangeRateValidatorTest
+com.etendoerp.go.schemaforge.InvoicePaymentPlanHandlerTest
+com.etendoerp.go.schemaforge.InvoiceRemittanceTest
 com.etendoerp.go.schemaforge.MatchRuleEngineTest
 com.etendoerp.go.schemaforge.MatchRuleHandlerTest
 com.etendoerp.go.schemaforge.NearMatchSupportTest

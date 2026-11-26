@@ -48,12 +48,14 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentProposal;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentPropDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 
+import com.etendoerp.go.schemaforge.InvoiceRemittance;
 import com.etendoerp.go.schemaforge.NeoActionRecordGuard;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoCurrencyTotals;
 import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoHandler;
 import com.etendoerp.go.schemaforge.NeoListAggregateQuery;
+import com.etendoerp.go.schemaforge.NeoMessageText;
 import com.etendoerp.go.schemaforge.NeoResponse;
 import com.etendoerp.go.schemaforge.PaymentInvoiceApplications;
 import com.etendoerp.go.schemaforge.PaymentRegistrationService;
@@ -198,8 +200,13 @@ public class ReactivatePaymentHandler implements NeoHandler {
       CONFIRM_ACTION_FIELD, REMOVE_ACTION_FIELD, PIS_RETRY_ACTION_FIELD, PIS_STATUS_ACTION_FIELD);
   /** Mirrors {@code PisDeferredPaymentService.PAYMENT_STATUS_ERROR}, which is not visible here. */
   private static final String PAYMENT_STATUS_ERROR = "ETGOERR";
-  /** A voided payment; the payment window does not offer Eliminar on it. */
+  /** A voided payment; the payment window offers neither Eliminar nor Reactivar on it. */
   private static final String PAYMENT_STATUS_VOID = "RPVOID";
+  /**
+   * Catalog key ({@code neo_hints_<lang>.properties}, no {@code AD_MESSAGE}) of the 422 refusing to
+   * reactivate a voided payment (ETP-6247).
+   */
+  static final String MSG_PAYMENT_VOID_NOT_REACTIVABLE = "ETGO_PaymentVoidNotReactivable";
   private static final String FIELD_PIS_PAYMENT_ID = "pisPaymentId";
   /**
    * Read-only flag telling the UI that this payment's lifecycle belongs to its bank transfer, so
@@ -236,6 +243,7 @@ public class ReactivatePaymentHandler implements NeoHandler {
   private static final String KEY_RESPONSE = "response";
   private static final String KEY_DATA = "data";
   private static final String KEY_SUMMARY = "summary";
+  private static final String MSG_PAYMENT_NOT_FOUND = "Payment not found: ";
 
   /**
    * Pre-hook: intercepts {@code etprReactivatePayment} (injects {@code action = "RE"}),
@@ -300,6 +308,34 @@ public class ReactivatePaymentHandler implements NeoHandler {
   }
 
   /**
+   * The refusals of Reactivate, on one load of the payment: the 404 of
+   * {@link #requireOwnedPayment} (ETP-5558); then ETP-6247's 422
+   * {@value #MSG_PAYMENT_VOID_NOT_REACTIVABLE} for a voided payment ({@code RPVOID}, e.g. one a
+   * remittance return undid), on which Classic offers no action at all and the payment window shows
+   * no Reactivar; then ETP-6247's 422 {@code ETGO_PaymentInRemittance} when the payment belongs to
+   * a confirmed remittance ({@code REM_SENT}). Classic REM owns that payment until the remittance
+   * is collected, reactivated or returned; reactivating it here would leave the remittance pointing
+   * at a payment that no longer matches it. See {@link InvoiceRemittance#paymentRefusal}. Every
+   * action channel (REST and MCP) reaches this through the same handler, so none diverges.
+   */
+  private static NeoResponse reactivationRefusal(NeoContext context) {
+    OBContext.setAdminMode(true);
+    try {
+      FIN_Payment payment = NeoActionRecordGuard.loadOwned(FIN_Payment.class,
+          context.getRecordId());
+      if (payment == null) {
+        return NeoResponse.error(404, MSG_PAYMENT_NOT_FOUND + context.getRecordId());
+      }
+      if (StringUtils.equals(PAYMENT_STATUS_VOID, payment.getStatus())) {
+        return NeoMessageText.error(422, MSG_PAYMENT_VOID_NOT_REACTIVABLE);
+      }
+      return InvoiceRemittance.paymentRefusal(payment);
+    } finally {
+      OBContext.restorePreviousMode();
+    }
+  }
+
+  /**
    * 404 unless the record the action is posted to is a payment of the current tenant (ETP-5558).
    * The action path checks this before any customization runs ({@code NeoActionRecordGuard}); this
    * repeats it where the payment is mutated, so the handler does not depend on being reached only
@@ -310,7 +346,7 @@ public class ReactivatePaymentHandler implements NeoHandler {
     try {
       return NeoActionRecordGuard.loadOwned(FIN_Payment.class, context.getRecordId()) != null
           ? null
-          : NeoResponse.error(404, "Payment not found: " + context.getRecordId());
+          : NeoResponse.error(404, MSG_PAYMENT_NOT_FOUND + context.getRecordId());
     } finally {
       OBContext.restorePreviousMode();
     }
@@ -330,9 +366,9 @@ public class ReactivatePaymentHandler implements NeoHandler {
    * user to edit that draft.
    */
   private NeoResponse handleReactivate(NeoContext context) {
-    NeoResponse notOwned = requireOwnedPayment(context);
-    if (notOwned != null) {
-      return notOwned;
+    NeoResponse refused = reactivationRefusal(context);
+    if (refused != null) {
+      return refused;
     }
     ReconciledPaymentReactivation.Prepared reconciled = null;
     try {
@@ -495,7 +531,11 @@ public class ReactivatePaymentHandler implements NeoHandler {
       FIN_Payment payment = NeoActionRecordGuard.loadOwned(FIN_Payment.class,
           context.getRecordId());
       if (payment == null) {
-        return NeoResponse.error(404, "Payment not found: " + context.getRecordId());
+        return NeoResponse.error(404, MSG_PAYMENT_NOT_FOUND + context.getRecordId());
+      }
+      NeoResponse inRemittance = InvoiceRemittance.paymentRefusal(payment);
+      if (inRemittance != null) {
+        return inRemittance;
       }
       if (context.isMcpOrigin()) {
         NeoResponse refused = agentRemovalRefusal(payment);
