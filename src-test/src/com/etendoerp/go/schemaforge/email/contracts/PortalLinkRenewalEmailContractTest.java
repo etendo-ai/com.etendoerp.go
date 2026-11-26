@@ -200,7 +200,7 @@ public class PortalLinkRenewalEmailContractTest {
       assertTrue(body, body.contains("Tu nuevo enlace al portal de cliente</h1>"));
       assertFalse(body, body.contains("Equipo de Etendo"));
       assertTrue("the renewal closes with the etendo.ai footer: " + body,
-          body.contains("Creado con&nbsp;<img src=\"" + EmailFooter.LOGO_URL + "\"")
+          body.contains("Creado con</span><img src=\"" + EmailFooter.LOGO_URL + "\"")
               && body.contains("utm_content=mail_reenvio_enlace"));
       assertEquals("onDelivered confirms the new link, not the expired one", NEW_ID,
           request.getSendCorrelationId());

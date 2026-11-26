@@ -231,6 +231,8 @@ public class EmailLayoutTest {
       assertTrue(c[0] + ": " + footerMarkup, footerMarkup.contains(footerAnchor(footer, c[1])));
       assertEquals(c[0] + ": one link only", 1, footerMarkup.split("<a ", -1).length - 1);
       assertEquals(c[0] + ": one image only", 1, footerMarkup.split("<img ", -1).length - 1);
+      assertTrue(c[0] + ": the line is one logo high", footerMarkup.contains(
+          "font-size:12px;line-height:15px;font-weight:400;"));
       assertFalse(c[0], footerMarkup.contains("v:roundrect"));
       assertFalse(c[0], footerMarkup.toLowerCase().contains("privac"));
       assertFalse(c[0], footerMarkup.contains("border-radius"));
@@ -270,11 +272,18 @@ public class EmailLayoutTest {
     assertEquals("https://etendo.ai/", EmailFooter.link(null));
   }
 
+  /**
+   * The words' wrapper: an inline-block one logo high, middle-aligned like the logo, so the two
+   * centres line up (Gmail showed bare text below a middle-aligned image, ETP-6209 QA).
+   */
+  private static final String FOOTER_PREFIX_OPEN = "<span style=\"display:inline-block;"
+      + "vertical-align:middle;line-height:15px;font-size:12px;margin-right:4px;\">";
+
   /** The footer's single anchor: the words and the logo, linked to the piece's UTM URL. */
   private static String footerAnchor(EmailFooter footer, String prefix) {
     return "<a href=\"" + EmailEscape.escapeHtml(footer.getUrl()) + "\" style=\"color:"
-        + EmailLayout.FOOTER_MUTED_COLOR + ";text-decoration:none;\">" + prefix + "&nbsp;"
-        + "<img src=\"" + EmailFooter.LOGO_URL + "\" width=\"100\" height=\"15\" alt=\"etendo.ai\" "
+        + EmailLayout.FOOTER_MUTED_COLOR + ";text-decoration:none;\">" + FOOTER_PREFIX_OPEN + prefix
+        + "</span><img src=\"" + EmailFooter.LOGO_URL + "\" width=\"100\" height=\"15\" alt=\"etendo.ai\" "
         + "style=\"display:inline-block;width:100px;height:15px;border:0;vertical-align:middle;\">"
         + "</a>";
   }
