@@ -23,6 +23,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -38,6 +39,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.InOrder;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
@@ -225,6 +227,55 @@ class McpSessionManagerTest {
 
       swsMock.verify(() -> SecureWebServicesUtils.createContext(
           eq(USER_ID), eq(ROLE_ID), eq("specificOrg"), eq(WAREHOUSE_ID), eq("0")));
+    }
+  }
+
+  @Nested
+  @DisplayName("Accept-Language override (ETP-6401)")
+  class AcceptLanguageOverride {
+
+    @Test
+    @DisplayName("applies the request language before the request code is captured")
+    void appliesTheLanguageBeforeCapture() throws Exception {
+      try (MockedStatic<NeoLanguage> lang = mockStatic(NeoLanguage.class)) {
+        lang.when(NeoLanguage::captureRequestCode).thenReturn("prev");
+
+        McpSessionManager.executeInContext(
+            USER_ID, ROLE_ID, CLIENT_ID, ORG_ID, WAREHOUSE_ID, "en_US", () -> "ok");
+
+        InOrder order = inOrder(NeoLanguage.class);
+        order.verify(lang, () -> NeoLanguage.applyToContext("en_US"));
+        order.verify(lang, NeoLanguage::captureRequestCode);
+        lang.verify(() -> NeoLanguage.restoreRequestCode("prev"));
+      }
+    }
+
+    @Test
+    @DisplayName("null or blank language keeps the user's default language")
+    void nullOrBlankLanguageIsNotApplied() throws Exception {
+      try (MockedStatic<NeoLanguage> lang = mockStatic(NeoLanguage.class)) {
+        McpSessionManager.executeInContext(
+            USER_ID, ROLE_ID, CLIENT_ID, ORG_ID, WAREHOUSE_ID, null, () -> "ok");
+        McpSessionManager.executeInContext(
+            USER_ID, ROLE_ID, CLIENT_ID, ORG_ID, WAREHOUSE_ID, " ", () -> "ok");
+
+        lang.verify(() -> NeoLanguage.applyToContext(any()), never());
+      }
+    }
+
+    @Test
+    @DisplayName("restores the previous request code when the callable throws")
+    void restoresOnFailure() {
+      try (MockedStatic<NeoLanguage> lang = mockStatic(NeoLanguage.class)) {
+        lang.when(NeoLanguage::captureRequestCode).thenReturn("prev");
+
+        assertThrows(IllegalStateException.class, () -> McpSessionManager.executeInContext(
+            USER_ID, ROLE_ID, CLIENT_ID, ORG_ID, WAREHOUSE_ID, "en_US", () -> {
+              throw new IllegalStateException("boom");
+            }));
+
+        lang.verify(() -> NeoLanguage.restoreRequestCode("prev"));
+      }
     }
   }
 

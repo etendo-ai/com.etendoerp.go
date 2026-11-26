@@ -57,6 +57,23 @@ public final class NeoLanguage {
   }
 
   /**
+   * Reduces an {@code Accept-Language} header to a single Etendo language code: the first entry,
+   * without its quality value, with {@code -} turned into {@code _} ({@code en-US,en;q=0.9} gives
+   * {@code en_US}). Whether the language exists and is active is left to {@link #resolveActive}.
+   *
+   * @param header the raw {@code Accept-Language} value, possibly {@code null}
+   * @return an {@code xx_YY} code, or {@code null} when the header is absent, blank, a bare tag
+   *     such as {@code en}, {@code *} or malformed, so the caller keeps the user's default language
+   */
+  public static String fromAcceptLanguage(String header) {
+    if (header == null || header.isBlank()) {
+      return null;
+    }
+    String first = header.split(",", 2)[0].split(";", 2)[0].trim().replace('-', '_');
+    return first.matches(CODE_PATTERN) ? first : null;
+  }
+
+  /**
    * Resolve an Etendo language code to an ACTIVE {@link Language} row, or
    * {@code null} when the code is malformed, unknown, or inactive.
    *
