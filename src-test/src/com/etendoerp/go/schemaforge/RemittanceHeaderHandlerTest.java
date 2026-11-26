@@ -427,7 +427,7 @@ class RemittanceHeaderHandlerTest {
     JSONArray items = response.getBody().getJSONArray("items");
     assertEquals(2, items.length());
     assertEquals(TYPE_ID, items.getJSONObject(0).getString("id"));
-    // ETP-6247: the direction lets the SPA show the scheme / financed options before the first save.
+    // ETP-6247: the direction lets the SPA show the scheme option before the first save.
     assertEquals("collection", items.getJSONObject(0).getString("direction"));
     assertEquals("payment", items.getJSONObject(1).getString("direction"));
     assertEquals(2, queries.size());
@@ -1194,7 +1194,7 @@ class RemittanceHeaderHandlerTest {
   void theHeaderDeclaresTheDueItemsAndProcessActions() {
     assertTrue(handler.servesActions());
     assertEquals(List.of("availableDueItems", "selectDueItems", "syncDueItems", "process",
-        "reactivate", "sepaFileData", "saveCreditorId", "fileReadiness", "confirm", "generateFile",
+        "reactivate", "sepaFileData", "saveCreditorId", "fileReadiness", "confirm", "downloadFile",
         "markSent", "markCollected", "returnState", "returnLines"),
         new ArrayList<>(handler.actionContracts().keySet()));
   }
@@ -1936,7 +1936,7 @@ class RemittanceHeaderHandlerTest {
     assertEquals(1, other.length());
   }
 
-  // ---------------------------------------------------------------- scheme and financed (ETP-6247)
+  // ---------------------------------------------------------------- direct debit scheme (ETP-6247)
 
   private void collectionType(String scheme) {
     RemittanceType type = mock(RemittanceType.class);
@@ -1969,14 +1969,13 @@ class RemittanceHeaderHandlerTest {
   }
 
   @Test
-  void aCollectionTakesB2bAndFinancedNormalized() throws Exception {
+  void aCollectionTakesB2bNormalized() throws Exception {
     collectionType(RemittanceSepaProvisioning.SCHEME_CORE);
-    JSONObject body = validBody().put("directDebitScheme", " b2b ").put("financed", "Y");
+    JSONObject body = validBody().put("directDebitScheme", " b2b ");
 
     assertNull(handler.handle(create(body)));
 
     assertEquals("B2B", body.getString("directDebitScheme"));
-    assertTrue(body.getBoolean("financed"));
   }
 
   @Test
@@ -1992,20 +1991,17 @@ class RemittanceHeaderHandlerTest {
         "a blank scheme of a new collection becomes CORE");
   }
 
-  /** A payment takes neither: B2B or financed is refused, CORE / false are dropped. */
+  /** A payment takes no scheme: B2B is refused, CORE is dropped. */
   @Test
-  void aPaymentRefusesB2bAndFinancedAndDropsTheDefaults() throws Exception {
+  void aPaymentRefusesB2bAndDropsTheCoreDefault() throws Exception {
     collectionType(RemittanceSepaProvisioning.SCHEME_SCT);
 
     NeoResponse b2b = handler.handle(create(validBody().put("directDebitScheme", "B2B")));
     assertEquals(RemittanceHeaderHandler.MSG_OPTIONS_COLLECTION_ONLY, messageKey(b2b));
-    NeoResponse financed = handler.handle(create(validBody().put("financed", true)));
-    assertEquals(RemittanceHeaderHandler.MSG_OPTIONS_COLLECTION_ONLY, messageKey(financed));
 
-    JSONObject defaults = validBody().put("directDebitScheme", "CORE").put("financed", false);
+    JSONObject defaults = validBody().put("directDebitScheme", "CORE");
     assertNull(handler.handle(create(defaults)));
     assertFalse(defaults.has("directDebitScheme"));
-    assertFalse(defaults.has("financed"));
   }
 
   /** An account that cannot be used for a remittance at all is refused with its own key. */

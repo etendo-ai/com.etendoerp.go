@@ -176,7 +176,14 @@ final class ReconciliationFlowSupport {
     Invoice invoice = installment.invoice();
     FIN_PaymentSchedule schedule = installment.schedule();
 
-    BigDecimal outstanding = nullSafe(schedule.getOutstandingAmount()).abs();
+    // ETP-6247: sized from the free installment details — the ones registerReconciliationPayment
+    // links — not from the schedule's outstanding, which still counts the part in a confirmed
+    // remittance (and any detail a draft payment holds). A fully remitted installment is refused.
+    NeoResponse remitted = InvoiceRemittance.installmentRefusal(schedule, BigDecimal.ZERO, null);
+    if (remitted != null) {
+      return new SettlementOutcome(remaining, remitted);
+    }
+    BigDecimal outstanding = InvoiceRemittance.payableAmount(schedule).abs();
     BigDecimal rate = PaymentCurrencyConverter.resolveInvoiceRate(invoice, account);
     BigDecimal outstandingBase = PaymentCurrencyConverter.convertedAmount(outstanding, rate, account);
     BigDecimal allocateBase = remaining.min(outstandingBase);

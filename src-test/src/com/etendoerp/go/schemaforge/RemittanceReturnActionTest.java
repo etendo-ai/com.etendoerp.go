@@ -676,7 +676,7 @@ class RemittanceReturnActionTest {
   @ParameterizedTest
   @ValueSource(strings = { "ETGO_RemittanceReturnNotAllowed", "ETGO_RemittanceReturnLineNotFound",
       "ETGO_RemittanceReturnDateInvalid", "ETGO_RemittanceReturnFailed",
-      "ETGO_RemittanceFileHasReturns", "ETGO_RemittanceReturnNoLines" })
+      "ETGO_RemittanceReturnNoLines" })
   void everyRefusalKeyIsInTheCatalogInBothLanguages(String key) {
     for (String lang : new String[] { "en", "es" }) {
       ResourceBundle bundle = ResourceBundle.getBundle(

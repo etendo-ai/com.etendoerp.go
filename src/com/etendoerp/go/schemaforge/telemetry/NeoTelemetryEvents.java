@@ -124,8 +124,9 @@ public final class NeoTelemetryEvents {
       "backend_bank_bounce_suggestions_applied";
 
   /**
-   * ETP-6247 — a remittance's SEPA file was generated and stored («Confirmar», or «Regenerar
-   * fichero» with {@code is_regeneration}). Emitted by {@code RemittanceFileTelemetry}, flag
+   * ETP-6247 — a remittance's SEPA file was downloaded («Descargar fichero»; the file is generated
+   * on every download and never stored, so this counts downloads). Emitted by
+   * {@code RemittanceFileTelemetry}, flag
    * {@code sepa-remittances} on only, once the action has succeeded (inside a batch, after the
    * batch commits). Carries the direction ({@code AR}
    * collection, {@code AP} payment), the number of distinct invoices, the channel and the role

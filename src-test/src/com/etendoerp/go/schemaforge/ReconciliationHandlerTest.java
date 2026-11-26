@@ -107,6 +107,7 @@ import org.openbravo.model.financialmgmt.payment.FIN_FinaccTransaction;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.model.financialmgmt.payment.FIN_Payment;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
+import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_Reconciliation;
 import org.openbravo.model.financialmgmt.payment.MatchingAlgorithm;
 
@@ -150,6 +151,7 @@ import org.openbravo.model.financialmgmt.payment.MatchingAlgorithm;
  * @covers com.etendoerp.go.schemaforge.ReconciliationHandler
  * @covers com.etendoerp.go.schemaforge.StatementLineFilter
  * @covers com.etendoerp.go.schemaforge.ReactivationSupport
+ * @covers com.etendoerp.go.schemaforge.ReconciliationFlowSupport
  */
 @RunWith(MockitoJUnitRunner.Silent.class)
 public class ReconciliationHandlerTest {
@@ -2979,7 +2981,7 @@ public class ReconciliationHandlerTest {
 
     Invoice invoice = mock(Invoice.class);
     FIN_PaymentSchedule schedule = mock(FIN_PaymentSchedule.class);
-    when(schedule.getOutstandingAmount()).thenReturn(new BigDecimal("100.00"));
+    freeDetails(schedule, new BigDecimal("100.00"));
 
     try (MockedStatic<OBDal> obDal = mockStatic(OBDal.class);
         MockedStatic<ReconciliationPaymentService> rps =
@@ -3037,7 +3039,7 @@ public class ReconciliationHandlerTest {
 
     Invoice invoice = mock(Invoice.class);
     FIN_PaymentSchedule schedule = mock(FIN_PaymentSchedule.class);
-    when(schedule.getOutstandingAmount()).thenReturn(BigDecimal.ZERO);
+    freeDetails(schedule, BigDecimal.ZERO);
 
     try (MockedStatic<OBDal> obDal = mockStatic(OBDal.class);
         MockedStatic<ReconciliationPaymentService> rps =
@@ -3102,7 +3104,7 @@ public class ReconciliationHandlerTest {
     Invoice invoice = mock(Invoice.class);
     FIN_PaymentSchedule schedule = mock(FIN_PaymentSchedule.class);
     // Invoice outstanding (40.00) is LESS than the line (100.00) → partial settlement, not a 400.
-    when(schedule.getOutstandingAmount()).thenReturn(new BigDecimal("40.00"));
+    freeDetails(schedule, new BigDecimal("40.00"));
 
     try (MockedStatic<OBDal> obDal = mockStatic(OBDal.class);
         MockedStatic<ReconciliationPaymentService> rps =
@@ -3171,7 +3173,7 @@ public class ReconciliationHandlerTest {
     when(invoice.getId()).thenReturn("INV-1");
     when(invoice.getCurrency()).thenReturn(usd);
     FIN_PaymentSchedule schedule = mock(FIN_PaymentSchedule.class);
-    when(schedule.getOutstandingAmount()).thenReturn(new BigDecimal(outstanding));
+    freeDetails(schedule, new BigDecimal(outstanding));
     when(schedule.getInvoice()).thenReturn(invoice);
     when(dal.get(Invoice.class, "INV-1")).thenReturn(invoice);
     when(dal.get(FIN_PaymentSchedule.class, "PS-1")).thenReturn(schedule);
@@ -6398,7 +6400,7 @@ public class ReconciliationHandlerTest {
 
     Invoice invoice = mock(Invoice.class);
     FIN_PaymentSchedule schedule = mock(FIN_PaymentSchedule.class);
-    when(schedule.getOutstandingAmount()).thenReturn(new BigDecimal("26.62"));
+    freeDetails(schedule, new BigDecimal("26.62"));
 
     try (MockedStatic<OBDal> obDal = mockStatic(OBDal.class);
         MockedStatic<ReconciliationPaymentService> rps =
@@ -7045,5 +7047,18 @@ public class ReconciliationHandlerTest {
     // orphan transaction left behind by the committed error response.
     verify(handler, never()).createTransactionForRule(any(), any(), any());
     verify(handler, never()).matchBankStatementLine(any(), any(), any());
+  }
+
+  /**
+   * An installment with {@code amount} outstanding, all of it free (nothing remitted). ETP-6247:
+   * {@code settleInvoice} sizes a settlement from the free details (the ones the payment links),
+   * while the explicit-conversion and write-off paths still read the outstanding, so both agree.
+   */
+  private static void freeDetails(FIN_PaymentSchedule schedule, BigDecimal amount) {
+    when(schedule.getOutstandingAmount()).thenReturn(amount);
+    FIN_PaymentScheduleDetail psd = mock(FIN_PaymentScheduleDetail.class);
+    when(psd.getAmount()).thenReturn(amount);
+    when(schedule.getFINPaymentScheduleDetailInvoicePaymentScheduleList())
+        .thenReturn(List.of(psd));
   }
 }

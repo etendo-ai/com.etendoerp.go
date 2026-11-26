@@ -102,7 +102,8 @@ final class RemittanceIban {
   /**
    * The IBAN its SEPA file carries: {@link #effective} when valid, else {@code null}. A
    * remittance without a copy gets the account's valid IBAN as its copy, in the caller's
-   * transaction, so later edits of the account do not change what a regeneration writes.
+   * transaction: «Confirmar» keeps it, so later edits of the account do not change what a download
+   * writes; «Descargar fichero» rolls it back (it writes nothing).
    *
    * @param remittance the remittance being generated
    * @return the valid IBAN, or {@code null}
