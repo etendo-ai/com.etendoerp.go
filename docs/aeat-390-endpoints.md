@@ -219,6 +219,11 @@ endpoint) then attributes those lines to the boxes the figure landed in. Consequ
   negative, reversal and credit-memo lines, cash-VAT lines per payment;
 - a line whose figure feeds no box (zero, `UNSUPPORTED_RATE`, negative volume base, `NO_BOX`) is
   not listed; derived boxes ([47], [64], [65], [84]…[108]) have no lines.
+- a foreign-currency line converts its base and its cuota to euros separately (the invoice's own
+  rate, else the general one) and rounds each to the **nearest** cent
+  (`AEAT390Utility.roundLineAmount`, HALF_UP, aeat390 module). Rounding UP, as classic did before
+  ETP-5716 QA (CAL-F1), put the cuota one cent above base × rate and above the 303 for the same
+  invoice, which surfaced as a false `DIFF_303` / blocking `BLOCK9_MISMATCH`.
 
 Query parameters (all optional besides `year`/`period`): `box` (AEAT box number), `type`
 (`accrued` | `deductible` — the row's `sides`, see below; `sales` | `purchase`, from the
