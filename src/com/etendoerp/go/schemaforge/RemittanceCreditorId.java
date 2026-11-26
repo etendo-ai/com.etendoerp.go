@@ -70,8 +70,9 @@ final class RemittanceCreditorId {
    * computed from the organization when it can be formed; else {@code null} (also for an invalid
    * one, which is never replaced). A
    * remittance without a copy gets the account's valid default as its copy (an old remittance, or
-   * one whose copy was never made), in the caller's transaction, so later edits of the account do
-   * not change what a regeneration writes.
+   * one whose copy was never made), in the caller's transaction: «Confirmar» keeps it, so later
+   * edits of the account do not change what a download writes; «Descargar fichero» rolls it back
+   * (it writes nothing).
    *
    * @param remittance the remittance being generated
    * @return the valid identifier, or {@code null}

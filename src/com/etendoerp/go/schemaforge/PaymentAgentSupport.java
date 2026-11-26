@@ -71,8 +71,10 @@ final class PaymentAgentSupport {
   private static final String KEY_ID = "id";
   private static final String KEY_NAME = "name";
   private static final String KEY_OUTSTANDING = "outstandingAmount";
+  private static final String KEY_REMITTED_AMOUNT = "remittedAmount";
   private static final String KEY_DATA = "data";
   private static final String KEY_RESPONSE = "response";
+  private static final String KEY_CREDIT_SOURCES = "creditSources";
 
   private PaymentAgentSupport() {
   }
@@ -97,6 +99,9 @@ final class PaymentAgentSupport {
       return null;
     }
     NeoResponse refusal = resolveSchedule(invoice, body);
+    if (refusal == null) {
+      refusal = checkRemittance(invoice, body);
+    }
     if (refusal == null) {
       refusal = checkMethod(body, isReceipt);
     }
@@ -134,7 +139,12 @@ final class PaymentAgentSupport {
       return null;
     }
     if (candidates.isEmpty()) {
-      return NeoResponse.error(SC_UNPROCESSABLE, PaymentRegistrationService.MSG_NO_PENDING_PSD);
+      // ETP-6247: nothing payable because the invoice sits in a confirmed remittance — say so,
+      // rather than the generic "no pending installment".
+      NeoResponse remitted = InvoiceRemittance.installmentRefusal(remittedSchedule(invoice),
+          BigDecimal.ZERO, editId);
+      return remitted != null ? remitted
+          : NeoResponse.error(SC_UNPROCESSABLE, PaymentRegistrationService.MSG_NO_PENDING_PSD);
     }
     JSONArray installments = new JSONArray();
     for (FIN_PaymentSchedule schedule : candidates) {
@@ -149,6 +159,32 @@ final class PaymentAgentSupport {
     return refusal("This invoice has " + candidates.size() + " pending installments; send "
         + "scheduleId with the one being paid (see 'installments').", "installments",
         installments);
+  }
+
+  /**
+   * ETP-6247: the service's own remittance guard, run before the overpayment check so an agent is
+   * not first asked for an {@code overpaymentAction} the service would then refuse anyway.
+   */
+  private static NeoResponse checkRemittance(Invoice invoice, JSONObject body) {
+    FIN_PaymentSchedule schedule = PaymentOwnership.scheduleOf(
+        body.optString(KEY_SCHEDULE_ID, null), invoice);
+    BigDecimal cash = parseAmount(body.optString("actual_payment", null));
+    if (schedule == null || cash == null) {
+      return null;
+    }
+    return InvoiceRemittance.installmentRefusal(schedule,
+        cash.add(PaymentCreditConsumer.requestedFunding(body.optJSONArray(KEY_CREDIT_SOURCES))),
+        body.optString(KEY_PAYMENT_ID, null));
+  }
+
+  /** The first installment of the invoice with a remitted part, or {@code null}. */
+  private static FIN_PaymentSchedule remittedSchedule(Invoice invoice) {
+    for (FIN_PaymentSchedule schedule : invoice.getFINPaymentScheduleList()) {
+      if (InvoiceRemittance.remittedAmount(schedule).signum() != 0) {
+        return schedule;
+      }
+    }
+    return null;
   }
 
   /**
@@ -210,7 +246,7 @@ final class PaymentAgentSupport {
     boolean editing = StringUtils.isNotBlank(body.optString(KEY_PAYMENT_ID, null));
     BigDecimal capacity = cents(editing ? schedule.getAmount() : pendingAmount(schedule));
     BigDecimal funds = cents(cash.add(
-        PaymentCreditConsumer.requestedFunding(body.optJSONArray("creditSources"))));
+        PaymentCreditConsumer.requestedFunding(body.optJSONArray(KEY_CREDIT_SOURCES))));
     BigDecimal excess = funds.subtract(capacity);
     if (excess.signum() <= 0) {
       return null;
@@ -342,7 +378,7 @@ final class PaymentAgentSupport {
     }
     BigDecimal creditUsed = BigDecimal.ZERO;
     if ("registerPayment".equals(action)) {
-      creditUsed = PaymentCreditConsumer.requestedFunding(body.optJSONArray("creditSources"));
+      creditUsed = PaymentCreditConsumer.requestedFunding(body.optJSONArray(KEY_CREDIT_SOURCES));
       data.put("creditUsed", creditUsed);
     }
     BigDecimal generated = PaymentRegistrationService.nullToZero(payment.getGeneratedCredit());
@@ -410,6 +446,11 @@ final class PaymentAgentSupport {
     state.put(KEY_OUTSTANDING, row[1]);
     state.put("totalPaid", row[2]);
     state.put("paymentComplete", Boolean.TRUE.equals(row[3]));
+    // ETP-6247: the part of the outstanding that a confirmed remittance will collect. Summed from
+    // the installment details, not read from C_Invoice.EM_ETGO_Remitted_Amt: that stored value is
+    // only refreshed at commit, after this answer is built.
+    state.put(KEY_REMITTED_AMOUNT,
+        InvoiceRemittance.remittedAmount(OBDal.getInstance().get(Invoice.class, invoiceId)));
     return state;
   }
 
@@ -449,16 +490,13 @@ final class PaymentAgentSupport {
     return paid;
   }
 
-  /** What is still unpaid on an installment: its details not yet linked to a payment. */
+  /**
+   * What is still unpaid on an installment: its details not yet linked to a payment. A detail in a
+   * confirmed remittance is linked, so it is not pending here (ETP-6247). Delegates to
+   * {@link InvoiceRemittance#payableAmount}, the one definition shared with the service guards.
+   */
   static BigDecimal pendingAmount(FIN_PaymentSchedule schedule) {
-    BigDecimal total = BigDecimal.ZERO;
-    for (FIN_PaymentScheduleDetail psd
-        : schedule.getFINPaymentScheduleDetailInvoicePaymentScheduleList()) {
-      if (psd.getPaymentDetails() == null && psd.getAmount() != null) {
-        total = total.add(psd.getAmount());
-      }
-    }
-    return total;
+    return InvoiceRemittance.payableAmount(schedule);
   }
 
   private static NeoResponse refusal(String message, String listKey, JSONArray list)

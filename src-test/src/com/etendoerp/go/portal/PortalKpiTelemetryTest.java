@@ -36,7 +36,6 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
-import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -182,11 +181,12 @@ public class PortalKpiTelemetryTest {
   @Test
   public void documentDownloadedEmitsOnlyWhenTheStampUpdatedARow() {
     PortalKpiTelemetry.documentDownloaded(new PortalSession(link(PortalLink.ORIGIN_SEND)),
-        PortalDocumentKind.QUOTATION, QUOTATION_ID);
+        PortalDocumentKind.QUOTATION, QUOTATION_ID, "download");
 
     Map<String, Object> properties =
         awaitEvent(NeoTelemetryEvents.BACKEND_PORTAL_DOCUMENT_DOWNLOADED);
     assertEquals("quotation", properties.get(KEY_TYPE));
+    assertEquals("download", properties.get("purpose"));
     Map<String, Object> params = onlyStatement("UPDATE etgo_portal_link");
     assertEquals(CLIENT_ID, params.get("client"));
     assertEquals(QUOTATION_ID, params.get("record"));
@@ -197,9 +197,11 @@ public class PortalKpiTelemetryTest {
   public void documentDownloadedEmitsNothingWhenNoRowWasStampedOrTheStampFailed() {
     PortalSession portal = new PortalSession(link(PortalLink.ORIGIN_SEND));
     stampAnswer = 0;
-    PortalKpiTelemetry.documentDownloaded(portal, PortalDocumentKind.INVOICE, RECORD_ID);
+    PortalKpiTelemetry.documentDownloaded(portal, PortalDocumentKind.INVOICE, RECORD_ID,
+        "preview");
     stampAnswer = new IllegalStateException("lock timeout");
-    PortalKpiTelemetry.documentDownloaded(portal, PortalDocumentKind.INVOICE, RECORD_ID);
+    PortalKpiTelemetry.documentDownloaded(portal, PortalDocumentKind.INVOICE, RECORD_ID,
+        "preview");
 
     assertNothingEmittedBeforeTheSentinel();
     // The failed stamp is rolled back, never left in the request's transaction.
@@ -440,44 +442,6 @@ public class PortalKpiTelemetryTest {
   // ── ETP-6209: portal visits and portal emails ─────────────────────────────
 
   @Test
-  public void aVisitOpensOnlyAfterThirtyMinutesWithoutAValidMeOfTheSameLink() {
-    String linkId = uniqueLinkId();
-    long start = 1_000_000L;
-    long minute = TimeUnit.MINUTES.toMillis(1);
-
-    assertTrue("first", PortalKpiTelemetry.isNewVisit(linkId, start));
-    assertFalse("29 min later", PortalKpiTelemetry.isNewVisit(linkId, start + 29 * minute));
-    assertFalse("the window slid: 58 min after the first, 29 after the last",
-        PortalKpiTelemetry.isNewVisit(linkId, start + 58 * minute));
-    assertTrue("31 min without one", PortalKpiTelemetry.isNewVisit(linkId, start + 89 * minute));
-    for (String blank : new String[] { null, "", "  " }) {
-      assertFalse("blank id " + blank, PortalKpiTelemetry.isNewVisit(blank, start));
-    }
-  }
-
-  @Test
-  public void reachingTheCapSweepsTheLinksWhoseVisitEnded() throws Exception {
-    Map<String, Long> tracked = trackedOpens();
-    String prefix = uniqueLinkId() + "-";
-    long now = TimeUnit.HOURS.toMillis(2);
-    try {
-      for (int i = 0; i < 10_000; i++) {
-        tracked.put(prefix + i, 0L);
-      }
-      tracked.put(prefix + "recent", now - TimeUnit.MINUTES.toMillis(1));
-
-      assertTrue(PortalKpiTelemetry.isNewVisit(prefix + "new", now));
-
-      assertFalse("ended visits are swept", tracked.containsKey(prefix + 0));
-      assertFalse(tracked.containsKey(prefix + 9_999));
-      assertFalse("a visit still open is kept",
-          PortalKpiTelemetry.isNewVisit(prefix + "recent", now));
-    } finally {
-      tracked.keySet().removeIf(key -> key.startsWith(prefix));
-    }
-  }
-
-  @Test
   public void anOpenedVisitNamesTheEntryTypeTheOriginAndAStablePseudonymOfTheCustomer() {
     Invoice creditNote = creditNote();
     when(obDal.get(Invoice.class, RECORD_ID)).thenReturn(creditNote);
@@ -489,7 +453,7 @@ public class PortalKpiTelemetryTest {
           PortalDocumentKind.QUOTATION, "BP-2");
 
       assertEquals(new HashSet<>(Arrays.asList(KEY_ACCOUNT, KEY_THIRD_PARTY, "entry_doc_type",
-          "origin")), send.keySet());
+          "origin", "in_universe")), send.keySet());
       assertEquals(CLIENT_ID, send.get(KEY_ACCOUNT));
       assertEquals("credit_note", send.get("entry_doc_type"));
       assertEquals("send", send.get("origin"));
@@ -513,7 +477,7 @@ public class PortalKpiTelemetryTest {
   @Test
   public void withoutTheSigningSecretAnOpenedVisitCarriesNoThirdParty() {
     withoutSigningSecret(() -> assertEquals(new HashSet<>(Arrays.asList(KEY_ACCOUNT,
-        "entry_doc_type", "origin")),
+        "entry_doc_type", "origin", "in_universe")),
         opened(PortalLink.ORIGIN_SEND, PortalDocumentKind.ORDER, "BP-1").keySet()));
   }
 
@@ -555,7 +519,7 @@ public class PortalKpiTelemetryTest {
         false);
     NeoTelemetryService captured = mock(NeoTelemetryService.class);
     PortalKpiTelemetry.setTelemetryService(captured);
-    PortalKpiTelemetry.portalOpened(link);
+    PortalKpiTelemetry.portalOpened(link, null, true);
     return awaitEvent(captured, NeoTelemetryEvents.BACKEND_PORTAL_OPENED);
   }
 
@@ -580,12 +544,6 @@ public class PortalKpiTelemetryTest {
   /** A link id no other test used: the visit tracker is static and outlives a test. */
   private static String uniqueLinkId() {
     return "LINK-" + UUID.randomUUID();
-  }
-
-  private static Map<String, Long> trackedOpens() throws Exception {
-    Field field = PortalKpiTelemetry.class.getDeclaredField("LAST_OPEN");
-    field.setAccessible(true);
-    return (Map<String, Long>) field.get(null);
   }
 
   private static Invoice creditNote() {

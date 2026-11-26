@@ -6,7 +6,6 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
@@ -51,9 +50,12 @@ import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryService;
  *       Under evaluation; a conversion of a quotation the customer already accepted from the portal
  *       is not a second decision).</li>
  *   <li>{@code backend_portal_opened} ({@code third_party}, {@code entry_doc_type},
- *       {@code origin}): a portal visit opened from a link — the first valid {@code /me} of a link
- *       after {@value #OPEN_WINDOW_MINUTES} minutes without one, so a reload or the SPA's own
- *       re-checks inside a visit do not count again.</li>
+ *       {@code origin}, {@code portal_session}, {@code in_universe}): a portal session started
+ *       ({@link PortalSessionTracker}) — once per session, so a reload or the SPA's own re-checks
+ *       inside a session do not count again. The session events themselves
+ *       ({@code backend_portal_document_opened}, {@code …_value_interaction},
+ *       {@code …_session_engaged}, {@code …_pdf_downloaded}, {@code …_etendo_click}) are built by
+ *       {@link PortalSessionEvents}.</li>
  *   <li>{@code backend_portal_email_sent} ({@code piece}, {@code doc_type} for a document send):
  *       every portal email that actually left — a document send carrying a portal link, a link
  *       renewal, a decision confirmation (accept / reject).</li>
@@ -89,13 +91,10 @@ public final class PortalKpiTelemetry {
   /** {@code piece} of a quotation rejection confirmation email. */
   public static final String PIECE_DECISION_REJECT = "decision_reject";
 
-  /** A visit ends after this long without a valid {@code /me} of the same link. */
-  static final long OPEN_WINDOW_MINUTES = 30;
-  private static final long OPEN_WINDOW_MILLIS = TimeUnit.MINUTES.toMillis(OPEN_WINDOW_MINUTES);
-  /** Above this many tracked links, the stale ones are swept before tracking another. */
-  private static final int MAX_TRACKED_OPENS = 10_000;
-  /** Last valid {@code /me} per link id, this node only (one node in production; see the docs). */
-  private static final Map<String, Long> LAST_OPEN = new ConcurrentHashMap<>();
+  /** The session pseudonym ({@link PortalSessionTracker#pseudonym}) on every session event. */
+  static final String KEY_PORTAL_SESSION = "portal_session";
+  /** Whether the session counts for the value-session KPI. */
+  static final String KEY_IN_UNIVERSE = "in_universe";
   /** Signing purpose of the {@code third_party} pseudonym: valid for nothing else. */
   static final String THIRD_PARTY_PURPOSE = "kpi-third-party:v1";
 
@@ -170,17 +169,22 @@ public final class PortalKpiTelemetry {
    * @param session the portal session that downloaded it
    * @param kind the document's kind
    * @param documentId the document
+   * @param purpose {@code preview} (the detail's automatic preview) or {@code download}; the
+   *     trigger is unchanged (the first PDF served), only described (ETP-6209 KPI design)
    */
   static void documentDownloaded(PortalSession session, PortalDocumentKind kind,
-      String documentId) {
+      String documentId, String purpose) {
     if (session == null || kind == null || StringUtils.isBlank(documentId)) {
       return;
     }
     try {
       if (stampFirstDownload(session.getClientId(), documentId)) {
-        send(NeoTelemetryEvents.BACKEND_PORTAL_DOCUMENT_DOWNLOADED,
-            typeProperties(session.getClientId(), kind), session.getClientId(),
-            identityOf(session.getClientId()));
+        Map<String, Object> properties = typeProperties(session.getClientId(), kind);
+        if (purpose != null) {
+          properties.put("purpose", purpose);
+        }
+        send(NeoTelemetryEvents.BACKEND_PORTAL_DOCUMENT_DOWNLOADED, properties,
+            session.getClientId(), identityOf(session.getClientId()));
       }
     } catch (RuntimeException e) {
       log.debug("Portal KPI telemetry: the download stamp failed: {}", e.getMessage());
@@ -205,14 +209,17 @@ public final class PortalKpiTelemetry {
   }
 
   /**
-   * A portal page validated a link ({@code /me} answered {@code valid}): emits
-   * {@code backend_portal_opened} when it opens a new visit of that link. Never throws.
+   * A portal session started ({@link PortalSessionTracker#track} minted it): emits
+   * {@code backend_portal_opened} once per session — two tabs opened from the email are two visits;
+   * a reload or the page's own re-checks inside a session are not. Never throws.
    *
-   * @param link the link the page was opened with
+   * @param link the link the session was entered with
+   * @param portalSession the session's pseudonym, or {@code null}
+   * @param inUniverse whether the session counts for the value-session KPI
    */
-  static void portalOpened(PortalLink link) {
+  static void portalOpened(PortalLink link, String portalSession, boolean inUniverse) {
     try {
-      if (link == null || !isNewVisit(link.getId(), System.currentTimeMillis())) {
+      if (link == null) {
         return;
       }
       String clientId = link.getClientId();
@@ -224,9 +231,31 @@ public final class PortalKpiTelemetry {
       if (link.getOrigin() != null) {
         properties.put("origin", link.getOrigin().toLowerCase(Locale.ROOT));
       }
+      if (portalSession != null) {
+        properties.put(KEY_PORTAL_SESSION, portalSession);
+      }
+      properties.put(KEY_IN_UNIVERSE, inUniverse);
       send(NeoTelemetryEvents.BACKEND_PORTAL_OPENED, properties, clientId, identityOf(clientId));
     } catch (RuntimeException e) {
       log.debug("Portal KPI telemetry: the opened event failed: {}", e.getMessage());
+    }
+  }
+
+  /**
+   * Emits a portal session event ({@link PortalSessionEvents}) for the tenant, with its
+   * {@code account_id} added. Never throws.
+   *
+   * @param event the event
+   * @param properties its properties, without {@code account_id}
+   * @param clientId the tenant
+   */
+  static void emitForTenant(String event, Map<String, Object> properties, String clientId) {
+    try {
+      Map<String, Object> all = accountProperties(clientId);
+      all.putAll(properties);
+      send(event, all, clientId, identityOf(clientId));
+    } catch (RuntimeException e) {
+      log.debug("Portal KPI telemetry: the {} event failed: {}", event, e.getMessage());
     }
   }
 
@@ -277,26 +306,6 @@ public final class PortalKpiTelemetry {
     }
     send(NeoTelemetryEvents.BACKEND_PORTAL_EMAIL_SENT, properties, clientId,
         identityOf(clientId));
-  }
-
-  /**
-   * Whether a valid {@code /me} of this link opens a new visit: none tracked, or the last one more
-   * than {@value #OPEN_WINDOW_MINUTES} minutes ago. Every call slides the window, so a visit lasts
-   * as long as the page keeps validating. In memory, per node: a deploy starts every visit anew.
-   *
-   * @param linkId the link
-   * @param now the current time in milliseconds
-   * @return {@code true} when this call opens a visit
-   */
-  static boolean isNewVisit(String linkId, long now) {
-    if (StringUtils.isBlank(linkId)) {
-      return false;
-    }
-    if (LAST_OPEN.size() >= MAX_TRACKED_OPENS) {
-      LAST_OPEN.values().removeIf(last -> now - last > OPEN_WINDOW_MILLIS);
-    }
-    Long previous = LAST_OPEN.put(linkId, now);
-    return previous == null || now - previous > OPEN_WINDOW_MILLIS;
   }
 
   /**

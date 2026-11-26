@@ -167,6 +167,12 @@ public final class PaymentRegistrationService {
           "Financial account not found");
     }
 
+    // ETP-6247: a partly or fully remitted installment takes no more than its payable part.
+    NeoResponse remittanceError = InvoiceRemittance.installmentRefusal(schedule, amount, null);
+    if (remittanceError != null) {
+      return remittanceError;
+    }
+
     try {
       FIN_Payment payment = registerPaymentCore(invoice, schedule, amount, paymentDate, account,
           isReceipt);
@@ -466,6 +472,7 @@ public final class PaymentRegistrationService {
     if (!Boolean.TRUE.equals(p.isProcessed())) {
       item.put("creditSourcesUsed", PaymentInvoiceApplications.creditSourcesUsedByPayment(p));
     }
+    InvoiceRemittance.putRemittance(item, p);
     return item;
   }
 
@@ -642,6 +649,17 @@ public final class PaymentRegistrationService {
         scheduleId);
     if (writeoffLimitError != null) {
       return writeoffLimitError;
+    }
+    // ETP-6247: part of the installment may sit in a confirmed remittance. Funds over what is still
+    // payable would become credit and the remittance would collect them again, so refuse before
+    // anything is written (a PIS transfer included). Same known gap as the write-off guard above
+    // for the deferred replay.
+    NeoResponse remittanceError = InvoiceRemittance.installmentRefusal(
+        PaymentOwnership.scheduleOf(scheduleId, invoice),
+        cash.add(PaymentCreditConsumer.requestedFunding(body.optJSONArray("creditSources"))),
+        body.optString(KEY_PAYMENT_ID, null));
+    if (remittanceError != null) {
+      return remittanceError;
     }
 
     Organization org = invoice.getOrganization();

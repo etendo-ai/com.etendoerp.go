@@ -149,29 +149,19 @@ final class RemittanceCreditorIdRewriter {
   }
 
   /**
-   * ETP-6247 — applies the per-remittance direct debit options to a pain.008 document, by
+   * ETP-6247 — applies the per-remittance direct debit scheme to a pain.008 document, by
    * structure: {@code LclInstrm/Cd} of every payment information block becomes {@code scheme}
-   * (CORE or B2B) and, for a financed remittance, {@code GrpHdr/MsgId} starts with {@code
-   * msgIdPrefix} ({@link #prefixedMsgId}: the original is cut from its start so the result fits
-   * {@value RemittanceSepaOptions#MSG_ID_MAX_LENGTH} characters and keeps its unique end; left as
-   * is when it already starts with the prefix).
+   * (CORE or B2B).
    *
-   * @param xml         the document the generator wrote, UTF-8
-   * @param scheme      the scheme to write, or {@code null} to leave it
-   * @param msgIdPrefix the prefix of a financed remittance, or {@code null} to leave the id
+   * @param xml    the document the generator wrote, UTF-8
+   * @param scheme the scheme to write
    * @return the document, UTF-8
-   * @throws IOException when it cannot be read or written, or has no instrument or message
-   *                     identifier to change when one was asked
+   * @throws IOException when it cannot be read or written, or has no instrument to change
    */
-  static byte[] applyOptions(byte[] xml, String scheme, String msgIdPrefix) throws IOException {
+  static byte[] applyOptions(byte[] xml, String scheme) throws IOException {
     try {
       Document document = parse(xml);
-      if (scheme != null) {
-        applyScheme(document, scheme);
-      }
-      if (msgIdPrefix != null) {
-        applyMsgIdPrefix(document, msgIdPrefix);
-      }
+      applyScheme(document, scheme);
       return write(document);
     } catch (SAXException | ParserConfigurationException | TransformerException e) {
       throw new IOException("Could not apply the direct debit options: " + e.getMessage(), e);
@@ -192,35 +182,6 @@ final class RemittanceCreditorIdRewriter {
     if (changed == 0) {
       throw new IOException("The SEPA file has no LclInstrm/Cd: the scheme cannot be applied");
     }
-  }
-
-  /** Prefixes {@code GrpHdr/MsgId} with {@code msgIdPrefix} unless it already starts with it. */
-  private static void applyMsgIdPrefix(Document document, String msgIdPrefix) throws IOException {
-    NodeList ids = document.getElementsByTagNameNS("*", "MsgId");
-    if (ids.getLength() == 0) {
-      throw new IOException("The SEPA file has no MsgId: the financed prefix cannot be applied");
-    }
-    Node id = ids.item(0);
-    String current = id.getTextContent() == null ? "" : id.getTextContent();
-    if (!current.startsWith(msgIdPrefix)) {
-      id.setTextContent(prefixedMsgId(msgIdPrefix, current));
-    }
-  }
-
-  /**
-   * {@code prefix + original}, at most {@value RemittanceSepaOptions#MSG_ID_MAX_LENGTH}
-   * characters. When it does not fit, the ORIGINAL is cut, keeping its end: the generator's id ends
-   * in what makes it unique (the timestamp), which cutting the joined value at its end would drop.
-   *
-   * @param prefix   the financed prefix, shorter than the maximum
-   * @param original the identifier the generator wrote
-   * @return the prefixed identifier
-   */
-  static String prefixedMsgId(String prefix, String original) {
-    int room = Math.max(0, RemittanceSepaOptions.MSG_ID_MAX_LENGTH - prefix.length());
-    String kept = original.length() > room ? original.substring(original.length() - room)
-        : original;
-    return prefix + kept;
   }
 
   /** Agent elements whose empty institution identification the EPC does not accept. */

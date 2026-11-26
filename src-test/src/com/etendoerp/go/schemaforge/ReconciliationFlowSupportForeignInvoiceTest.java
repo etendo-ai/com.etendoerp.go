@@ -37,16 +37,19 @@ import java.util.List;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
+import org.hibernate.criterion.Criterion;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
+import org.mockito.ArgumentCaptor;
 import org.mockito.Mock;
 import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.openbravo.base.exception.OBException;
+import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.common.currency.ConversionRateDoc;
@@ -56,8 +59,12 @@ import org.openbravo.model.financialmgmt.payment.FIN_BankStatementLine;
 import org.openbravo.model.financialmgmt.payment.FIN_FinaccTransaction;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.model.financialmgmt.payment.FIN_Payment;
+import org.openbravo.model.financialmgmt.payment.FIN_PaymentDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentMethod;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
+import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
+import org.openbravo.module.remittance.Remittance;
+import org.openbravo.module.remittance.RemittanceLine;
 
 /**
  * DB-free unit tests for {@link ReconciliationFlowSupport#createInvoicePayments}, covering the
@@ -161,8 +168,12 @@ class ReconciliationFlowSupportForeignInvoiceTest {
 
   private FIN_PaymentSchedule schedule(String id, String outstanding) {
     FIN_PaymentSchedule sch = mock(FIN_PaymentSchedule.class);
-    when(sch.getOutstandingAmount())
-        .thenReturn(outstanding == null ? null : new BigDecimal(outstanding));
+    // ETP-6247: settleInvoice sizes from the free installment details, not the outstanding.
+    if (outstanding != null) {
+      FIN_PaymentScheduleDetail psd = mock(FIN_PaymentScheduleDetail.class);
+      when(psd.getAmount()).thenReturn(new BigDecimal(outstanding));
+      when(sch.getFINPaymentScheduleDetailInvoicePaymentScheduleList()).thenReturn(List.of(psd));
+    }
     when(obDal.get(eq(FIN_PaymentSchedule.class), eq(id))).thenReturn(sch);
     return sch;
   }
@@ -459,6 +470,107 @@ class ReconciliationFlowSupportForeignInvoiceTest {
     assertNull(resp, "an invoice settling less than the line should now succeed, not 400");
     assertEquals(1, operationIds.size());
     assertEquals("txn-1", operationIds.get(0));
+  }
+
+  // ── settleInvoice on an installment in a confirmed remittance (InvoiceRemittance) ──
+
+  /**
+   * An installment of {@code invoiceId}'s whose details are {@code remitted} (linked to a REM_SENT
+   * payment) plus {@code free} (unlinked, may be null). Its outstanding stays the whole amount —
+   * the remitted part is still owed — which is exactly why it must not size the settlement.
+   */
+  @SuppressWarnings("unchecked")
+  private FIN_PaymentSchedule remittedSchedule(String id, String remitted, String free) {
+    FIN_Payment remittedPayment = mock(FIN_Payment.class);
+    when(remittedPayment.getId()).thenReturn("rem-pay-1");
+    when(remittedPayment.getDocumentNo()).thenReturn("PAY-REM");
+    when(remittedPayment.getStatus()).thenReturn(InvoiceRemittance.STATUS_REMITTED);
+    FIN_PaymentDetail detail = mock(FIN_PaymentDetail.class);
+    when(detail.getFinPayment()).thenReturn(remittedPayment);
+    FIN_PaymentScheduleDetail remittedPsd = mock(FIN_PaymentScheduleDetail.class);
+    when(remittedPsd.getAmount()).thenReturn(new BigDecimal(remitted));
+    when(remittedPsd.getPaymentDetails()).thenReturn(detail);
+    List<FIN_PaymentScheduleDetail> details = new ArrayList<>(List.of(remittedPsd));
+    BigDecimal outstanding = new BigDecimal(remitted);
+    if (free != null) {
+      FIN_PaymentScheduleDetail freePsd = mock(FIN_PaymentScheduleDetail.class);
+      when(freePsd.getAmount()).thenReturn(new BigDecimal(free));
+      details.add(freePsd);
+      outstanding = outstanding.add(new BigDecimal(free));
+    }
+    FIN_PaymentSchedule sch = mock(FIN_PaymentSchedule.class);
+    when(sch.getOutstandingAmount()).thenReturn(outstanding);
+    when(sch.getFINPaymentScheduleDetailInvoicePaymentScheduleList()).thenReturn(details);
+    when(obDal.get(eq(FIN_PaymentSchedule.class), eq(id))).thenReturn(sch);
+
+    RemittanceLine line = mock(RemittanceLine.class);
+    Remittance remittance = mock(Remittance.class);
+    when(remittance.getId()).thenReturn("rem-1");
+    when(remittance.getDocumentNo()).thenReturn("REM-0042");
+    when(line.getRemittance()).thenReturn(remittance);
+    OBCriteria<RemittanceLine> crit = mock(OBCriteria.class);
+    when(crit.add(any(Criterion.class))).thenReturn(crit);
+    when(crit.uniqueResult()).thenReturn(line);
+    when(obDal.createCriteria(RemittanceLine.class)).thenReturn(crit);
+    return sch;
+  }
+
+  /**
+   * 60 of a 100 installment sit in a confirmed remittance: a 100 line settles the free 40 only,
+   * never the 60 the remittance will collect (which registerReconciliationPayment could not link
+   * anyway, so the payment used to come out larger than what it paid).
+   */
+  @Test
+  void settleInvoice_partlyRemittedInstallment_isSizedFromTheFreeDetails() throws Exception {
+    FIN_FinancialAccount acc = account(ACCOUNT_CURRENCY);
+    invoice("inv-1", ACCOUNT_CURRENCY);
+    remittedSchedule("sch-1", "60", "40");
+    FIN_BankStatementLine bsl = line("100", "0");
+    List<String> operationIds = new ArrayList<>();
+    FIN_FinaccTransaction txn = mock(FIN_FinaccTransaction.class);
+    when(txn.getId()).thenReturn("txn-1");
+    FIN_Payment payment = mock(FIN_Payment.class);
+    when(payment.getFINFinaccTransactionList()).thenReturn(List.of(txn));
+    ArgumentCaptor<ReconciliationPaymentService.ReconciliationPaymentRequest> request =
+        ArgumentCaptor.forClass(ReconciliationPaymentService.ReconciliationPaymentRequest.class);
+    reconciliationPaymentServiceMock
+        .when(() -> ReconciliationPaymentService.registerReconciliationPayment(request.capture()))
+        .thenReturn(payment);
+
+    NeoResponse resp;
+    try (MockedStatic<OBContext> ctx = mockStatic(OBContext.class)) {
+      resp = ReconciliationFlowSupport.createInvoicePayments(
+          acc, bsl, specs(spec("inv-1", "sch-1")), operationIds, TOLERANCE, null, false);
+    }
+
+    assertNull(resp);
+    assertEquals(0, new BigDecimal("40").compareTo(request.getValue().paymentAmount()));
+    assertEquals(0, new BigDecimal("40").compareTo(request.getValue().accountAmount()));
+    assertEquals(List.of("txn-1"), operationIds);
+  }
+
+  @Test
+  void settleInvoice_fullyRemittedInstallment_isRefusedWithoutAPayment() throws Exception {
+    FIN_FinancialAccount acc = account(ACCOUNT_CURRENCY);
+    invoice("inv-1", ACCOUNT_CURRENCY);
+    remittedSchedule("sch-1", "100", null);
+    FIN_BankStatementLine bsl = line("100", "0");
+    List<String> operationIds = new ArrayList<>();
+
+    NeoResponse resp;
+    try (MockedStatic<OBContext> ctx = mockStatic(OBContext.class)) {
+      resp = ReconciliationFlowSupport.createInvoicePayments(
+          acc, bsl, specs(spec("inv-1", "sch-1")), operationIds, TOLERANCE, null, false);
+    }
+
+    assertEquals(422, resp.getHttpStatus());
+    JSONObject error = resp.getBody().getJSONObject("error");
+    assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE,
+        error.getJSONArray("messageKeys").getString(0));
+    assertEquals("REM-0042", error.getString("remittanceDocumentNo"));
+    reconciliationPaymentServiceMock.verify(
+        () -> ReconciliationPaymentService.registerReconciliationPayment(any()), never());
+    assertTrue(operationIds.isEmpty());
   }
 
   // ── loadInstallment: the schedule must belong to the named invoice (ETP-5657) ──

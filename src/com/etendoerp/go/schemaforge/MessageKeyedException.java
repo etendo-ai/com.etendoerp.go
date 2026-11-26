@@ -55,6 +55,30 @@ public class MessageKeyedException extends OBException {
     this.messageKey = messageKey;
   }
 
+  /** Text the caller already resolved, kept apart from the key in the constructor signature. */
+  record ResolvedText(String value) {
+  }
+
+  /** Carries text the caller already resolved: {@link #withArgs}, {@link NeoRefusalException}. */
+  MessageKeyedException(ResolvedText text, String messageKey) {
+    super(text.value());
+    this.messageKey = messageKey;
+  }
+
+  /**
+   * The exception for a message of this module whose placeholders are positional ({@code %0..%n}),
+   * worded through {@link NeoMessageText#text(String, Object...)} so the Spanish catalog applies
+   * where {@code AD_MESSAGE_TRL} is not exported (see {@link NeoMessageText}).
+   *
+   * @param messageKey the {@code AD_MESSAGE.VALUE}
+   * @param args       the placeholder values, in order
+   * @return the exception, carrying {@code messageKey} as its identity
+   */
+  public static MessageKeyedException withArgs(String messageKey, Object... args) {
+    return new MessageKeyedException(new ResolvedText(NeoMessageText.text(messageKey, args)),
+        messageKey);
+  }
+
   public String getMessageKey() {
     return messageKey;
   }

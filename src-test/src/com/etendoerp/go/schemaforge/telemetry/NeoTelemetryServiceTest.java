@@ -377,6 +377,37 @@ class NeoTelemetryServiceTest {
     assertFalse(sink.last().getProperties().containsKey("is_regeneration"));
   }
 
+  /**
+   * ETP-6209 portal session KPIs: the session pseudonym passes as a string, in_universe and
+   * is_origin_doc must be real booleans, and the other keys keep only a value of their vocabulary.
+   */
+  @Test
+  void thePortalSessionKeysKeepOnlyBooleansAndTheirVocabulary() {
+    RecordingSink sink = new RecordingSink();
+    NeoTelemetryService service = service(sink, 0L);
+
+    service.emit(NeoTelemetryEvents.BACKEND_PORTAL_SESSION_ENGAGED, mapOf(
+        "portal_session", "pseudonym.sig", "in_universe", true, "is_origin_doc", false,
+        "interaction", "related_document", "first_interaction", "quotation_decision",
+        "rule", "v1", "purpose", "download", "reference", "startFree", "location", "mobile"));
+    assertEquals(9, sink.last().getProperties().size(), sink.last().getProperties().toString());
+
+    // Columns: key, a value outside its type or vocabulary.
+    Object[][] dropped = {
+        { "in_universe", "true" }, { "is_origin_doc", 1 },
+        { "interaction", "list_open" }, { "first_interaction", "Home_Document" },
+        { "rule", "v2" }, { "purpose", "print" }, { "reference", "https://etendo.ai" },
+        { "location", "footer" }, { "interaction", true },
+    };
+    for (Object[] c : dropped) {
+      service.emit(NeoTelemetryEvents.BACKEND_PORTAL_SESSION_ENGAGED,
+          mapOf(c[0], c[1], "portal_session", "pseudonym.sig"));
+      assertFalse(sink.last().getProperties().containsKey(c[0]), "must drop " + c[0] + "=" + c[1]);
+      // A sentinel key no row of the table tests: the rest of the event survives.
+      assertEquals("pseudonym.sig", sink.last().getProperties().get("portal_session"));
+    }
+  }
+
   /** The contact flags must be real booleans and the contact age a whole number within bounds. */
   @Test
   void emitDropsMistypedOrOutOfBoundsContactKpiValues() {

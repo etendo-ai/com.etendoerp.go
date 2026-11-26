@@ -17,6 +17,8 @@
 
 package com.etendoerp.go.schemaforge.handlers;
 
+import java.util.Map;
+
 import javax.inject.Inject;
 import javax.inject.Named;
 
@@ -28,11 +30,13 @@ import org.openbravo.model.ad.ui.Process;
 import org.openbravo.model.common.enterprise.Warehouse;
 import org.openbravo.model.materialmgmt.transaction.InventoryCount;
 
+import com.etendoerp.go.schemaforge.InventoryPostingContracts;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoHandler;
 import com.etendoerp.go.schemaforge.NeoProcessService;
 import com.etendoerp.go.schemaforge.NeoResponse;
+import com.etendoerp.go.schemaforge.util.NeoActionContract;
 
 /**
  * {@code NeoHandler} for the {@code inventory} entity (Physical Inventory header). Exposes the
@@ -80,6 +84,15 @@ public class InventoryHandler implements NeoHandler {
   /** Package-private seam so unit tests can inject a mocked {@link DocumentPostingService}. */
   void setPostingService(DocumentPostingService postingService) {
     this.postingService = postingService;
+  }
+
+  /**
+   * {@inheritDoc} {@code post} / {@code unpost} (ETP-6406): the actions this handler serves through
+   * the posting service, published so an agent uses them instead of the AD {@code Posted} button.
+   */
+  @Override
+  public Map<String, NeoActionContract> actionContracts() {
+    return InventoryPostingContracts.byProcessed();
   }
 
   @Override

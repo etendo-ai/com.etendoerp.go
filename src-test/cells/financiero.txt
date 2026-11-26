@@ -3,7 +3,8 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=financiero [-Pkind=mock|integration|all]
 
-# --- con mocks (129)
+# --- con mocks (128)
+com.etendoerp.go.schemaforge.AccountTargetedFlagTest
 com.etendoerp.go.schemaforge.AddPaymentServiceTest
 com.etendoerp.go.schemaforge.AutoMatchSupportRuleDimensionsTest
 com.etendoerp.go.schemaforge.AutoMatchSupportTest
@@ -14,7 +15,6 @@ com.etendoerp.go.schemaforge.BankBounceKpiTelemetryIdentityTest
 com.etendoerp.go.schemaforge.BankBounceLineTextTest
 com.etendoerp.go.schemaforge.BankBouncePairServiceTest
 com.etendoerp.go.schemaforge.BankBouncePaymentGuardTest
-com.etendoerp.go.schemaforge.BankBounceSuggestionsFlagTest
 com.etendoerp.go.schemaforge.BankStatementAgentActionsContractTest
 com.etendoerp.go.schemaforge.BankStatementAgentActionsTest
 com.etendoerp.go.schemaforge.BankStatementAgentValidationTest
@@ -62,6 +62,8 @@ com.etendoerp.go.schemaforge.FinancialAccountTransferActionsTest
 com.etendoerp.go.schemaforge.FinancialAccountsPageHandlerTest
 com.etendoerp.go.schemaforge.GenericCsvBankStatementImporterTest
 com.etendoerp.go.schemaforge.InvoiceExchangeRateValidatorTest
+com.etendoerp.go.schemaforge.InvoicePaymentPlanHandlerTest
+com.etendoerp.go.schemaforge.InvoiceRemittanceTest
 com.etendoerp.go.schemaforge.MatchRuleEngineTest
 com.etendoerp.go.schemaforge.MatchRuleHandlerTest
 com.etendoerp.go.schemaforge.NearMatchSupportTest
@@ -83,7 +85,6 @@ com.etendoerp.go.schemaforge.PisPaymentBridgeReturnUrlTest
 com.etendoerp.go.schemaforge.PisPaymentServiceTest
 com.etendoerp.go.schemaforge.PisPaymentStatusGatesTest
 com.etendoerp.go.schemaforge.PisRejectedPaymentHandlerTest
-com.etendoerp.go.schemaforge.Psd2ImportSettingsFlagTest
 com.etendoerp.go.schemaforge.ReconciledPaymentReactivationTest
 com.etendoerp.go.schemaforge.ReconciliationAgentActionsTest
 com.etendoerp.go.schemaforge.ReconciliationConversionSupportTest

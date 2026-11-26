@@ -24,6 +24,7 @@ import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
@@ -36,12 +37,15 @@ import java.util.Date;
 import java.util.List;
 import java.util.function.Consumer;
 
+import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.After;
 import org.junit.Test;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
+import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.erpCommon.utility.OBMessageUtils;
 import org.openbravo.model.common.currency.Currency;
 import org.openbravo.model.financialmgmt.gl.GLItem;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
@@ -50,7 +54,8 @@ import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
  * Pure unit tests for {@link FinancialAccountTransactionsSupport}: Classic-parity label mappings,
  * payment-label assembly, date formatting, day arithmetic, role filters, conversion-rate rule,
  * request-body parsing helpers, and the Movements row's foreign-currency original
- * ({@code putForeignOriginal}, ETP-5657). No DB or OBBaseTest — everything is either pure or
+ * ({@code putForeignOriginal}, ETP-5657), and how {@code runMutation} answers a refusal thrown by
+ * the action. No DB or OBBaseTest — everything is either pure or
  * mocked.
  *
  * @covers com.etendoerp.go.schemaforge.FinancialAccountTransactionsSupport
@@ -418,14 +423,6 @@ public class FinancialAccountTransactionsSupportTest {
   // private constructor (coverage of the no-arg ctor)
   // ---------------------------------------------------------------
 
-  @Test
-  public void testPrivateConstructorIsAccessibleViaReflection() throws Exception {
-    java.lang.reflect.Constructor<FinancialAccountTransactionsSupport> ctor =
-        FinancialAccountTransactionsSupport.class.getDeclaredConstructor();
-    ctor.setAccessible(true);
-    assertTrue(ctor.newInstance() instanceof FinancialAccountTransactionsSupport);
-  }
-
   // ── putForeignOriginal (ETP-5657) ────────────────────────────────────────
 
   /** A Movements row's foreign-currency columns, as TRANSACTIONS_SQL selects them. */
@@ -512,5 +509,65 @@ public class FinancialAccountTransactionsSupportTest {
         foreignColumns("USD", "EUR", null, "0.67954"));
 
     assertNoForeignOriginal(row);
+  }
+
+  // ---------------------------------------------------------------
+  // runMutation — refusals thrown by the action
+  // ---------------------------------------------------------------
+
+  /** Runs {@code action} through runMutation with OBDal/OBContext mocked; returns the dal mock. */
+  private static NeoResponse runMutationThrowing(RuntimeException thrown, OBDal[] dalOut) {
+    try (MockedStatic<OBDal> dalStatic = mockStatic(OBDal.class);
+        MockedStatic<OBContext> ctxStatic = mockStatic(OBContext.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalOut[0] = dal;
+      dalStatic.when(OBDal::getInstance).thenReturn(dal);
+      NeoResponse result = FinancialAccountTransactionsSupport.runMutation(new JSONObject(),
+          "create-payment", "Payment could not be created", () -> {
+            throw thrown;
+          });
+      ctxStatic.verify(OBContext::restorePreviousMode);
+      return result;
+    }
+  }
+
+  @Test
+  public void runMutationAnswersARefusalVerbatimAfterRollingBack() throws Exception {
+    NeoResponse refusal = NeoResponse.error(422, "The invoice is in remittance REM-0042");
+    refusal.getBody().getJSONObject("error")
+        .put("messageKeys", new JSONArray().put(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE))
+        .put(InvoiceRemittance.KEY_REMITTANCE_DOCUMENT_NO, "REM-0042");
+    OBDal[] dal = new OBDal[1];
+
+    NeoResponse result = runMutationThrowing(
+        new NeoRefusalException(refusal, InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE), dal);
+
+    // Not remapped to the generic OBException 400: the carried answer, extra keys included.
+    assertSame(refusal, result);
+    assertEquals(422, result.getHttpStatus());
+    JSONObject error = result.getBody().getJSONObject("error");
+    assertEquals("REM-0042", error.getString(InvoiceRemittance.KEY_REMITTANCE_DOCUMENT_NO));
+    assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE,
+        error.getJSONArray("messageKeys").getString(0));
+    verify(dal[0]).rollbackAndClose();
+  }
+
+  @Test
+  public void runMutationAnswersAPlainKeyedRefusalAs400WithItsKey() throws Exception {
+    OBDal[] dal = new OBDal[1];
+    NeoResponse result;
+    try (MockedStatic<OBMessageUtils> msg = mockStatic(OBMessageUtils.class)) {
+      msg.when(() -> OBMessageUtils.messageBD(InvoiceRemittance.MSG_INSTALLMENT_ALREADY_PAID))
+          .thenReturn("The installment is already paid");
+      result = runMutationThrowing(
+          new MessageKeyedException(InvoiceRemittance.MSG_INSTALLMENT_ALREADY_PAID), dal);
+    }
+
+    assertEquals(400, result.getHttpStatus());
+    JSONObject error = result.getBody().getJSONObject("error");
+    assertEquals("The installment is already paid", error.getString("message"));
+    assertEquals(InvoiceRemittance.MSG_INSTALLMENT_ALREADY_PAID,
+        error.getJSONArray("messageKeys").getString(0));
+    verify(dal[0]).rollbackAndClose();
   }
 }

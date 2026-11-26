@@ -17,7 +17,7 @@ This module is installed as an Etendo module under `modules/com.etendoerp.go` in
 1. Clone into the Etendo `modules/` directory:
    ```bash
    cd /path/to/etendo_core/modules
-   git clone git@github.com:etendosoftware/com.etendoerp.go.git
+   git clone git@github.com:etendo-ai/com.etendoerp.go.git
    cd com.etendoerp.go
    git checkout <your-branch>
    ```

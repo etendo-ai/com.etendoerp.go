@@ -246,6 +246,31 @@ Real example: `EM_ETGO_Tbai_Status` depends on `TBAI_Config` this way (ETP-5216)
 organization that adopts TicketBAI later has its existing invoices reclassified automatically
 instead of keeping a stale "does not apply" forever.
 
+**Pattern 4 — multi-hop** (the source is several joins away from the target). The resolver is
+plain SQL, so it walks the joins itself; give every hop's source table its own dependency, each
+resolving back to the target. Real example, `C_Invoice.EM_ETGO_Remitted_Amt` (ETP-6247: invoice ←
+`fin_payment_schedule` ← `fin_payment_scheduledetail` → `fin_payment_detail` → `fin_payment`):
+
+```sql
+-- FIN_PAYMENT, UPDATE of Status (a payment enters or leaves REM_SENT)
+SELECT DISTINCT ps.c_invoice_id FROM fin_payment_detail pd
+  JOIN fin_payment_scheduledetail psd ON psd.fin_payment_detail_id = pd.fin_payment_detail_id
+  JOIN fin_payment_schedule ps ON ps.fin_payment_schedule_id = psd.fin_payment_schedule_invoice
+ WHERE pd.fin_payment_id = COALESCE(NEW.fin_payment_id, OLD.fin_payment_id)
+   AND ps.c_invoice_id IS NOT NULL
+-- FIN_PAYMENT_SCHEDULEDETAIL, INSERT/DELETE and UPDATE of the link, amount and installment
+SELECT DISTINCT ps.c_invoice_id FROM fin_payment_schedule ps
+ WHERE (ps.fin_payment_schedule_id = NEW.fin_payment_schedule_invoice
+     OR ps.fin_payment_schedule_id = OLD.fin_payment_schedule_invoice)
+   AND ps.c_invoice_id IS NOT NULL
+```
+
+No dependency is needed on a middle table whose rows are never re-pointed on their own
+(`fin_payment_detail`: it is linked and unlinked through the schedule detail, which is watched).
+The target's own table needs none either here: the function reads no `C_Invoice` column, and a new
+invoice gets the physical default `0` (§5, the self-dependency gotcha, is about functions that do
+read the target row).
+
 ---
 
 ## 6. Chaining: `Computation_Sequence_Number`
@@ -278,7 +303,7 @@ gatekeeper:
 - **Schema Forge pipeline — NOT enforced today.** An earlier revision of this document claimed
   `resolve-curated.js` forces `readOnly`, `push-to-neo.js` sets `Is_ReadOnly` in `ETGO_SF_FIELD`,
   and the pipeline validator blocks a non-read-only contract field backed by a stored computed
-  column. None of that exists in `@etendosoftware/schema-forge-cli` (verified at 0.3.47: grepping
+  column. None of that exists in `@etendo-ai/schema-forge-cli` (verified at 0.3.47: grepping
   `storedComputed` / `isStoredComputed` in those three files returns nothing). Until it is
   implemented, `"visibility": "readOnly"` must be set by hand in the window's `decisions.json` — it
   is the only thing between the pipeline and an editable input bound to a column the DAL maps
