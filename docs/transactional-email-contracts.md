@@ -406,10 +406,14 @@ The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-po
   `portal-quotation-decision-notice` carry none: the footer exists only when the content asks for
   it.
 - **Footer design (marketing / legal spec, ETP-6209 QA).** One small centred line: «Creado con» /
-  «Built with» and the brand `etendo.ai` as a plain link. No button, no «Conoce más», no social, no
-  privacy link (dropped from the spec). The spec wants the horizontal etendo.ai logo after «Creado
-  con»; no such asset is published where an email can load it (the app's public assets hold the
-  square icon and the old "Etendo" wordmark), so the brand is text until marketing publishes one.
+  «Built with» followed by the horizontal etendo.ai logo published by marketing
+  (`EmailFooter.LOGO_URL` =
+  `https://etendo.ai/wp-content/uploads/2026/11/etendoai-logo-email-200.png`, a 200×30 asset drawn
+  at 100×15: `width`/`height` attributes for Outlook plus inline `width`/`height`, `border:0`,
+  `display:inline-block`, `vertical-align:middle`), `alt="etendo.ai"` so the brand still reads when
+  the client blocks remote images. Words and logo are **one** anchor to the footer link below. No
+  button, no «Conoce más», no social, no privacy link (dropped from the spec). These emails have no
+  plain-text part, so there is no text variant of the footer.
 - **Footer link.** `https://etendo.ai/` with the email's UTM, declared per `EmailFooter.Piece`
   (each contract passes its own piece; the layout names no contract):
   `utm_source=portal_clientes&utm_medium=email&utm_campaign=portal_clientes&utm_content=` +
@@ -417,8 +421,9 @@ The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-po
   `mail_aceptacion` (`DECISION_ACCEPT`), `mail_rechazo` (`DECISION_REJECT`).
 - **No tracking in the markup.** None of these emails adds an open pixel, and every link points
   straight at its target (no click-redirect wrapping). The only images are the issuer's logo
-  (`/sws/portal/public-logo/…`, which records nothing) and, in the letter design, the Etendo
-  header icon. SES open/click tracking would come from an SES configuration set, which the gateway
+  (`/sws/portal/public-logo/…`, which records nothing), the footer's etendo.ai logo (a static,
+  shared asset with no per-email parameter, so it identifies no recipient) and, in the letter
+  design, the Etendo header icon. SES open/click tracking would come from an SES configuration set, which the gateway
   Lambda does not pass (`send_email` without `ConfigurationSetName`); a default configuration set
   on the sending identity is infra configuration, outside this repo.
 

@@ -260,23 +260,29 @@ public final class EmailLayout {
   }
 
   /**
-   * Draws the «Creado con etendo.ai» footer (ETP-6209 QA marketing spec): one small centred line,
-   * the brand a plain link to the home page with the email's UTM ({@link EmailFooter}).
+   * Draws the «Creado con etendo.ai» footer (ETP-6209 marketing spec): one small centred line, the
+   * words «Creado con» and the etendo.ai logo as one link to the home page with the email's UTM
+   * ({@link EmailFooter}).
    *
    * @param html the document being written
    * @param footer the footer to draw
    */
   static void appendFooter(StringBuilder html, EmailFooter footer) {
-    // One small centred line, «Creado con etendo.ai», the brand a plain link (ETP-6209 QA spec): no
-    // button, no tracking pixel, the link points straight at its target with no redirect.
+    // One anchor wraps the words and the logo, so either is the link: no button, no tracking pixel,
+    // the link points straight at its target with no redirect. The logo carries its size both as
+    // attributes (Outlook) and inline, and the brand as alt text for clients that block images.
     html.append(PRESENTATION_TABLE).append(" width=\"100%\" style=\"width:100%;\">")
         .append(CENTERED_ROW_OPEN).append(" class=\"sf-text\"").append(STYLE_FONT)
         .append(CARD_FONT_STACK).append(";padding:24px 0 8px 0;font-size:12px;line-height:16px;")
         .append("font-weight:400;color:").append(FOOTER_MUTED_COLOR).append(";\">")
-        .append(escape(footer.getPrefix())).append("&nbsp;<a href=\"")
-        .append(escape(footer.getUrl())).append("\" style=\"color:").append(FOOTER_MUTED_COLOR)
-        .append(";font-weight:600;text-decoration:none;\">").append(escape(footer.getBrand()))
-        .append("</a>").append(ROW_CLOSE).append(TABLE_CLOSE);
+        .append("<a href=\"").append(escape(footer.getUrl())).append("\" style=\"color:")
+        .append(FOOTER_MUTED_COLOR).append(";text-decoration:none;\">")
+        .append(escape(footer.getPrefix())).append("&nbsp;<img src=\"")
+        .append(escape(footer.getLogoUrl())).append("\" width=\"").append(EmailFooter.LOGO_WIDTH)
+        .append("\" height=\"").append(EmailFooter.LOGO_HEIGHT).append("\" alt=\"")
+        .append(escape(footer.getBrand())).append("\" style=\"display:inline-block;width:")
+        .append(EmailFooter.LOGO_WIDTH).append("px;height:").append(EmailFooter.LOGO_HEIGHT)
+        .append("px;border:0;vertical-align:middle;\"></a>").append(ROW_CLOSE).append(TABLE_CLOSE);
   }
 
   private static String paragraphOpen() {
