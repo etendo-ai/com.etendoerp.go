@@ -132,7 +132,7 @@ com.etendoerp.go.mcp.McpWriteRequestSupportFkSentinelTest
 com.etendoerp.go.mcp.McpWriteRequestSupportStaleRecordTest
 com.etendoerp.go.mcp.McpWriteVerbCoercionCallSiteTest
 com.etendoerp.go.mcp.NeoAccessUtilsTest
-com.etendoerp.go.mcp.NeoExtensionSurfaceCoverageTest
+com.etendoerp.go.mcp.NeoExtensionSurfaceDispatchTest
 com.etendoerp.go.mcp.SelectorContextParamsTest
 com.etendoerp.go.mcp.ToolRegistryGenerateToolsTest
 com.etendoerp.go.mcp.ToolRegistryTest
