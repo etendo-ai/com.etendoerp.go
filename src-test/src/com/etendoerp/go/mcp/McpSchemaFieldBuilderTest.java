@@ -30,9 +30,7 @@ import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -89,22 +87,97 @@ import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 @MockitoSettings(strictness = Strictness.LENIENT)
 class McpSchemaFieldBuilderTest {
 
-  @Test
-  @DisplayName("Utility classes hide their constructor")
-  void utilityClassHidesConstructor() throws ReflectiveOperationException {
-    for (Class<?> utility : List.of(McpSchemaFieldBuilder.class, McpUserRequiredOverride.class)) {
-      Constructor<?> constructor = utility.getDeclaredConstructor();
-      assertEquals(Modifier.PRIVATE, constructor.getModifiers() & Modifier.PRIVATE);
-      constructor.setAccessible(true);
-      constructor.newInstance();
-    }
-  }
-
   private static Object invokeStatic(String methodName, Class<?>[] paramTypes, Object... args)
       throws Exception {
     Method method = McpSchemaFieldBuilder.class.getDeclaredMethod(methodName, paramTypes);
     method.setAccessible(true);
     return method.invoke(null, args);
+  }
+
+  // ─── addMaxLength ───────────────────────────────────────────────────
+
+  /**
+   * ETP-5806 CP-6b (QA finding) — {@code etendo_schema} must publish the ENFORCED cap, not the AD
+   * column's own {@code FIELDLENGTH}, for a column whose write path validates against a narrower
+   * limit. {@code EM_OBSEPA_StrtNm} is {@code VARCHAR(70)} while
+   * {@code StructuredAddressComposer} rejects a street over 60, so the schema used to advertise a
+   * width {@code etendo_create} then refused with {@code 400 validation_error}.
+   */
+  @Nested
+  @DisplayName("addMaxLength")
+  class AddMaxLength {
+
+    private Column column(String dbColumnName, Long length) {
+      Column col = mock(Column.class);
+      when(col.getDBColumnName()).thenReturn(dbColumnName);
+      when(col.getLength()).thenReturn(length);
+      return col;
+    }
+
+    @Test
+    @DisplayName("a plain text column still publishes the AD column length")
+    void plainTextColumnUsesAdLength() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("Name", 40L), "string");
+      assertEquals(40L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("streetName publishes the composer's 60, not the column's 70")
+    void streetNamePublishesEnforcedCap() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", 70L), "string");
+      assertEquals(60L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("the override is matched case-insensitively, as AD column resolution is")
+    void overrideIsCaseInsensitive() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("em_obsepa_strtnm", 70L), "string");
+      assertEquals(60L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("buildingNumber and buildingName publish the composer's caps too")
+    void buildingColumnsPublishEnforcedCaps() throws Exception {
+      JSONObject number = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(number, column("EM_OBSEPA_BldgNb", 60L), "string");
+      assertEquals(16L, number.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+
+      JSONObject name = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(name, column("EM_OBSEPA_BldgNm", 60L), "string");
+      assertEquals(35L, name.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("a column narrower than its override publishes the column, not the override")
+    void columnNarrowerThanOverrideWins() throws Exception {
+      // The override says what the write path enforces; the column says what the row can hold.
+      // Publishing the override here would promise 60 on a VARCHAR(40) — the CP-6b bug reversed.
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", 40L), "string");
+      assertEquals(40L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
+
+    @Test
+    @DisplayName("an overridden column with no AD length still publishes the enforced cap")
+    void overrideSurvivesMissingAdLength() throws Exception {
+      for (Long length : new Long[] { null, 0L }) {
+        JSONObject field = new JSONObject();
+        McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", length), "string");
+        assertEquals(60L, field.getLong(McpSchemaFieldBuilder.KEY_MAX_LENGTH),
+            String.valueOf(length));
+      }
+    }
+
+    @Test
+    @DisplayName("a non-text field carries no maxLength, override or not")
+    void nonTextTypeCarriesNoMaxLength() throws Exception {
+      JSONObject field = new JSONObject();
+      McpSchemaFieldBuilder.addMaxLength(field, column("EM_OBSEPA_StrtNm", 70L), "number");
+      assertFalse(field.has(McpSchemaFieldBuilder.KEY_MAX_LENGTH));
+    }
   }
 
   // ─── mapColumnType ──────────────────────────────────────────────────

@@ -20,9 +20,13 @@ package com.etendoerp.go.schemaforge.email;
 import java.time.Instant;
 import java.util.Optional;
 
+import org.apache.commons.lang3.StringUtils;
+
 import com.etendoerp.go.portal.PortalDocumentKind;
 import com.etendoerp.go.portal.PortalLinkService;
-import com.etendoerp.go.schemaforge.email.render.EmailEscape;
+import com.etendoerp.go.portal.PortalLogoReference;
+import com.etendoerp.go.schemaforge.email.render.EmailContent;
+import com.etendoerp.go.schemaforge.email.render.EmailDates;
 import com.etendoerp.go.schemaforge.email.render.EmailMessages;
 import com.etendoerp.go.schemaforge.email.render.ValidityWindow;
 
@@ -31,7 +35,16 @@ import com.etendoerp.go.schemaforge.email.render.ValidityWindow;
  * it and the button it turns into. Kept out of {@link DefaultDocumentSendEmailContract} so the
  * shared send path only asks whether its contract declared a portal document kind.
  */
-final class DocumentSendPortalLink {
+public final class DocumentSendPortalLink {
+
+  /**
+   * The {@code SENT} response field saying whether the email carried the portal link
+   * ({@code DefaultDocumentSendEmailContract#deliveredFacts}); read by the MCP send tool.
+   */
+  public static final String FACT_PORTAL_LINK = "portalLink";
+
+  /** The resolver's label key of the document's total, which the card shows as «Importe». */
+  private static final String TOTAL_KEY = "document.detail.total";
 
   private DocumentSendPortalLink() {
   }
@@ -59,24 +72,6 @@ final class DocumentSendPortalLink {
   }
 
   /**
-   * Appends the portal sentence to the contract's own extra paragraph, if any.
-   *
-   * @param extraParagraphHtml the contract's extra paragraph, or {@code null}
-   * @param link the minted link, or {@code null}
-   * @param language the email's language
-   * @return both paragraphs, either one, or empty
-   */
-  static Optional<String> withParagraph(String extraParagraphHtml,
-      PortalLinkService.MintedLink link, String language) {
-    String portal = link == null ? null : paragraph(link, language);
-    if (extraParagraphHtml == null) {
-      return Optional.ofNullable(portal);
-    }
-    return Optional.of(portal == null ? extraParagraphHtml
-        : extraParagraphHtml + "<br><br>" + portal);
-  }
-
-  /**
    * The email's one button: the portal when a link was minted, else the document download
    * (ETP-6209 Part B: with a link, the portal shows the same printable).
    *
@@ -89,32 +84,103 @@ final class DocumentSendPortalLink {
       String language) {
     return new CallToAction(
         EmailMessages.get(link != null ? "document.portal.cta" : "document.cta", language),
-        link != null ? link.getUrl() : downloadLink, link != null);
+        link != null ? link.getUrl() : downloadLink, link);
   }
 
   /**
-   * Renders the portal sentence: where the document can be seen and for how long the link works.
-   * The link itself is the email's call-to-action button, so the sentence carries no anchor. The
-   * copy is escaped before {@code applyBold} (the order {@code EmailEscape#applyBold} documents as
-   * mandatory) and the validity interpolates the configured lifetime, never a literal.
+   * Starts the card design of a document email that carries a portal link (ETP-6209 QA CP-48): the
+   * same centred card as the portal decision confirmations ({@code EmailCardLayout}), so the two
+   * customer emails look alike. The issuer block shows the company's public logo (token-free,
+   * {@link PortalLogoReference}) or, without one, its initials; the title names the document.
+   *
+   * @param link the minted link, which carries the issuing tenant and organization
+   * @param title the card's headline
+   * @param language the email's language
+   * @return a builder with the issuer, the title and the language set
    */
-  private static String paragraph(PortalLinkService.MintedLink link, String language) {
-    Instant now = Instant.now();
-    long hours = ValidityWindow.hoursUntil(now, now.plus(link.getValidity()));
-    return EmailEscape.applyBold(EmailEscape.escapeHtml(
-        EmailMessages.get("document.portal.intro", language, hours)));
+  static EmailContent.Builder cardBuilder(PortalLinkService.MintedLink link, String title,
+      String language) {
+    EmailContent.Builder content = EmailContent.builder();
+    String company = StringUtils.defaultString(link.getClientName());
+    Optional<PortalLogoReference.PublicLogo> logo = PortalLogoReference.find(link.getClientId(),
+        link.getOrganizationId());
+    if (logo.isPresent()) {
+      content.issuer(company, logo.get().getUrl())
+          .issuerLogoSize(logo.get().getWidth(), logo.get().getHeight());
+    } else {
+      content.issuer(company, null);
+    }
+    return content.title(title).language(language);
   }
 
-  /** The email's one button: its label, where it leads and whether that is the portal. */
+  /**
+   * The card's summary box, «Datos del documento»: the company, the document number and its amount
+   * (Empresa · Nº · Importe, the confirmation's columns). A document without an amount (a goods
+   * shipment) shows its first date instead, so the box keeps three facts.
+   *
+   * @param content the card being built
+   * @param link the minted link (its tenant names the company)
+   * @param document the resolved document
+   * @param language the email's language
+   */
+  static void appendCardSummary(EmailContent.Builder content, PortalLinkService.MintedLink link,
+      EmailDocumentRecord document, String language) {
+    content.summaryTitle(EmailMessages.get("document.card.summary.title", language))
+        .detail(EmailMessages.get("document.card.summary.company", language),
+            StringUtils.defaultString(link.getClientName()))
+        .detail(EmailMessages.get("document.card.summary.number", language),
+            document.getDocumentNumber());
+    EmailDocumentDetail third = null;
+    for (EmailDocumentDetail detail : document.getDetails()) {
+      if (TOTAL_KEY.equals(detail.getLabelKey())) {
+        third = detail;
+        break;
+      }
+      if (third == null) {
+        third = detail;
+      }
+    }
+    if (third == null) {
+      return;
+    }
+    boolean amount = TOTAL_KEY.equals(third.getLabelKey());
+    String label = amount ? EmailMessages.get("document.card.summary.amount", language)
+        : EmailMessages.get(third.getLabelKey(), language);
+    String value = third.isDate() ? EmailDates.format(third.getDate(), language) : third.getText();
+    if (StringUtils.isNotBlank(value)) {
+      content.detail(label, value);
+    }
+  }
+
+  /**
+   * The portal sentence as the line above the card's button: the same copy as the letter's
+   * paragraph, as plain text (the card escapes it; its bold markers are dropped).
+   *
+   * @param link the minted link
+   * @param language the email's language
+   * @return the sentence
+   */
+  static String ctaNote(PortalLinkService.MintedLink link, String language) {
+    Instant now = Instant.now();
+    long hours = ValidityWindow.hoursUntil(now, now.plus(link.getValidity()));
+    return EmailMessages.get("document.portal.intro", language, hours).replace("**", "");
+  }
+
+  /** The email's one button: its label, where it leads and the portal link it is, if any. */
   static final class CallToAction {
     private final String label;
     private final String url;
-    private final boolean portal;
+    private final PortalLinkService.MintedLink portalLink;
 
-    CallToAction(String label, String url, boolean portal) {
+    CallToAction(String label, String url, PortalLinkService.MintedLink portalLink) {
       this.label = label;
       this.url = url;
-      this.portal = portal;
+      this.portalLink = portalLink;
+    }
+
+    /** @return the portal link the button leads to, or {@code null} for the download button */
+    PortalLinkService.MintedLink getPortalLink() {
+      return portalLink;
     }
 
     /**
@@ -125,7 +191,7 @@ final class DocumentSendPortalLink {
      * @return {@code true} for the portal button
      */
     boolean isPortal() {
-      return portal;
+      return portalLink != null;
     }
 
     String getLabel() {

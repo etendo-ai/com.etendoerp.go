@@ -19,6 +19,8 @@ package com.etendoerp.go.schemaforge.email;
 
 import java.util.Optional;
 
+import org.codehaus.jettison.json.JSONObject;
+
 /**
  * Server-side contract that translates an Etendo Go workflow command into a
  * provider-ready transactional email request.
@@ -141,6 +143,22 @@ public interface EmailContract {
    */
   default void onDelivered(EmailSendContext context, String sendLogId) {
     // Nothing to do unless a contract needs to react to a delivered email.
+  }
+
+  /**
+   * Facts about what a delivered email actually carried, added to the {@code SENT} response's
+   * {@code data} so a caller reports what was sent rather than guessing it (ETP-6209: the MCP says
+   * whether the document email carried the customer portal link or the PDF link).
+   *
+   * <p>{@code null} by default: the response is unchanged. Keys must not clash with the service's
+   * own ({@code status}, {@code contract}, {@code message}, {@code providerStatus},
+   * {@code duplicate}, {@code retryAfterSeconds}).
+   *
+   * @param context the send that was delivered
+   * @return the extra fields, or {@code null}
+   */
+  default JSONObject deliveredFacts(EmailSendContext context) {
+    return null;
   }
 
 }

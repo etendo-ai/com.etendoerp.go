@@ -186,7 +186,7 @@ public class EmailLayoutTest {
     assertTrue(html.contains("&lt;b&gt;Label&lt;/b&gt;"));
   }
 
-  // ── ETP-6209: the Etendo footer and the decision card ─────────────────────────
+  // ── ETP-6209: the «Creado con etendo.ai» footer and the decision card ─────────────────────────
 
   /**
    * A standard letter (no title, no footer) carries none of the ETP-6209 markup, and asking for the
@@ -202,66 +202,75 @@ public class EmailLayoutTest {
     String withFooter = EmailLayout.render(letter().footer(footer).build());
 
     // Only markup that did not exist before the card and footer (the letter already used sf-card).
-    for (String marker : new String[] { EmailLayout.CARD_FONT_STACK,
-        EmailLayout.FOOTER_ICON_BACKGROUND, footer.getTitle() }) {
+    // (Not the bare brand: the letter's own logo is hosted on app.etendo.ai.)
+    for (String marker : new String[] { EmailLayout.CARD_FONT_STACK, footer.getPrefix(),
+        EmailEscape.escapeHtml(footer.getUrl()) }) {
       assertFalse(marker, plain.contains(marker));
     }
-    int prefix = 0;
-    while (prefix < plain.length() && plain.charAt(prefix) == withFooter.charAt(prefix)) {
-      prefix++;
-    }
-    int inserted = withFooter.length() - plain.length();
-    assertTrue(inserted > 0);
-    assertEquals("the footer only inserts markup", plain,
-        withFooter.substring(0, prefix) + withFooter.substring(prefix + inserted));
-    String footerMarkup = withFooter.substring(prefix, prefix + inserted);
-    assertTrue(footerMarkup, footerMarkup.contains(footer.getTitle()));
-    assertTrue(footerMarkup, footerMarkup.contains(EmailLayout.FOOTER_ICON_BACKGROUND));
-  }
-
-  /** The privacy row is drawn exactly when its URL is set; while it is blank it is omitted. */
-  @Test
-  public void theFooterPrivacyRowFollowsWhetherItsUrlIsSet() {
-    EmailFooter footer = EmailFooter.etendo(EmailFooter.Piece.LINK_RENEWAL, "es_ES");
-    boolean urlSet = !EmailFooter.PRIVACY_URL.trim().isEmpty();
-
-    String html = EmailLayout.render(minimal().footer(footer).build());
-
-    assertEquals(urlSet, footer.getPrivacyUrl() != null);
-    assertEquals(urlSet, html.contains(footer.getPrivacyLabel()));
-    assertTrue(html.contains(footer.getSiteLabel()));
+    String footerMarkup = insertedRun(plain, withFooter);
+    assertTrue(footerMarkup, footerMarkup.contains("Creado con&nbsp;<a href=\""
+        + EmailEscape.escapeHtml(footer.getUrl()) + "\""));
+    assertTrue(footerMarkup, footerMarkup.contains(">etendo.ai</a>"));
   }
 
   /**
-   * No piece carries a tracking query yet, so every footer link is the bare URL, never with a
-   * dangling {@code ?} or {@code &}.
+   * The marketing / legal spec (ETP-6209 QA): one discreet line, «Creado con» and the brand as a
+   * plain link — no image, no button, no second link (the old «Conoce más» pill, the site row and
+   * the privacy row are gone), in the recipient's language.
    */
   @Test
-  public void footerLinksAreTheBareUrlsWhileNoPieceHasATrackingQuery() {
-    for (EmailFooter.Piece piece : EmailFooter.Piece.values()) {
-      EmailFooter footer = EmailFooter.etendo(piece, "en_US");
+  public void theFooterIsOneLineWithOnlyTheBrandLinkAndNoImageButtonOrPrivacyRow() {
+    // Columns: language, words before the brand.
+    String[][] cases = { { "es_ES", "Creado con" }, { "en_US", "Built with" } };
+    for (String[] c : cases) {
+      EmailFooter footer = EmailFooter.etendo(EmailFooter.Piece.LINK_RENEWAL, c[0]);
+      String plain = EmailLayout.render(minimal().build());
+      String footerMarkup = insertedRun(plain, EmailLayout.render(minimal().footer(footer)
+          .build()));
 
-      assertEquals(piece.name(), EmailFooter.PRICING_URL, footer.getCtaUrl());
-      assertEquals(piece.name(), EmailFooter.SITE_URL, footer.getSiteUrl());
-      assertEquals(piece.name(), "https://x.test/a?b=1", EmailFooter.link("https://x.test/a?b=1",
-          piece));
+      assertEquals(c[0], c[1], footer.getPrefix());
+      assertTrue(c[0] + ": " + footerMarkup, footerMarkup.contains(c[1] + "&nbsp;<a "));
+      assertEquals(c[0] + ": one link only", 1, footerMarkup.split("<a ", -1).length - 1);
+      assertFalse(c[0], footerMarkup.contains("<img"));
+      assertFalse(c[0], footerMarkup.contains("v:roundrect"));
+      assertFalse(c[0], footerMarkup.toLowerCase().contains("privac"));
+      assertFalse(c[0], footerMarkup.contains("border-radius"));
     }
-    assertEquals("https://x.test/a", EmailFooter.link("https://x.test/a", (EmailFooter.Piece) null));
   }
 
-  /** A tracking query follows {@code ?}, or {@code &} when the link already has a query. */
+  /**
+   * Each email's brand link is the etendo.ai home page with marketing's UTM, whose
+   * {@code utm_content} names that email; without a piece, the bare home page.
+   */
   @Test
-  public void aTrackingQueryIsAppendedWithTheRightSeparator() {
-    // Columns: base, tracking query, expected link.
-    String[][] cases = {
-        { "https://x.test/a", null, "https://x.test/a" },
-        { "https://x.test/a", " ", "https://x.test/a" },
-        { "https://x.test/a", "utm_source=email", "https://x.test/a?utm_source=email" },
-        { "https://x.test/a?b=1", "utm_source=email", "https://x.test/a?b=1&utm_source=email" },
-    };
-    for (String[] c : cases) {
-      assertEquals(c[0] + " + " + c[1], c[2], EmailFooter.link(c[0], c[1]));
+  public void eachPiecesFooterLinkCarriesItsOwnUtmContent() {
+    String utm = "https://etendo.ai/?utm_source=portal_clientes&utm_medium=email"
+        + "&utm_campaign=portal_clientes&utm_content=";
+    // Columns: piece, utm_content.
+    Object[][] cases = { { EmailFooter.Piece.DOCUMENT_SEND, "mail_envio_documento" },
+        { EmailFooter.Piece.LINK_RENEWAL, "mail_reenvio_enlace" },
+        { EmailFooter.Piece.DECISION_ACCEPT, "mail_aceptacion" },
+        { EmailFooter.Piece.DECISION_REJECT, "mail_rechazo" } };
+    assertEquals("every piece is pinned", EmailFooter.Piece.values().length, cases.length);
+    for (Object[] c : cases) {
+      EmailFooter.Piece piece = (EmailFooter.Piece) c[0];
+
+      assertEquals(piece.name(), utm + c[1], EmailFooter.etendo(piece, "en_US").getUrl());
     }
+    assertEquals("https://etendo.ai/", EmailFooter.link(null));
+  }
+
+  /** The run of markup {@code longer} has on top of {@code shorter}, which must be all it adds. */
+  private static String insertedRun(String shorter, String longer) {
+    int prefix = 0;
+    while (prefix < shorter.length() && shorter.charAt(prefix) == longer.charAt(prefix)) {
+      prefix++;
+    }
+    int inserted = longer.length() - shorter.length();
+    assertTrue(inserted > 0);
+    assertEquals("the footer only inserts markup", shorter,
+        longer.substring(0, prefix) + longer.substring(prefix + inserted));
+    return longer.substring(prefix, prefix + inserted);
   }
 
   @Test
@@ -276,6 +285,36 @@ public class EmailLayoutTest {
       assertTrue(c[0] + ": " + html.substring(0, 60),
           html.contains("<html lang=\"" + c[1] + "\">"));
     }
+  }
+
+  /**
+   * The card's body and closing notes (ETP-6209 QA CP-48, the document email with a portal link):
+   * plain text is escaped, a paragraph its author already escaped is kept, and the blocks follow
+   * the design's order — headline, body, button, notes and signature.
+   */
+  @Test
+  public void theCardEscapesItsBodyAndNotesAndKeepsTheirOrder() {
+    String html = EmailLayout.render(EmailContent.builder().title("Factura F-1")
+        .greeting("Hola <b>Ana</b>")
+        .paragraph("1 < 2 & <script>x</script>")
+        .paragraphHtml("Te enviamos tu <strong>Factura</strong>.")
+        .cta("Ver documento", "https://app.example.test/portal/C/tok")
+        .note("<i>nota</i>")
+        .signature("Equipo & Co")
+        .build());
+
+    assertFalse(html, html.contains("<script>"));
+    assertTrue(html, html.contains(">Hola &lt;b&gt;Ana&lt;/b&gt;</p>"));
+    assertTrue(html, html.contains(">1 &lt; 2 &amp; &lt;script&gt;x&lt;/script&gt;</p>"));
+    assertTrue(html, html.contains(">Te enviamos tu <strong>Factura</strong>.</p>"));
+    assertTrue(html, html.contains(">&lt;i&gt;nota&lt;/i&gt;</p>"));
+    assertTrue(html, html.contains(">Equipo &amp; Co</p>"));
+    int title = html.indexOf(">Factura F-1</h1>");
+    int body = html.indexOf("Hola &lt;b&gt;");
+    int button = html.indexOf(">Ver documento</a>");
+    int notes = html.indexOf("&lt;i&gt;nota");
+    assertTrue(title + " < " + body + " < " + button + " < " + notes,
+        title > 0 && title < body && body < button && button < notes);
   }
 
   @Test
