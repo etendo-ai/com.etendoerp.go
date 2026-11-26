@@ -37,7 +37,6 @@ import org.openbravo.base.session.OBPropertiesProvider;
 
 import com.etendoerp.go.mcp.McpRequestEra.Classification;
 import com.etendoerp.go.mcp.McpRequestEra.Era;
-import com.etendoerp.go.featureflags.GoFeatureFlags;
 import com.etendoerp.go.mcp.McpRequestEra.Headers;
 
 /**
@@ -284,9 +283,6 @@ public class McpRequestEraTest {
 
   // ── Switches ─────────────────────────────────────────────────────────────
 
-  private static final String KILL_SWITCH_PROPERTY =
-      "etendo.go.flags." + GoFeatureFlags.FLAG_MCP_MODERN_ERA_DISABLED;
-
   /**
    * Runs {@code body} with only the given JVM properties set: the ambient Openbravo.properties is
    * replaced by an empty one, so a developer's local override cannot leak in.
@@ -310,24 +306,6 @@ public class McpRequestEraTest {
         System.setProperty(key, previous);
       }
     }
-  }
-
-  @Test
-  public void modernEraIsOnWhenTheKillSwitchIsUnset() {
-    withProperties(KILL_SWITCH_PROPERTY, null,
-        () -> assertTrue(McpRequestEra.modernEnabled()));
-  }
-
-  @Test
-  public void modernEraIsOnWhenTheKillSwitchIsFalse() {
-    withProperties(KILL_SWITCH_PROPERTY, "false",
-        () -> assertTrue(McpRequestEra.modernEnabled()));
-  }
-
-  @Test
-  public void killSwitchTrueTurnsTheModernEraOff() {
-    withProperties(KILL_SWITCH_PROPERTY, "true",
-        () -> assertFalse(McpRequestEra.modernEnabled()));
   }
 
   @Test

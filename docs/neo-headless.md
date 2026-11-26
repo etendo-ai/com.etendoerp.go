@@ -14673,23 +14673,16 @@ Why missing headers are lenient by default: a dual-era client reads a `400` with
 modern error as "modern server, fix and retry", not "fall back" — refusing a client that omits a
 newly required header would loop it forever. A mismatch is always refused.
 
-**Kill switch.** Backend feature flag `mcp-modern-era-disabled`
-(`GoFeatureFlags.FLAG_MCP_MODERN_ERA_DISABLED`), environment level, never per account (clients cache
-the era per origin, and one origin serves every tenant). `true` restores the pre-ETP-5640
-behaviour: `server/discover` gets `200` + `-32601`, `_meta` is ignored, everything is legacy. Unset,
-`false` or an unreachable control plane keep the server dual-era. Live without a restart on a hosted
-control plane (Datadog Feature Flags, or ConfigCat where it is still the selected arm — see
-`docs/feature-flags-and-tenant-upgrade.md` §1); a restart where the flag comes from
-`etendo.go.flags.mcp-modern-era-disabled`. A client that already cached "modern" keeps working
-after a rollback, because tool calls never needed `initialize`.
+**No kill switch.** The modern era is always served. Its environment-level rollback flag
+`mcp-modern-era-disabled` was retired in ETP-6461 after a month in production without failures;
+rolling back to legacy-only `/sws/mcp` now takes a deploy. A client that cached "modern" never
+needed `initialize` for tool calls, and a legacy client still negotiates as before.
 
 **Telemetry.** A modern request's client name comes from its own `_meta` clientInfo and its session
 key is derived per (user, token client, role) — never per client name, which the client controls —
 with an `m-` prefix, renewed after 30 min idle; see `docs/mcp-usage-telemetry.md`
 §*Modern clients*. One `INFO MCP modern session started: session=m-… client=<name>/<version>
-protocol=2026-07-28 traceparent=yes|no` per derived session is the rollout's evidence. The client name
-is read whatever the kill switch says; with the switch on, no `m-` session is derived and no such line
-is logged.
+protocol=2026-07-28 traceparent=yes|no` per derived session is the rollout's evidence.
 
 **CORS**: `Mcp-Method` and `Mcp-Name` are in `Access-Control-Allow-Headers`.
 
