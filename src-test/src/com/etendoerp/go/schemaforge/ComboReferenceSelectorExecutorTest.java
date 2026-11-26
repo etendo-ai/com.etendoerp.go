@@ -29,7 +29,10 @@ import static org.mockito.Mockito.when;
 
 import java.lang.reflect.Method;
 import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
@@ -440,7 +443,7 @@ class ComboReferenceSelectorExecutorTest {
     @Test
     @DisplayName("finds a value published under a different casing of the variable")
     void findsADifferentlyCasedName() {
-      java.util.Map<String, String> context = new java.util.HashMap<>();
+      Map<String, String> context = new HashMap<>();
       context.put("Fin_Financial_Account_ID", "ACC-1");
       context.put("Fin_Paymentmethod_ID", "PM-1");
       context.put("Isreceipt", "N");
@@ -455,7 +458,7 @@ class ComboReferenceSelectorExecutorTest {
     @Test
     @DisplayName("an exact name wins over another casing, and an unknown name is null")
     void exactNameWins() {
-      java.util.Map<String, String> context = new java.util.HashMap<>();
+      Map<String, String> context = new HashMap<>();
       context.put("IsSOTrx", "Y");
       context.put("ISSOTRX", "N");
 
@@ -465,6 +468,27 @@ class ComboReferenceSelectorExecutorTest {
       assertEquals("N", fields.getField("ISSOTRX"));
       assertNull(fields.getField("C_BPartner_ID"));
       assertNull(fields.getField(null));
+    }
+
+    /**
+     * Two other casings of a name holding different values answer the same, whatever order they
+     * were put in: the first in natural order wins, never the hash order.
+     */
+    @Test
+    @DisplayName("two non-exact casings with different values resolve deterministically")
+    void nonExactCasingsAreDeterministic() {
+      Map<String, String> oneOrder = new LinkedHashMap<>();
+      oneOrder.put("Fin_X_ID", "RECORD");
+      oneOrder.put("FIN_x_ID", "PARENT");
+      Map<String, String> otherOrder = new LinkedHashMap<>();
+      otherOrder.put("FIN_x_ID", "PARENT");
+      otherOrder.put("Fin_X_ID", "RECORD");
+
+      String first = ComboReferenceSelectorExecutor.contextFields(oneOrder).getField("FIN_X_ID");
+
+      assertEquals("PARENT", first);
+      assertEquals(first,
+          ComboReferenceSelectorExecutor.contextFields(otherOrder).getField("FIN_X_ID"));
     }
   }
 }

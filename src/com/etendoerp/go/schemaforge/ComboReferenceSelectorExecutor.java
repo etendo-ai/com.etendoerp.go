@@ -21,6 +21,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
@@ -141,7 +142,12 @@ final class ComboReferenceSelectorExecutor {
     return new CaseInsensitiveContext(context);
   }
 
-  /** Exact name first, then any casing of it; {@code null} when the context does not carry it. */
+  /**
+   * Exact name first, then any casing of it; {@code null} when the context does not carry it. When
+   * several other casings of a name hold different values, the first in the names' natural order
+   * answers, so the outcome never depends on hash order. The write-time context never holds such a
+   * pair (a later layer replaces every casing of a name, {@code NeoReferenceSelectorValidation}).
+   */
   private static final class CaseInsensitiveContext implements FieldProvider {
     private static final long serialVersionUID = 1L;
     private final HashMap<String, String> exact;
@@ -149,11 +155,8 @@ final class ComboReferenceSelectorExecutor {
 
     CaseInsensitiveContext(Map<String, String> context) {
       exact = context == null ? new HashMap<>() : new HashMap<>(context);
-      exact.forEach((name, value) -> {
-        if (name != null) {
-          folded.putIfAbsent(name.toUpperCase(Locale.ROOT), value);
-        }
-      });
+      exact.keySet().stream().filter(Objects::nonNull).sorted().forEach(
+          name -> folded.putIfAbsent(name.toUpperCase(Locale.ROOT), exact.get(name)));
     }
 
     @Override

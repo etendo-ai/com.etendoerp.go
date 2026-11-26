@@ -93,10 +93,11 @@ import com.etendoerp.go.schemaforge.util.NeoHandlerLookup;
  * clause is never applied half-way, and a valid record is never refused on a guess.
  *
  * <p><b>What the server proposes is accepted (ETP-6452).</b> On a create only, a value the selector
- * does not offer is still accepted when it is exactly what {@code /defaults} proposes for the field
- * in the record's context (the other fields the request sets, and the parent) — a client echoing
- * the defaults back must never be refused. A sales representative defaulted from the session user,
- * who has no business partner, is the case. Asked only on the refusal path, so an offered value
+ * does not offer is still accepted when it is exactly what the base defaults
+ * ({@link NeoDefaultsService#resolveDefaults}, without any DEFAULTS customization) propose for the
+ * field in the record's context (the other fields the request sets, and the parent) — a client
+ * echoing the defaults back must never be refused. A sales representative defaulted from the
+ * session user, who has no business partner, is the case. Asked only on the refusal path, so an offered value
  * pays nothing; updates are unchanged.
  *
  * <p><b>Fail closed.</b> A selector that cannot answer (error, unverifiable) refuses the write, like
@@ -303,7 +304,9 @@ public final class NeoReferenceSelectorValidation {
     }
 
     /**
-     * Whether {@code id} is exactly what {@code /defaults} proposes for {@code key} on this create
+     * Whether {@code id} is exactly what the base defaults
+     * ({@link NeoDefaultsService#resolveDefaults}; a DEFAULTS customization is not consulted)
+     * propose for {@code key} on this create
      * (ETP-6452): what the server offers a client to send back must never be refused as "not
      * offered". Asked only on the refusal path of a create, so an accepted write pays nothing.
      *
@@ -328,7 +331,10 @@ public final class NeoReferenceSelectorValidation {
             recordContext.put(name, value);
           }
         }
+        // Another request field's callout can derive this one, so two fields could vouch for each
+        // other; accepted on purpose — the form would derive the same values from the same input.
         NeoContext defaultsContext = NeoContext.builder()
+            .specName(sfEntity.getETGOSFSpec() == null ? null : sfEntity.getETGOSFSpec().getName())
             .entityName(sfEntity.getName())
             .httpMethod("GET")
             .adTab(adTab)
@@ -669,14 +675,26 @@ public final class NeoReferenceSelectorValidation {
     }
   }
 
+  /**
+   * Publishes a value under the property's DAL name and its column name. Each layer overlays the
+   * previous one (parent, stored row, request), so any other casing of those names an earlier layer
+   * wrote is dropped first: the selector reads rule variables regardless of case (ETP-6452), and a
+   * parent's {@code FIN_X} must not compete with the record's {@code Fin_X}.
+   */
   private static void publishValue(Map<String, String> context, Property property, String value) {
     String text = value;
     if (property.isBoolean()) {
       text = Boolean.parseBoolean(value) || YES.equals(value) ? YES : NO;
     }
-    context.put(property.getName(), text);
-    if (property.getColumnName() != null) {
-      context.put(property.getColumnName(), classicDate(property, text));
+    String name = property.getName();
+    String column = property.getColumnName();
+    // The DAL and column names may differ only in case ("description" / "Description"): both are
+    // kept, only casings an earlier layer wrote are dropped.
+    context.keySet().removeIf(key -> !key.equals(name) && !key.equals(column)
+        && (key.equalsIgnoreCase(name) || key.equalsIgnoreCase(column)));
+    context.put(name, text);
+    if (column != null) {
+      context.put(column, classicDate(property, text));
     }
   }
 

@@ -34,16 +34,20 @@ import static org.mockito.Mockito.when;
 import java.util.Collections;
 import java.util.List;
 
+import javax.servlet.http.HttpServletRequest;
+
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.After;
 import org.junit.Test;
 import org.mockito.MockedStatic;
+import org.openbravo.base.exception.OBException;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.model.Property;
 import org.openbravo.base.secureApp.LoginUtils;
 import org.openbravo.base.secureApp.VariablesSecureApp;
+import org.openbravo.client.kernel.RequestContext;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
@@ -68,6 +72,8 @@ import com.etendoerp.go.schemaforge.util.NeoSessionVarsCache;
  * Unit tests for {@link NeoCalloutService}.
  * Tests field name mapping, response transformation, and synthetic request.
  * These tests do not require a database connection.
+ *
+ * @covers com.etendoerp.go.schemaforge.NeoCalloutService
  */
 public class NeoCalloutServiceTest {
 
@@ -797,5 +803,45 @@ public class NeoCalloutServiceTest {
     } finally {
       NeoSessionVarsCache.clear();
     }
+  }
+
+  // ── CalloutRequestSwap (ETP-6452) ──────────────────────────────────
+
+  /**
+   * The callout's synthetic request is installed while it runs and the caller's request and
+   * variables are put back afterwards: a create's preflight and a DEFAULTS handler read the real
+   * request after the cascade.
+   */
+  @Test
+  public void testCalloutRequestSwapRestoresTheCallersRequestAndVariables() {
+    RequestContext requestContext = mock(RequestContext.class);
+    HttpServletRequest original = mock(HttpServletRequest.class);
+    HttpServletRequest synthetic = mock(HttpServletRequest.class);
+    VariablesSecureApp vars = mock(VariablesSecureApp.class);
+    when(requestContext.getRequest()).thenReturn(original);
+    when(requestContext.getVariablesSecureApp()).thenReturn(vars);
+
+    try (NeoCalloutService.CalloutRequestSwap swap =
+        NeoCalloutService.CalloutRequestSwap.install(requestContext, synthetic)) {
+      verify(requestContext).setRequest(synthetic);
+    }
+
+    verify(requestContext).setRequest(original);
+    verify(requestContext).setVariableSecureApp(vars);
+  }
+
+  /** A context with no request and no variables is left as it was found. */
+  @Test
+  public void testCalloutRequestSwapWithoutARequestRestoresNothing() {
+    RequestContext requestContext = mock(RequestContext.class);
+    HttpServletRequest synthetic = mock(HttpServletRequest.class);
+    when(requestContext.getRequest()).thenReturn(null);
+    when(requestContext.getVariablesSecureApp()).thenThrow(new OBException("No request"));
+
+    NeoCalloutService.CalloutRequestSwap.install(requestContext, synthetic).close();
+
+    verify(requestContext).setRequest(synthetic);
+    verify(requestContext).setRequest(null);
+    verify(requestContext).setVariableSecureApp(null);
   }
 }
