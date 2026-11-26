@@ -17,6 +17,7 @@
 
 package com.etendoerp.go.common;
 
+import java.util.HashMap;
 import java.util.Map;
 import java.util.regex.Pattern;
 
@@ -32,7 +33,7 @@ import org.apache.logging.log4j.ThreadContext;
  * pooled Tomcat thread never carries one request's context into the next, whether the request
  * ends normally, with an error status or with an exception. A thread started by a request does
  * not inherit it: wrap its work with {@link #wrap(Runnable)}, which restores the snapshot for the
- * task and clears it afterwards.</p>
+ * task and puts back what the thread held before afterwards.</p>
  *
  * <p>Values are internal identifiers only (no name, e-mail, payload or secret). The Datadog Java
  * agent writes its own {@code dd.trace_id} / {@code dd.span_id} keys into the same context when
@@ -109,7 +110,14 @@ public final class NeoRequestLogContext {
   public static Runnable wrap(Runnable task) {
     Map<String, String> snapshot = ThreadContext.getImmutableContext();
     return () -> {
+      // Remember what the running thread already holds: a caller-runs executor runs the task on
+      // the request's own thread, whose context must survive the task.
+      Map<String, String> previous = new HashMap<>();
       for (String key : KEYS) {
+        String old = ThreadContext.get(key);
+        if (old != null) {
+          previous.put(key, old);
+        }
         String value = snapshot.get(key);
         if (value != null) {
           ThreadContext.put(key, value);
@@ -119,6 +127,7 @@ public final class NeoRequestLogContext {
         task.run();
       } finally {
         clear();
+        previous.forEach(ThreadContext::put);
       }
     };
   }

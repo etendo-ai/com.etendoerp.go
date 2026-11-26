@@ -337,6 +337,18 @@ class NeoRequestContextFilterTest {
   }
 
   @Test
+  @DisplayName("wrap() on the caller's own thread keeps the caller's context")
+  void wrappedTaskOnCallerThreadRestoresContext() {
+    NeoRequestLogContext.bindIdentity("100", "C1");
+    Runnable wrapped = NeoRequestLogContext.wrap(() -> { });
+
+    wrapped.run();
+
+    assertEquals("100", ThreadContext.get(NeoRequestLogContext.AD_USER_ID));
+    assertEquals("C1", ThreadContext.get(NeoRequestLogContext.AD_CLIENT_ID));
+  }
+
+  @Test
   @DisplayName("wrap() clears the context even when the task throws")
   void wrappedTaskThatThrowsStillClears() {
     ThreadContext.put(NeoRequestLogContext.REQUEST_ID, "abcdefgh");

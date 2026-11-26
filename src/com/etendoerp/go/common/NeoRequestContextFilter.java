@@ -55,7 +55,7 @@ import org.apache.logging.log4j.ThreadContext;
  * and {@code rollback} (an exception left the chain; the DAL request filter rolls the
  * transaction back). This filter observes the response only and never claims a business commit
  * on its own: the authoritative committed count of a business operation is its own telemetry
- * event (see docs/feature-usage-and-correlation.md).</p>
+ * event (see docs/backend-observability.md).</p>
  */
 @WebFilter(urlPatterns = "/*")
 public class NeoRequestContextFilter implements Filter {
