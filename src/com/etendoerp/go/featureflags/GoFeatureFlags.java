@@ -533,7 +533,7 @@ public final class GoFeatureFlags {
    * {@code ETGO_FLAG_MCP_ROUTINES} is a plain per-environment boolean. Its only evaluator is
    * {@code McpRoutinesFlag}.
    *
-   * <p><b>Backend-only</b>: never add it to {@code flag-keys.js}. TTL 2027-03-31 (placeholder).
+   * <p><b>Backend-only</b>: never add it to {@code flag-keys.js}. TTL 2026-12-01.
    */
   public static final String FLAG_MCP_ROUTINES = "mcp-routines";
 
