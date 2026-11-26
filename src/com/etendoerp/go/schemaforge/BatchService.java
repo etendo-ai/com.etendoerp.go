@@ -233,7 +233,9 @@ public class BatchService {
   private static final String KEY_OPERATIONS = "operations";
   private static final String MSG_BATCH_FAILED = "Batch failed: ";
   private static final String OPS_PREFIX = "operations[";
-  private static final String OPERATION_PREFIX = "Operation '";
+  static final String OPERATION_PREFIX = "Operation '";
+  /** Ends the generic message of a refused operation; InvoiceInboxConfirmWork matches on it. */
+  static final String REJECTED_SUFFIX = "' rejected by server";
 
   private final NeoServlet servlet;
   private final NeoCrudHandler crudHandler;
@@ -661,7 +663,7 @@ public class BatchService {
     if (!isSuccess(rowResp)) {
       log.warn("[BATCH] op '{}' (index {}) failed with status {}", opId, i, rowResp.getHttpStatus());
       return failureBody(i, opId, rowResp.getHttpStatus(),
-          OPERATION_PREFIX + opId + "' rejected by server", rowResp.getBody(), tracker.durable());
+          OPERATION_PREFIX + opId + REJECTED_SUFFIX, rowResp.getBody(), tracker.durable());
     }
     if (StringUtils.isBlank(recordId)) {
       return failureBody(i, opId, HttpServletResponse.SC_INTERNAL_SERVER_ERROR,
@@ -999,7 +1001,7 @@ public class BatchService {
   private static String deleteRefusalMessage(String opId, NeoResponse rowResp) {
     String reason = BatchRefusals.messageOf(rowResp);
     return StringUtils.isNotBlank(reason) ? reason
-        : OPERATION_PREFIX + opId + "' rejected by server";
+        : OPERATION_PREFIX + opId + REJECTED_SUFFIX;
   }
 
   /**

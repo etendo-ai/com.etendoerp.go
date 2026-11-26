@@ -28,6 +28,8 @@ import static com.etendoerp.go.schemaforge.ocr.InboxDocument.S_LINKED;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.S_NEW;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.S_NONE;
 
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.stream.Collectors;
 
@@ -51,10 +53,12 @@ final class InboxVendorMatcher {
   /** Shortest cleaned tax id worth searching by. */
   static final int MIN_TAX_ID_LENGTH = 5;
   private static final int TAX_ID_LIMIT = 10;
-  private static final int NAME_SEARCH_LIMIT = 20;
+  private static final int NAME_SEARCH_LIMIT = 100;
   private static final int CANDIDATE_LIMIT = 10;
   private static final String BY_TAX_ID = "taxId";
   private static final String BY_NAME = "name";
+  /** Candidate flag: the one the panel tags as the most probable (ETP-6051). */
+  private static final String K_PROBABLE = "probable";
 
   private final OcrLookups lookups;
 
@@ -85,7 +89,7 @@ final class InboxVendorMatcher {
     if (parties.size() == 1) {
       return linked(parties.get(0), matchedBy);
     }
-    return ambiguous(parties, matchedBy);
+    return ambiguous(withTaxIds(parties), matchedBy, false);
   }
 
   private JSONObject matchByName(String name, String cleanTaxId) throws JSONException {
@@ -100,18 +104,54 @@ final class InboxVendorMatcher {
     if (exact.size() == 1) {
       return exactName(exact.get(0), cleanTaxId);
     }
-    if (!exact.isEmpty()) {
-      return ambiguous(exact, BY_NAME);
+    JSONObject found = exact.isEmpty() ? null : tiered(exact, wanted, cleanTaxId);
+    if (found == null) {
+      // No exact name, or all the exact ones contradict the tax id: partial rows may still be fine.
+      found = tiered(rows, wanted, cleanTaxId);
     }
-    return rows.isEmpty() ? result(S_NEW) : ambiguous(rows, BY_NAME);
+    return found == null ? result(S_NEW) : found;
+  }
+
+  /**
+   * Partial or repeated name matches in three tiers. Strong: no tax id conflict (one side may lack
+   * it), listed best first (exact name, then closest name) and the best one flagged probable. Weak:
+   * both tax ids present and different, listed after, never probable. All weak or no rows: null (the caller decides, finally new).
+   */
+  private JSONObject tiered(List<Party> rows, String wanted, String cleanTaxId)
+      throws JSONException {
+    List<Cand> strong = new ArrayList<>();
+    List<Cand> weak = new ArrayList<>();
+    for (Party party : rows) {
+      Cand cand = new Cand(party, lookups.vendorTaxId(party.id()));
+      (conflicts(cleanTaxId, cand.taxId) ? weak : strong).add(cand);
+    }
+    if (strong.isEmpty()) {
+      return null;
+    }
+    Comparator<Cand> byProximity = Comparator
+        .comparingInt((Cand c) -> OcrProductMatch.normalize(c.party.name()).equals(wanted) ? 0 : 1)
+        .thenComparingInt(c -> Math.abs(OcrProductMatch.normalize(c.party.name()).length()
+            - wanted.length()));
+    strong.sort(byProximity);
+    weak.sort(byProximity);
+    List<Cand> ordered = new ArrayList<>(strong);
+    ordered.addAll(weak);
+    // Probable only when the best strong candidate is strictly better than the next one.
+    boolean unique = strong.size() == 1 || byProximity.compare(strong.get(0), strong.get(1)) < 0;
+    return ambiguous(ordered, BY_NAME, unique);
+  }
+
+  private static boolean conflicts(String cleanTaxId, String storedTaxId) {
+    String stored = TaxIdNormalizer.clean(storedTaxId);
+    return !cleanTaxId.isEmpty() && !stored.isEmpty()
+        && !TaxIdNormalizer.idsMatch(cleanTaxId, stored);
   }
 
   /** The one vendor of that exact name: taken unless both sides carry a tax id and they differ. */
   private JSONObject exactName(Party party, String cleanTaxId) throws JSONException {
-    String stored = TaxIdNormalizer.clean(lookups.vendorTaxId(party.id()));
-    boolean conflict = !cleanTaxId.isEmpty() && !stored.isEmpty()
-        && !TaxIdNormalizer.idsMatch(cleanTaxId, stored);
-    return conflict ? ambiguous(List.of(party), BY_NAME) : linked(party, BY_NAME);
+    String stored = lookups.vendorTaxId(party.id());
+    return conflicts(cleanTaxId, stored) ? ambiguous(withTaxIds(List.of(party)), BY_NAME, false)
+        : linked(party, BY_NAME);
   }
 
   private static JSONObject result(String state) throws JSONException {
@@ -123,12 +163,38 @@ final class InboxVendorMatcher {
         .put(K_NAME, party.name());
   }
 
-  private JSONObject ambiguous(List<Party> parties, String matchedBy) throws JSONException {
+  private List<Cand> withTaxIds(List<Party> parties) {
+    return parties.stream().map(p -> new Cand(p, lookups.vendorTaxId(p.id())))
+        .collect(Collectors.toList());
+  }
+
+  /**
+   * Candidates in the given order. Every candidate carries {@code probable} explicitly: true on the
+   * first only when {@code flagFirst} (the best is uniquely best), false on all others (the key is
+   * absent only on legacy documents).
+   */
+  private static JSONObject ambiguous(List<Cand> cands, String matchedBy, boolean flagFirst)
+      throws JSONException {
     JSONArray candidates = new JSONArray();
-    for (Party party : parties.subList(0, Math.min(parties.size(), CANDIDATE_LIMIT))) {
-      candidates.put(new JSONObject().put(K_ID, party.id()).put(K_NAME, party.name())
-          .put(K_TAX_ID, lookups.vendorTaxId(party.id())));
+    List<Cand> kept = cands.subList(0, Math.min(cands.size(), CANDIDATE_LIMIT));
+    for (int i = 0; i < kept.size(); i++) {
+      Cand cand = kept.get(i);
+      JSONObject json = new JSONObject().put(K_ID, cand.party.id()).put(K_NAME, cand.party.name())
+          .put(K_TAX_ID, cand.taxId);
+      json.put(K_PROBABLE, flagFirst && i == 0);
+      candidates.put(json);
     }
     return result(S_AMBIGUOUS).put(K_MATCHED_BY, matchedBy).put(K_CANDIDATES, candidates);
+  }
+
+  /** A vendor with its stored tax id, read once. */
+  private static final class Cand {
+    private final Party party;
+    private final String taxId;
+
+    Cand(Party party, String taxId) {
+      this.party = party;
+      this.taxId = taxId;
+    }
   }
 }

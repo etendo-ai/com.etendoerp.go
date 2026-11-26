@@ -57,6 +57,8 @@ final class InvoiceInboxFailureDetail {
   static final String TOTAL_MISMATCH = "total_mismatch";
   static final String STEP_FAILED = "step_failed";
   static final String SEARCH_KEY_EXISTS = "search_key_exists";
+  /** A step the server refused without any message: the step and the HTTP status are all there is. */
+  static final String STEP_REFUSED_STATUS = "step_refused_status";
   /** Text that arrives already built from outside: it cannot be an identifier. */
   static final String REFUSED = "refused";
 
@@ -76,6 +78,7 @@ final class InvoiceInboxFailureDetail {
   static final String P_NAME = "name";
   static final String P_REASON = "reason";
   static final String P_MISSING = "missing";
+  static final String P_STATUS = "status";
   static final String P_MESSAGE = "message";
   static final String P_INVOICE = "invoice";
   static final String P_DOCUMENT = "document";
@@ -332,6 +335,9 @@ final class InvoiceInboxFailureDetail {
             + InvoiceInboxMessages.text(InvoiceInboxMessages.CONFIRM_SEARCH_KEY_EXISTS);
       case STEP_FAILED:
         return stepText(params) + ": " + string(params, P_REASON) + missingText(params);
+      case STEP_REFUSED_STATUS:
+        return "step " + string(params, P_STEP) + " was refused by the server (HTTP "
+            + string(params, P_STATUS) + ")";
       case REFUSED:
         return string(params, P_MESSAGE);
       default:

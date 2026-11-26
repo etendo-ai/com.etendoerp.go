@@ -67,7 +67,7 @@ final class InvoiceInboxConfirmVerify {
       return;
     }
     // The scale of the currency the ENGINE gave the invoice (the one that rounds its amounts): when the
-    // header stores no currency the invoice takes the one its price list implies.
+    // header stores no currency the invoice takes the default of its organization.
     int scale = invoice.getCurrency() != null && invoice.getCurrency().getStandardPrecision() != null
         ? invoice.getCurrency().getStandardPrecision().intValue()
         : InvoiceInboxTotals.AMOUNT_SCALE;
