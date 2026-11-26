@@ -97,8 +97,8 @@ import com.etendoerp.go.schemaforge.util.NeoHandlerLookup;
  * ({@link NeoDefaultsService#resolveDefaults}, without any DEFAULTS customization) propose for the
  * field in the record's context (the other fields the request sets, and the parent) — a client
  * echoing the defaults back must never be refused. A sales representative defaulted from the
- * session user, who has no business partner, is the case. Asked only on the refusal path, so an offered value
- * pays nothing; updates are unchanged.
+ * session user, who has no business partner, is the case. Asked only on the refusal path, so an
+ * offered value pays nothing; updates are unchanged.
  *
  * <p><b>Fail closed.</b> A selector that cannot answer (error, unverifiable) refuses the write, like
  * one that answered and did not list the record.
