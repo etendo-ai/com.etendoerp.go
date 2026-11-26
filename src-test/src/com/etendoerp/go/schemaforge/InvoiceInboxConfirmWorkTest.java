@@ -571,6 +571,107 @@ class InvoiceInboxConfirmWorkTest {
     verify(row, never()).setStatus(anyString());
   }
 
+  /** A refusal as BatchService builds it: its own generic text, the status and an optional body. */
+  private static JSONObject refusedBy(String opId, int status, JSONObject body) throws Exception {
+    JSONObject error = new JSONObject().put("status", status)
+        .put("message", BatchService.OPERATION_PREFIX + opId + BatchService.REJECTED_SUFFIX);
+    if (body != null) {
+      error.put("detail", body);
+    }
+    return new JSONObject().put("committed", false)
+        .put("failedAt", new JSONObject().put("id", opId)).put("error", error);
+  }
+
+  @Test
+  @DisplayName("a refusal with no body names the step and the HTTP status, not the batch's generic text")
+  void aRefusalWithoutBodyCarriesTheStatus() throws Exception {
+    batchFailures.add(refusedBy("loc", 403, null));
+
+    InvoiceInboxConfirmWork.Stop stop = assertThrows(InvoiceInboxConfirmWork.Stop.class,
+        () -> run(document(NEW_VENDOR, EXISTING_LINE)));
+
+    assertEquals("step_refused_status", stop.detail().code());
+    assertEquals("vendorAddress", stop.detail().params().get("step"));
+    assertEquals(403, stop.detail().params().get("status"));
+    assertEquals("step vendorAddress was refused by the server (HTTP 403)", stop.getMessage());
+    completion.verifyNoInteractions();
+  }
+
+  @Test
+  @DisplayName("a refusal whose body has no error, or an error without message, still carries the status")
+  void aBodyWithoutMessageCarriesTheStatus() throws Exception {
+    int[] statuses = { 404, 500 };
+    JSONObject[] bodies = { new JSONObject().put("note", "x"),
+        new JSONObject().put("error", new JSONObject().put("code", "E1")) };
+    for (int i = 0; i < statuses.length; i++) {
+      assertEquals(statuses[i], InvoiceInboxConfirmWork.noMessageStatus(
+          refusedBy("bp", statuses[i], bodies[i])));
+    }
+  }
+
+  @Test
+  @DisplayName("a real message of the operation still wins over the status")
+  void aRealMessageStillWins() throws Exception {
+    JSONObject nested = new JSONObject().put("error", new JSONObject().put("message", "Too long"));
+    assertEquals(0, InvoiceInboxConfirmWork.noMessageStatus(refusedBy("loc", 403, nested)));
+    assertEquals("Too long", InvoiceInboxConfirmWork.reasonOf(refusedBy("loc", 403, nested)));
+    assertEquals(0, InvoiceInboxConfirmWork.noMessageStatus(refusedBy("loc", 403,
+        new JSONObject().put("message", "detail msg"))));
+    // a batch-level message that is not the generic one is a real reason as well
+    assertEquals(0, InvoiceInboxConfirmWork.noMessageStatus(failureOf("loc", "x", null)
+        .put("error", new JSONObject().put("status", 500).put("message", "Batch failed"))));
+  }
+
+  @Test
+  @DisplayName("without a status there is nothing to report: the former behavior stays")
+  void noStatusKeepsTheFormerBehavior() throws Exception {
+    JSONObject failure = refusedBy("zzz", 0, null);
+    assertEquals(0, InvoiceInboxConfirmWork.noMessageStatus(failure));
+    assertEquals(0, InvoiceInboxConfirmWork.noMessageStatus(new JSONObject()));
+    assertEquals("Operation 'zzz' rejected by server", InvoiceInboxConfirmWork.reasonOf(failure));
+  }
+
+  @Test
+  @DisplayName("a status-only refusal of a line or a new product keeps n and name next to the status")
+  void aStatusOnlyRefusalKeepsTheStepParams() throws Exception {
+    batchFailures.add(refusedBy("ln1", 403, null));
+    InvoiceInboxConfirmWork.Stop line = assertThrows(InvoiceInboxConfirmWork.Stop.class,
+        () -> run(document(LINKED, EXISTING_LINE, EXISTING_LINE.replace("index:0", "index:1"))));
+    assertEquals(java.util.Map.of("step", "line", "n", 2, "status", 403), line.detail().params());
+
+    batches.clear();
+    batchFailures.clear();
+    batchFailures.add(refusedBy("p0", 404, null));
+    InvoiceInboxConfirmWork.Stop product = assertThrows(InvoiceInboxConfirmWork.Stop.class,
+        () -> run(document(LINKED, NEW_PRODUCT_LINE)));
+    assertEquals("product", product.detail().params().get("step"));
+    assertNotNull(product.detail().params().get("name"));
+    assertEquals(404, product.detail().params().get("status"));
+    assertEquals(3, product.detail().params().size());
+  }
+
+  @Test
+  @DisplayName("the generic refusal text is built from BatchService's own constants")
+  void theGenericTextComesFromTheBatchConstants() throws Exception {
+    JSONObject failure = refusedBy("loc", 500, null);
+    assertEquals(BatchService.OPERATION_PREFIX + "loc" + BatchService.REJECTED_SUFFIX,
+        failure.getJSONObject("error").getString("message"));
+    assertEquals(500, InvoiceInboxConfirmWork.noMessageStatus(failure));
+  }
+
+  @Test
+  @DisplayName("an unknown step of a status-only refusal is reported as creation")
+  void anUnknownStepIsCreation() throws Exception {
+    batchFailures.add(refusedBy("zzz", 500, null));
+
+    InvoiceInboxConfirmWork.Stop stop = assertThrows(InvoiceInboxConfirmWork.Stop.class,
+        () -> run(document(LINKED, EXISTING_LINE)));
+
+    assertEquals("step_refused_status", stop.detail().code());
+    assertEquals("creation", stop.detail().params().get("step"));
+    assertEquals(500, stop.detail().params().get("status"));
+  }
+
   @Test
   @DisplayName("the step label and the reason of a batch failure, on their own")
   void stepLabelAndReason() throws Exception {

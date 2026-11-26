@@ -21,6 +21,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
+import static com.etendoerp.go.schemaforge.CurrencyTenancyTestSupport.currency;
+import static com.etendoerp.go.schemaforge.CurrencyTenancyTestSupport.orgCurrency;
+import static com.etendoerp.go.schemaforge.CurrencyTenancyTestSupport.rate;
 
 import java.time.LocalDate;
 import java.util.List;
@@ -46,7 +49,11 @@ import com.etendoerp.go.schemaforge.ocr.OcrLookups.Tax;
  * ({@link PurchaseInvoiceOcrLookups#taxById}, {@code taxDocAmountModes}, {@code taxNames},
  * {@code documentCurrency}, {@code currencyById}): the HQL of the line tax rule (active, valid from
  * the document date, purchase or both, client or System) against real rows, the tenant fence on every
- * one of them, and the currency fallbacks.
+ * one of them, and the currency fallbacks. The currency lookups ({@code currencyByCode},
+ * {@code currenciesBySymbol}, {@code currencyById}) are also proved against the tenant: they see
+ * the session client's currencies and System's, never another client's. They live here (not in
+ * {@code CurrencyOptionsHandlerTenancyIntegrationTest}) because the unit under test is the same
+ * {@code PurchaseInvoiceOcrLookups}; the fixtures are shared through {@link CurrencyTenancyTestSupport}.
  *
  * <p>Nothing is committed: the taxes are inserted with native SQL on the DAL session's own connection
  * (the test transaction) and undone by the rollback, so there is no cleanup to get wrong. The names
@@ -64,11 +71,15 @@ public class PurchaseInvoiceOcrLookupsTaxCurrencyIntegrationTest extends WeldBas
   private final String marker = "etgo-tax-" + UUID.randomUUID().toString().substring(0, 8);
   private final PurchaseInvoiceOcrLookups lookups = new PurchaseInvoiceOcrLookups();
 
+  /** The currency of the test organization, resolved as the production code resolves it. */
+  private String orgCurrency;
+
   @Before
   public void prepareContext() {
     OBContext.clearAdminModeStack();
     OBContext.setOBContext(TestConstants.Users.ADMIN, TestConstants.Roles.FB_GRP_ADMIN, CLIENT_ID,
         ORG_ID);
+    orgCurrency = orgCurrency(ORG_ID);
   }
 
   @After
@@ -208,6 +219,34 @@ public class PurchaseInvoiceOcrLookupsTaxCurrencyIntegrationTest extends WeldBas
   }
 
   @Test
+  public void aVendorWhosePurchaseListIsInAForeignCurrencyStillGetsTheOrganizationsCurrency() {
+    Object vendor = OBDal.getInstance().getSession().createNativeQuery(
+        "SELECT c_bpartner_id FROM c_bpartner WHERE ad_client_id = :client AND isactive = 'Y' "
+            + "ORDER BY c_bpartner_id LIMIT 1").setParameter("client", CLIENT_ID).uniqueResult();
+    assertNotNull("the tenant has no business partner to give a purchase list to", vendor);
+    String foreign = currency("Q" + marker.substring(marker.length() - 2).toUpperCase(), "Z", CLIENT_ID,
+        true);
+    String list = (String) OBDal.getInstance().getSession()
+        .createNativeQuery("SELECT get_uuid()").uniqueResult();
+    OBDal.getInstance().getSession().createNativeQuery(
+        "INSERT INTO m_pricelist (m_pricelist_id, ad_client_id, ad_org_id, isactive, createdby,"
+            + " updatedby, name, istaxincluded, issopricelist, isdefault, c_currency_id)"
+            + " VALUES (:id, :client, :org, 'Y', :user, :user, :name, 'N', 'N', 'N', :currency)")
+        .setParameter("id", list).setParameter("client", CLIENT_ID).setParameter("org", ORG_ID)
+        .setParameter("user", TestConstants.Users.ADMIN).setParameter("name", marker)
+        .setParameter("currency", foreign).executeUpdate();
+    OBDal.getInstance().getSession()
+        .createNativeQuery("UPDATE c_bpartner SET po_pricelist_id = :list WHERE c_bpartner_id = :id")
+        .setParameter("list", list).setParameter("id", vendor).executeUpdate();
+
+    DocCurrency found = lookups.documentCurrency((String) vendor).orElseThrow(AssertionError::new);
+
+    assertEquals("the list currency infers nothing", orgCurrency, found.id());
+    assertEquals(orgCurrency, lookups.documentCurrency((String) vendor, ORG_ID)
+        .orElseThrow(AssertionError::new).id());
+  }
+
+  @Test
   public void aCurrencyByIdCarriesTheStandardPrecisionOfItsRow() {
     NativeQuery<?> query = OBDal.getInstance().getSession().createNativeQuery(
         "SELECT c_currency_id, stdprecision FROM c_currency WHERE isactive = 'Y' "
@@ -219,6 +258,66 @@ public class PurchaseInvoiceOcrLookupsTaxCurrencyIntegrationTest extends WeldBas
 
     assertEquals(((Number) row[1]).intValue(), found.scale());
     assertTrue(lookups.currencyById("NO-SUCH-CURRENCY").isEmpty());
+  }
+
+  // ---------------------------------------------------------------- the currency tenant fence
+
+  @Test
+  public void currencyByCodeOnlySeesTheSessionClientAndSystemNeverAnotherClient() {
+    String mine = currency("ZA1", "ZA$", CLIENT_ID, true);
+    currency("ZA2", "ZB$", CurrencyTenancyTestSupport.otherClientId(CLIENT_ID), true);
+
+    assertEquals(mine, lookups.currencyByCode("ZA1").orElseThrow(AssertionError::new).id());
+    assertTrue("another client's currency must not resolve by code",
+        lookups.currencyByCode("ZA2").isEmpty());
+    String orgIso = lookups.currencyById(orgCurrency).orElseThrow(AssertionError::new).isoCode();
+    assertEquals("a System currency resolves", orgCurrency,
+        lookups.currencyByCode(orgIso).orElseThrow(AssertionError::new).id());
+  }
+
+  @Test
+  public void currencyByCodeIgnoresAnInactiveCurrencyOfTheSessionClient() {
+    currency("ZA3", "ZC$", CLIENT_ID, false);
+
+    assertTrue(lookups.currencyByCode("ZA3").isEmpty());
+  }
+
+  @Test
+  public void currencyByIdOnlySeesTheSessionClientAndSystemNeverAnotherClient() {
+    String mine = currency("ZA4", "ZD$", CLIENT_ID, true);
+    String theirs = currency("ZA5", "ZE$", CurrencyTenancyTestSupport.otherClientId(CLIENT_ID), true);
+
+    assertEquals("ZA4", lookups.currencyById(mine).orElseThrow(AssertionError::new).isoCode());
+    assertTrue("another client's currency must not resolve by id",
+        lookups.currencyById(theirs).isEmpty());
+    assertEquals("a System currency resolves by id", orgCurrency,
+        lookups.currencyById(orgCurrency).orElseThrow(AssertionError::new).id());
+  }
+
+  @Test
+  public void currenciesBySymbolOffersTheSessionClientsCurrencyButNeverAnotherClients() {
+    String other = CurrencyTenancyTestSupport.otherClientId(CLIENT_ID);
+    String mine = currency("ZA6", "ZF$", CLIENT_ID, true);
+    String theirs = currency("ZA7", "ZF$", other, true);
+    // both have a registered conversion range with the organization currency (EUR), the other
+    // client's currency even one owned by the session client: only the currency owner fences it
+    rate(orgCurrency, mine, CLIENT_ID, SYSTEM, true);
+    rate(orgCurrency, theirs, CLIENT_ID, SYSTEM, true);
+    rate(orgCurrency, theirs, other, SYSTEM, true);
+
+    List<String> ids = lookups.currenciesBySymbol("ZF$", ORG_ID).stream().map(DocCurrency::id)
+        .toList();
+
+    assertEquals(List.of(mine), ids);
+  }
+
+  @Test
+  public void currenciesBySymbolIgnoresACurrencyWhoseOnlyRangeBelongsToAnotherClient() {
+    String other = CurrencyTenancyTestSupport.otherClientId(CLIENT_ID);
+    String mine = currency("ZA8", "ZG$", CLIENT_ID, true);
+    rate(orgCurrency, mine, other, SYSTEM, true);
+
+    assertTrue(lookups.currenciesBySymbol("ZG$", ORG_ID).isEmpty());
   }
 
   // ---------------------------------------------------------------- helpers
