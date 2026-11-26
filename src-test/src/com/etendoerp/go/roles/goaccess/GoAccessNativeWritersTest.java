@@ -35,7 +35,9 @@ import org.junit.jupiter.api.Test;
  * Guards the mirror's safety rule (ETP-4802): no GO Access row may outlive a revoked classic grant.
  * The DAL observer covers every DAL write, so the only way to bypass it is native SQL that writes
  * {@code AD_Window_Access} or {@code OBUIAPP_Process_Access}. Any production class or module script that does must
- * call {@link GoAccessLegacyMirror}; a new native writer fails this test until it does.
+ * call {@link GoAccessLegacyMirror}; a new native writer fails this test until it does. No HQL bulk
+ * {@code update}/{@code delete} on the {@code WindowAccess} or {@code ProcessAccess} entities exists
+ * in the module; a new one would also skip the observer and must call the mirror.
  *
  * @covers com.etendoerp.go.roles.goaccess.GoAccessLegacyMirror
  */
