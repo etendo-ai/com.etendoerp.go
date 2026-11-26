@@ -141,6 +141,32 @@ runs:
         java-version: '17'
         cache: gradle
 
+    # ETP-6465: `up` downloads PostgreSQL (zonky, from Maven Central) and Tomcat into
+    # $LOCALENV_CACHE/bin on every fresh runner, and Maven Central answers 429 to the shared runner
+    # IPs. Keys carry the versions pinned in local-env.sh, so a bump refreshes them. pgvector goes
+    # into the PostgreSQL tree, hence its version in that key. Tomcat has its own entry because
+    # this action runs `up --no-tomcat`: it is saved by the first job that starts Tomcat.
+    - name: Binary versions
+      id: le-bins
+      shell: bash
+      run: |
+        f=etendo-localenv/bin/local-env.sh
+        for v in PG_VERSION PGVECTOR_VERSION TOMCAT_VERSION; do
+          echo "$v=$(sed -n "s/^$v=//p" "$f" | head -1)" >> "$GITHUB_OUTPUT"
+        done
+
+    - name: Cache the PostgreSQL binaries
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/localenv-cache/bin/pg-*
+        key: localenv-pg-${{ runner.os }}-${{ runner.arch }}-${{ steps.le-bins.outputs.PG_VERSION }}-vec${{ steps.le-bins.outputs.PGVECTOR_VERSION }}
+
+    - name: Cache the Tomcat binaries
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/localenv-cache/bin/apache-tomcat-*
+        key: localenv-tomcat-${{ runner.os }}-${{ steps.le-bins.outputs.TOMCAT_VERSION }}
+
     # The same properties as the Jenkins Building Environment stage. local-env points bbdd.* at
     # its own PostgreSQL (backing this file up). The email provider goes to the sink the
     # integration specs start (E2E_EMAIL_SINK=1); its key is the fixed e2e value Jenkins uses.
