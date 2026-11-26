@@ -16,6 +16,11 @@ PUSH_REFS=""
 [ -t 0 ] || PUSH_REFS="$(cat)"
 # shellcheck source=lib/target-branch.sh
 . "$SCRIPT_DIR/lib/target-branch.sh"
+# The remote this push goes to (git passes its name as $1), so the base is that remote's branch
+# whatever the remote is called. A push to a bare URL has no remote-tracking refs: use origin.
+PUSH_REMOTE="${1:-origin}"
+git remote get-url "$PUSH_REMOTE" >/dev/null 2>&1 || PUSH_REMOTE=origin
+export PUSH_REMOTE
 
 # ----------------------------------------------------------------------------
 # Hooks-Verified: every commit being pushed must carry a valid trailer, proving
@@ -79,10 +84,9 @@ fi
 # Measure everything against the branch this push will merge into (lib/target-branch.sh): the
 # conflict check, the relevance diff, Sonar's base ref and the changed-lines coverage.
 TARGET_BRANCH="$(target_branch "$(pushed_branch "$PUSH_REFS")")"
-git rev-parse --verify --quiet "origin/$TARGET_BRANCH" >/dev/null \
-  || git fetch --quiet origin "$TARGET_BRANCH" 2>/dev/null || true
+git fetch --quiet "$PUSH_REMOTE" "$TARGET_BRANCH" 2>/dev/null || true
 BASE_REF=""
-for branch in "origin/$TARGET_BRANCH" "origin/develop" "origin/main"; do
+for branch in "$PUSH_REMOTE/$TARGET_BRANCH" "$PUSH_REMOTE/develop" "$PUSH_REMOTE/main"; do
   if git rev-parse --verify --quiet "$branch" >/dev/null; then
     BASE_REF="$branch"
     break

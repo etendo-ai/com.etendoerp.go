@@ -928,8 +928,18 @@ public class FinancialAccountBankConnectionHandler implements NeoHandler {
     StringBuilder messages = new StringBuilder();
     // Single source of truth: the same per-account fetch behind the Classic "Get Bank Statement"
     // button (GetTransactions action) — both delegate to fetchAccountTransactions.
-    AccountTransactionsSync.SyncResult result =
-        AccountTransactionsSync.fetchAccountTransactionsWithResult(finAcc, messages);
+    AccountTransactionsSync.SyncResult result;
+    try {
+      result = AccountTransactionsSync.fetchAccountTransactionsWithResult(finAcc, messages);
+    } catch (RuntimeException e) {
+      // The lock is released by the PSD2 module's finally; the failure is still the last result.
+      // The recorded message is a controlled, translated one: e.getMessage() can carry SQL or
+      // Hibernate text and syncStatus / the MCP expose the store to the caller.
+      log.error("financial-account-bank-connection sync failed for account {}", finAcc.getId(), e);
+      BankSyncResultStore.saveResult(finAcc.getId(), SYNC_STATUS_ERROR,
+          NeoHints.text("psd2BankSyncUnexpectedError", NeoLanguage.currentCode()));
+      throw e;
+    }
     String status = result.getStatus();
     JSONObject data = new JSONObject();
     String language = NeoLanguage.currentCode();
@@ -950,6 +960,13 @@ public class FinancialAccountBankConnectionHandler implements NeoHandler {
     } else {
       data.put(ACTION_STATUS, wireSyncStatus(status));
       data.put(KEY_MESSAGE, messages.toString().trim());
+    }
+    // A sync that did not run because another one is in progress must not overwrite the result
+    // of the one that does. Every other outcome, a lock failure included, is the last result.
+    // See ETP-6154.
+    if (!SYNC_STATUS_IN_PROGRESS.equals(data.optString(ACTION_STATUS))) {
+      BankSyncResultStore.saveResult(finAcc.getId(), data.optString(ACTION_STATUS),
+          data.optString(KEY_MESSAGE, null));
     }
     // The PSD2 module stamps the account on the managed instance we already hold, so this reads
     // the fresh value without another query (ETP-5582).
@@ -1020,8 +1037,8 @@ public class FinancialAccountBankConnectionHandler implements NeoHandler {
       JSONObject entry = new JSONObject();
       entry.put(KEY_IN_PROGRESS, running.contains(finAcc.getId()));
       entry.put(KEY_LAST_SYNC_DATE, lastSyncJson(finAcc));
-      entry.put(KEY_LAST_RESULT,
-          lastResultJson(SaltEdgeAccountLinkHelper.getLatestConnectionForFinAcc(finAcc)));
+      entry.put(KEY_LAST_RESULT, lastResultJson(finAcc.getId(),
+          SaltEdgeAccountLinkHelper.getLatestConnectionForFinAcc(finAcc)));
       byId.put(finAcc.getId(), entry);
     }
     JSONObject data = new JSONObject();
@@ -1074,9 +1091,54 @@ public class FinancialAccountBankConnectionHandler implements NeoHandler {
   }
 
   /**
-   * The {@code lastResult} of {@code syncStatus}: the newer of the connection's last success and
-   * last failure, as {@code {status: OK|ERROR, message, at}}; every field null when there is no
-   * connection or neither was ever recorded.
+   * The {@code lastResult} of {@code syncStatus}, preferring the outcome recorded by the last sync
+   * that ran on this node (ETP-6154) unless the account's bank connection has a newer fetch
+   * record: a sync that bypasses {@code handleSync} (scheduled process, Classic "Get Bank
+   * Statement", another node) never updates the store, so a recorded result older than the
+   * connection's newest {@code LAST_SUCCESS_AT} / {@code LAST_FAIL_AT} is stale and the
+   * connection health is used instead.
+   *
+   * @param accountId  the financial account id
+   * @param connection the account's latest bank connection, or {@code null}
+   * @return the JSON object {@code {status, message, at}}, never {@code null}
+   * @throws JSONException never in practice (only string and null values are put)
+   */
+  static JSONObject lastResultJson(String accountId, FinaccConnection connection)
+      throws JSONException {
+    BankSyncResultStore.Result recorded = BankSyncResultStore.last(accountId);
+    if (recorded != null && !isOlderThanConnection(recorded, connection)) {
+      // The outcome of the last sync that ran on this node, the one syncBank answered.
+      JSONObject last = new JSONObject();
+      last.put(ACTION_STATUS, recorded.getStatus());
+      last.put(KEY_MESSAGE, StringUtils.isNotBlank(recorded.getMessage())
+          ? recorded.getMessage() : JSONObject.NULL);
+      last.put(KEY_AT, recorded.getAt().toString());
+      return last;
+    }
+    return lastResultJson(connection);
+  }
+
+  /**
+   * Whether the connection recorded a fetch (success or failure) after the recorded result.
+   * Null dates, or no connection, never make the recorded result stale.
+   */
+  private static boolean isOlderThanConnection(BankSyncResultStore.Result recorded,
+      FinaccConnection connection) {
+    if (connection == null) {
+      return false;
+    }
+    Date newest = connection.getLastSuccessAt();
+    Date failAt = connection.getLastFailAt();
+    if (newest == null || (failAt != null && failAt.after(newest))) {
+      newest = failAt;
+    }
+    return newest != null && recorded.getAt().isBefore(newest.toInstant());
+  }
+
+  /**
+   * The Salt Edge fetch health of the connection as a {@code lastResult}: the newer of its last
+   * success and last failure, as {@code {status: OK|ERROR, message, at}}; every field null when
+   * there is no connection or neither was ever recorded.
    *
    * @param connection the account's latest bank connection, or {@code null}
    * @return the JSON object, never {@code null}
