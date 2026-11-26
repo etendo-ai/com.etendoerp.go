@@ -188,22 +188,20 @@ public final class RoleAccessMatrix {
    * <p>A deliberately narrow, human-chosen proxy for exactly this one row — NOT a general
    * solution to the other ~9 rows in {@code TemplateRoleWindowAccess}'s "twelve rows" list.
    */
-  static final String FISCAL_MONITOR_PROXY_WINDOW_ID = "FEF76C3E0F104F06A89AAD15A4A4A35C";
+  static final String FISCAL_MONITOR_PROXY_WINDOW_ID = GoFeature.FISCAL_MONITOR.legacyId;
 
   /**
    * ETP-5071 — proxy {@code AD_Window_ID} standing in for "Modelos Fiscales" in the {@code
    * matrix}, same windowless-page situation as {@link #FISCAL_MONITOR_PROXY_WINDOW_ID}. The
    * product owner chose the Tax Report window as this row's access proxy.
    *
-   * <p>ETP-5540 — the single backend source for "Modelos Fiscales is granted through Tax
-   * Report". Besides the roles matrices it is read by {@code NeoAttachmentAuthorizer} (the
-   * {@code ETGO_Fiscal_Decl} attachment proxy) and by the fiscal endpoint gates of ETP-5546
-   * ({@code AbstractFiscalHandler}, {@code NeoBuiltInEndpointHandler}). It stays here until
-   * ETP-4802 gives windowless GO features a declarative home in the permission system. The
+   * <p>ETP-4802: only the matrices' legacy row id, derived from {@link GoFeature#FISCAL_MODELS}.
+   * The fiscal gates ({@code NeoAttachmentAuthorizer}, {@code AbstractFiscalHandler},
+   * {@code NeoBuiltInEndpointHandler}) decide through {@code GoFeatureAccess}. The
    * role-template grant data ({@code TemplateRoleWindowAccess} and its modulescript copy) keeps
    * the literal id by design.
    */
-  public static final String TAX_MODELS_PROXY_WINDOW_ID = "3E8FEA1EA7404D979306C9EE7FD2E7E8";
+  public static final String TAX_MODELS_PROXY_WINDOW_ID = GoFeature.FISCAL_MODELS.legacyId;
 
   /**
    * ETP-5071 — proxy {@code OBUIAPP_Process_ID} standing in for "Documentos no contabilizados" in
@@ -212,7 +210,8 @@ public final class RoleAccessMatrix {
    * {@code OBUIAPP_Process_Access} grant on the "Not Posted Documents" process instead. See
    * {@link #resolveProcessTierMap(Role, String)}.
    */
-  static final String NOT_POSTED_DOCS_PROXY_PROCESS_ID = "D6AB95CE52D34E1599590526115E26C6";
+  static final String NOT_POSTED_DOCS_PROXY_PROCESS_ID =
+      GoFeature.NOT_POSTED_DOCUMENTS.legacyId;
 
   /**
    * A single {@code matrix} row's identity (id + display name) — either a real {@link Window} or
@@ -372,6 +371,31 @@ public final class RoleAccessMatrix {
   static void mergeProxyAccessTiers(Role role, Map<String, String> tiers) {
     tiers.putAll(resolveWindowTierMap(role, Set.of(TAX_MODELS_PROXY_WINDOW_ID)));
     tiers.putAll(resolveProcessTierMap(role, NOT_POSTED_DOCS_PROXY_PROCESS_ID));
+    overlayGoAccessTiers(role, tiers);
+  }
+
+  /**
+   * ETP-4802 — a role's GO Access row for a feature replaces the tier resolved from the feature's
+   * legacy classic grant, in place, for every feature that has a proxy matrix row. Fiscal Monitor
+   * is skipped by {@link GoFeatureAccess#overlayTiers}: its row is the real SII Monitor window
+   * row, whose own access check stays on the classic grant (see {@link GoFeature#sharesRealWindow}).
+   */
+  static void overlayGoAccessTiers(Role role, Map<String, String> tiers) {
+    List<GoFeature> features = new ArrayList<>();
+    for (MatrixRow row : PROXY_MATRIX_ROWS) {
+      GoFeature feature = GoFeature.forLegacyId(row.id);
+      if (feature != null) {
+        features.add(feature);
+      }
+    }
+    // an anchor that also shows up as a window row of the matrix gets the same overlay, so the
+    // matrix never shows the legacy tier while the gates and the SPA use the GO Access one
+    for (GoFeature feature : GoFeature.values()) {
+      if (tiers.containsKey(feature.legacyId) && !features.contains(feature)) {
+        features.add(feature);
+      }
+    }
+    GoFeatureAccess.overlayTiers(role, tiers, features);
   }
 
   /**

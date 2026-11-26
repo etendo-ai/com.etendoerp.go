@@ -33,6 +33,8 @@ import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.access.Role;
 
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 import com.etendoerp.webhookevents.services.BaseWebhookService;
 
@@ -354,15 +356,29 @@ public class SFListMenu extends BaseWebhookService {
   private static boolean isNodeAccessible(JSONObject node, Role role) throws JSONException {
     boolean accessible = true;
     if (node.has(WINDOW_ID)) {
-      accessible = NeoAccessHelper.hasWindowAccess(role, node.getString(WINDOW_ID));
+      accessible = canRead(role, node.getString(WINDOW_ID), false);
     }
     if (accessible && node.has(PROCESS_ID)) {
       accessible = NeoAccessHelper.hasProcessAccess(role, node.getString(PROCESS_ID));
     }
     if (accessible && node.has(OBUIAPP_PROCESS_ID)) {
-      accessible = NeoAccessHelper.hasObuiappProcessAccess(role, node.getString(OBUIAPP_PROCESS_ID));
+      accessible = canRead(role, node.getString(OBUIAPP_PROCESS_ID), true);
     }
     return accessible;
+  }
+
+  /**
+   * ETP-4802 — read access to a window or OBUIAPP process id: a GO feature's legacy anchor goes
+   * through {@link GoFeatureAccess} (GO Access row first, classic grant otherwise); any other id
+   * is a plain classic check.
+   */
+  private static boolean canRead(Role role, String id, boolean obuiappProcess) {
+    GoFeature feature = GoFeature.forLegacyId(id);
+    if (feature != null && !feature.sharesRealWindow) {
+      return GoFeatureAccess.hasAccess(role, feature, "GET");
+    }
+    return obuiappProcess ? NeoAccessHelper.hasObuiappProcessAccess(role, id)
+        : NeoAccessHelper.hasWindowAccess(role, id);
   }
 
   /**

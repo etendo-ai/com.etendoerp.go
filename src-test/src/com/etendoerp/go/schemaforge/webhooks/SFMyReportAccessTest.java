@@ -18,6 +18,7 @@ package com.etendoerp.go.schemaforge.webhooks;
 
 import static com.etendoerp.go.schemaforge.TestConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.*;
 
 import java.util.Collections;
@@ -43,6 +44,8 @@ import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.WindowAccess;
 import org.openbravo.model.ad.ui.Window;
 
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.ReportAccessCatalog;
 
 /**
@@ -52,12 +55,15 @@ import com.etendoerp.go.schemaforge.util.ReportAccessCatalog;
  * ReportAccessCatalog#ROWS} rows resolve to {@code full} with zero DB queries), a restricted role
  * with zero grants (empty map), a restricted role with exactly one grant (only that row appears),
  * and exception handling.
+ *
+ * @covers com.etendoerp.go.schemaforge.webhooks.SFMyReportAccess
  */
 @MockitoSettings(strictness = Strictness.LENIENT)
 class SFMyReportAccessTest {
 
   private MockedStatic<OBDal> obDalMock;
   private MockedStatic<OBContext> obContextMock;
+  private MockedStatic<GoFeatureAccess> goFeatureAccessMock;
   private OBDal mockDal;
   private OBContext mockContext;
   private SFMyReportAccess webhook;
@@ -76,6 +82,10 @@ class SFMyReportAccessTest {
     obContextMock.when(OBContext::getOBContext).thenReturn(mockContext);
 
     webhook = new SFMyReportAccess();
+    // ETP-4802: the real GoFeatureAccess overlay runs; the role has no GO Access row here, so
+    // every tier stays the legacy one.
+    goFeatureAccessMock = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+    goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
     parameters = new HashMap<>();
     responseVars = new HashMap<>();
   }
@@ -84,6 +94,7 @@ class SFMyReportAccessTest {
   void tearDown() {
     obDalMock.close();
     obContextMock.close();
+    goFeatureAccessMock.close();
   }
 
   private void givenNoRole() {
@@ -218,5 +229,28 @@ class SFMyReportAccessTest {
 
     assertEquals("DB error", responseVars.get(ERROR));
     assertNull(responseVars.get(RESULT));
+  }
+
+  // ── ETP-4802: GO Access rows in the report catalog ─────────────────────────────────
+
+  @Test
+  @DisplayName("A read-only GO Access row surfaces the five financial reports for a role with no grant")
+  void testGoAccessRowSurfacesFinancialReports() throws Exception {
+    givenRestrictedRole("role-go-fin");
+    stubAllAccessEmpty();
+    goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+        .thenReturn(Map.of(GoFeature.FINANCIAL_REPORTS.id, "read-only"));
+
+    webhook.get(parameters, responseVars);
+
+    JSONObject reportAccess = parseResult().getJSONObject("reportAccess");
+    long financial = ReportAccessCatalog.ROWS.stream()
+        .filter(r -> GoFeature.FINANCIAL_REPORTS.legacyId.equals(r.anchorId)).count();
+    assertEquals(financial, reportAccess.length());
+    for (ReportAccessCatalog.Row row : ReportAccessCatalog.ROWS) {
+      if (GoFeature.FINANCIAL_REPORTS.legacyId.equals(row.anchorId)) {
+        assertEquals("read-only", reportAccess.getString(row.id));
+      }
+    }
   }
 }

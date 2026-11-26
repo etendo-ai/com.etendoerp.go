@@ -17,6 +17,7 @@
 
 package com.etendoerp.go.schemaforge.webhooks;
 
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -42,6 +43,8 @@ import com.etendoerp.go.schemaforge.ProductMovementsPolicy;
 import com.etendoerp.go.schemaforge.SepaRemittancesFlag;
 import com.etendoerp.go.schemaforge.SiiImportDuaFlag;
 import com.etendoerp.go.schemaforge.data.SFSpec;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 import com.etendoerp.go.schemaforge.util.NeoAccountingAccessPolicy;
 import com.etendoerp.go.schemaforge.util.OwnerSupport;
@@ -286,6 +289,7 @@ public class SFWindowAccessMap extends BaseWebhookService {
       capabilities.put(IS_OWNER, isOwner);
     } else {
       populateWindowAccessForRole(role, windowAccess);
+      overlayGoAccess(role, windowAccess);
       capabilities.put(SHOW_ACCOUNTING_FIELDS, NeoAccountingAccessPolicy.canSeeAccounting(role));
       capabilities.put(IS_ADMIN_OR_CLIENT_ADMIN, false);
       capabilities.put(PUBLIC_API_KEY_MANAGEMENT, true);
@@ -309,6 +313,14 @@ public class SFWindowAccessMap extends BaseWebhookService {
 
     // ETP-6284 — same account, same reasoning; SiiImportDuaFlag never throws (false on any error).
     capabilities.put(SII_IMPORT_DUA, SiiImportDuaFlag.isEnabledFor(accountEmail));
+
+    // ETP-4802 — the six GO features are addressed by their own id in the same flat map: the SPA
+    // page guards and menu.json entries read windowAccess["fiscal-models"] etc. instead of the
+    // proxy/anchor window ids. A feature id never collides with an AD_Window_ID (32 hex chars).
+    // The legacy anchor keys above stay (overlaid) so an SPA build that still reads them agrees.
+    for (Map.Entry<String, String> tier : GoFeatureAccess.effectiveTiers(role).entrySet()) {
+      windowAccess.put(tier.getKey(), tier.getValue());
+    }
 
     JSONObject result = new JSONObject();
     result.put(WINDOW_ACCESS, windowAccess);
@@ -387,6 +399,21 @@ public class SFWindowAccessMap extends BaseWebhookService {
       }
       String tier = Boolean.TRUE.equals(access.isEditableField()) ? FULL : READ_ONLY;
       windowAccess.put(window.getId(), tier);
+    }
+  }
+
+  /**
+   * ETP-4802 — a role's GO Access row replaces the tier of the feature's legacy anchor window (the
+   * SPA page guards and {@code menu.json} anchors read this map), so the SPA answers like the
+   * backend gates: a read-only row restricts a role with a legacy read-write grant, and a row
+   * grants a role that has no legacy grant. Features whose anchor is a real window are skipped,
+   * see {@link GoFeature#sharesRealWindow}.
+   */
+  private void overlayGoAccess(Role role, JSONObject windowAccess) throws JSONException {
+    Map<String, String> tiers = new LinkedHashMap<>();
+    GoFeatureAccess.overlayTiers(role, tiers, GoFeature.withLegacyKind(GoFeature.LegacyKind.WINDOW));
+    for (Map.Entry<String, String> tier : tiers.entrySet()) {
+      windowAccess.put(tier.getKey(), tier.getValue());
     }
   }
 }

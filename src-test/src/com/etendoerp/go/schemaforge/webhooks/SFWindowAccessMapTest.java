@@ -18,6 +18,7 @@ package com.etendoerp.go.schemaforge.webhooks;
 
 import static com.etendoerp.go.schemaforge.TestConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -54,6 +55,8 @@ import com.etendoerp.go.schemaforge.InvoiceInboxFlag;
 import com.etendoerp.go.schemaforge.SepaRemittancesFlag;
 import com.etendoerp.go.schemaforge.data.Account;
 import com.etendoerp.go.schemaforge.data.SFSpec;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 import com.etendoerp.go.schemaforge.util.OwnerSupport;
 
@@ -90,10 +93,18 @@ class SFWindowAccessMapTest {
     private Map<String, String> parameters;
     private Map<String, String> responseVars;
 
+    private MockedStatic<GoFeatureAccess> goFeatureAccessMock;
+
     @BeforeEach
     void setUp() {
         obDalMock = mockStatic(OBDal.class);
         obContextMock = mockStatic(OBContext.class);
+        // ETP-4802: the real GoFeatureAccess runs; no role has a GO Access row here, so every
+        // answer stays the classic one.
+        goFeatureAccessMock = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
+        // no feature tier by default: the feature-id keys are covered by their own tests below
+        goFeatureAccessMock.when(() -> GoFeatureAccess.effectiveTiers(any())).thenReturn(Map.of());
 
         mockDal = mock(OBDal.class);
         mockSession = mock(Session.class);
@@ -112,6 +123,7 @@ class SFWindowAccessMapTest {
     void tearDown() {
         obDalMock.close();
         obContextMock.close();
+        goFeatureAccessMock.close();
     }
 
     // ── role helpers ──────────────────────────────────────────────────────
@@ -997,5 +1009,94 @@ class SFWindowAccessMapTest {
         webhook.get(parameters, responseVars);
 
         assertEquals(originalParams, parameters);
+    }
+
+    // ── ETP-4802: GO Access rows on the SPA windowAccess map ─────────────────────────────
+
+    @Test
+    @DisplayName("A read-only GO Access row restricts a role with a legacy read-write grant")
+    void testReadOnlyGoAccessRowRestrictsLegacyFullGrant() throws Exception {
+        givenRestrictedRole("role-go-ro");
+        stubWindowAccessRows(Arrays.asList(windowAccessRow(GoFeature.FISCAL_MODELS.legacyId, true)));
+        stubShowAcctFieldsQuery(Collections.singletonList("N"));
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.FISCAL_MODELS.id, "read-only"));
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals("read-only", windowAccess.getString(GoFeature.FISCAL_MODELS.legacyId));
+    }
+
+    @Test
+    @DisplayName("A GO Access row makes the anchor appear for a role with no legacy grant")
+    void testGoAccessRowGrantsARoleWithoutLegacyGrant() throws Exception {
+        givenRestrictedRole("role-go-only");
+        stubWindowAccessRows(Collections.emptyList());
+        stubShowAcctFieldsQuery(Collections.singletonList("N"));
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.SMART_SCAN.id, "full"));
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals(1, windowAccess.length());
+        assertEquals("full", windowAccess.getString(GoFeature.SMART_SCAN.legacyId));
+    }
+
+    @Test
+    @DisplayName("A fiscal-monitor GO Access row never changes the real SII Monitor window entry")
+    void testFiscalMonitorRowDoesNotTouchSiiMonitor() throws Exception {
+        givenRestrictedRole("role-go-monitor");
+        stubWindowAccessRows(Arrays.asList(windowAccessRow(GoFeature.FISCAL_MONITOR.legacyId, true)));
+        stubShowAcctFieldsQuery(Collections.singletonList("N"));
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.FISCAL_MONITOR.id, "read-only"));
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals("full", windowAccess.getString(GoFeature.FISCAL_MONITOR.legacyId));
+    }
+
+    @Test
+    @DisplayName("The GO feature ids are published as windowAccess keys next to the window ids")
+    void testFeatureIdsArePublishedInTheWindowAccessMap() throws Exception {
+        givenRestrictedRole("role-features");
+        stubWindowAccessRows(Arrays.asList(windowAccessRow("win-1", true)));
+        stubShowAcctFieldsQuery(Collections.singletonList("N"));
+        goFeatureAccessMock.when(() -> GoFeatureAccess.effectiveTiers(any()))
+                .thenReturn(Map.of(GoFeature.FISCAL_MODELS.id, "read-only",
+                        GoFeature.SMART_SCAN.id, "full"));
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals("read-only", windowAccess.getString("fiscal-models"));
+        assertEquals("full", windowAccess.getString("smart-scan"));
+        assertEquals("full", windowAccess.getString("win-1"));
+        // a feature the role cannot use has no key, which the SPA reads as "none"
+        assertFalse(windowAccess.has("financial-reports"));
+    }
+
+    @Test
+    @DisplayName("An admin role gets every feature id with the full tier")
+    void testAdminGetsEveryFeatureIdAsFull() throws Exception {
+        givenSystemAdminRole();
+        stubSpecRows(Collections.emptyList());
+        stubWindowAccessRows(Collections.emptyList());
+        Map<String, String> all = new HashMap<>();
+        for (GoFeature feature : GoFeature.values()) {
+            all.put(feature.id, "full");
+        }
+        goFeatureAccessMock.when(() -> GoFeatureAccess.effectiveTiers(any())).thenReturn(all);
+
+        webhook.get(parameters, responseVars);
+
+        JSONObject windowAccess = new JSONObject(responseVars.get(RESULT)).getJSONObject("windowAccess");
+        assertEquals(GoFeature.values().length, windowAccess.length());
+        for (GoFeature feature : GoFeature.values()) {
+            assertEquals("full", windowAccess.getString(feature.id));
+        }
     }
 }

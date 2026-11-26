@@ -47,7 +47,8 @@ import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoHandler;
 import com.etendoerp.go.schemaforge.NeoResponse;
 import com.etendoerp.go.schemaforge.util.AccountingDocumentTypeSupport;
-import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 
 /**
  * Serves the Not Posted Documents window.
@@ -77,15 +78,6 @@ import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 public class NotPostedDocumentsHandler implements NeoHandler {
 
   private static final Logger log = LogManager.getLogger(NotPostedDocumentsHandler.class);
-
-  /**
-   * OBUIAPP process id for the classic "Not Posted Documents" process. This is the process this
-   * spec must gate access on — confirmed via the real {@code AD_Menu.em_obuiapp_process_id}
-   * foreign key on {@code AD_Menu} row {@code 3EB0F5F33ECC4FEBABD8F513E9C49521} ("Not Posted
-   * Documents"), not by name-matching. Do not repoint this constant at a different-looking
-   * process without re-confirming that same FK chain (ETP-4510, follow-up to BUG-3).
-   */
-  static final String NOT_POSTED_DOCUMENTS_PROCESS_ID = "D6AB95CE52D34E1599590526115E26C6";
 
   /** AD_Reference ID for the Document type selector (ETBLKP_Documents). */
   static final String DOCUMENT_TYPE_REF_ID = "DE94535164E741AB9B1A560EF3F72854";
@@ -320,7 +312,7 @@ public class NotPostedDocumentsHandler implements NeoHandler {
    */
   @Override
   public boolean isAccessibleForCurrentRole() {
-    return NeoAccessHelper.hasObuiappProcessAccess(NOT_POSTED_DOCUMENTS_PROCESS_ID);
+    return GoFeatureAccess.hasReadAccess(GoFeature.NOT_POSTED_DOCUMENTS);
   }
 
   @Override

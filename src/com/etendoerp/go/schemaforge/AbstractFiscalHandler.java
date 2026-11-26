@@ -48,9 +48,9 @@ import org.openbravo.model.financialmgmt.calendar.Period;
 import org.openbravo.module.taxreportlauncher.TaxReport;
 
 import com.etendoerp.go.common.MalformedJsonException;
-import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoMessageTranslator;
-import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
 
 abstract class AbstractFiscalHandler {
 
@@ -315,10 +315,10 @@ abstract class AbstractFiscalHandler {
       HttpServletResponse response) throws IOException {
     // ETP-5546: single entry point for every /fiscal303 and /fiscal349 sub-route
     // (declarations, incidents, boxes, submit, modified, ...) — gate here once instead of
-    // per-entity. "Modelos Fiscales" access is the role's grant on the Tax Report window
-    // (ETP-5116 proxy, shared constant per ETP-5540); the method is tiered against IsReadWrite
-    // so a read-only grant still denies POST /fiscal303/submit.
-    if (!NeoAccessHelper.hasWindowAccess(RoleAccessMatrix.TAX_MODELS_PROXY_WINDOW_ID, method)) {
+    // per-entity. "Modelos Fiscales" is the GO feature FISCAL_MODELS (ETP-4802): the role's
+    // GO Access row decides, and without one its Tax Report grant does (ETP-5116 proxy); the
+    // method is tiered against IsReadWrite so a read-only grant still denies POST /fiscal303/submit.
+    if (!GoFeatureAccess.hasAccess(GoFeature.FISCAL_MODELS, method)) {
       servlet.sendError(response, HttpServletResponse.SC_FORBIDDEN, "Access denied");
       return;
     }

@@ -587,7 +587,7 @@ public final class NeoAccessHelper {
    * @return {@code true} for {@code POST}, {@code PUT}, {@code PATCH}, or {@code DELETE}
    *         (case-insensitive)
    */
-  private static boolean isWriteMethod(String httpMethod) {
+  public static boolean isWriteMethod(String httpMethod) {
     return "POST".equalsIgnoreCase(httpMethod)
         || "PUT".equalsIgnoreCase(httpMethod)
         || "PATCH".equalsIgnoreCase(httpMethod)

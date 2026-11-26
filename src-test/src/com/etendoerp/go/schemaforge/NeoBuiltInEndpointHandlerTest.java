@@ -29,6 +29,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.contains;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
@@ -43,6 +44,7 @@ import java.lang.reflect.Field;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import javax.servlet.ReadListener;
 import javax.servlet.ServletInputStream;
@@ -77,6 +79,8 @@ import org.openbravo.model.common.enterprise.Organization;
 
 import com.etendoerp.go.common.BoundedJsonParserTest;
 import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 import com.etendoerp.go.schemaforge.util.NeoImageHelper;
 import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
@@ -923,6 +927,43 @@ public class NeoBuiltInEndpointHandlerTest {
       assertTrue(handled);
       verify(servlet).sendError(eq(response), eq(HttpServletResponse.SC_FORBIDDEN), eq("Access denied"));
       catalogMock.verifyNoInteractions();
+    }
+  }
+
+  /**
+   * A read-only GO Access row for the fiscal models feature lets the catalog be read and refuses
+   * to change it, whatever the classic Tax Report grant says; a read-write row lets both through.
+   */
+  @Test
+  public void handleFiscalModelsCatalogFollowsTheGoAccessRowTier() throws Exception {
+    HttpServletRequest request = mock(HttpServletRequest.class);
+    HttpServletResponse response = mock(HttpServletResponse.class);
+    Role role = mock(Role.class);
+    NeoResponse payload = NeoResponse.ok(new JSONObject());
+
+    try (MockedStatic<NeoFiscalModelsCatalogService> catalogMock =
+             Mockito.mockStatic(NeoFiscalModelsCatalogService.class);
+         MockedStatic<NeoAccessHelper> accessMock = mockStatic(NeoAccessHelper.class);
+         MockedStatic<GoFeatureAccess> goAccess =
+             mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS)) {
+      accessMock.when(NeoAccessHelper::resolveCurrentRole).thenReturn(role);
+      accessMock.when(() -> NeoAccessHelper.isWriteMethod(anyString())).thenCallRealMethod();
+      catalogMock.when(NeoFiscalModelsCatalogService::getActiveModels).thenReturn(payload);
+      goAccess.when(() -> GoFeatureAccess.grantedTiers(role))
+          .thenReturn(Map.of(GoFeature.FISCAL_MODELS.id, RoleAccessMatrix.READ_ONLY));
+
+      handler.handle(new NeoServlet.NeoPathInfo("fiscal-models-catalog", null, null), "GET",
+          request, response);
+      verify(servlet).writeResponse(response, payload);
+      verify(servlet, never()).sendError(eq(response), eq(HttpServletResponse.SC_FORBIDDEN),
+          eq("Access denied"));
+
+      handler.handle(new NeoServlet.NeoPathInfo("fiscal-models-catalog", null, null), "PUT",
+          request, response);
+      verify(servlet).sendError(eq(response), eq(HttpServletResponse.SC_FORBIDDEN),
+          eq("Access denied"));
+      catalogMock.verify(() -> NeoFiscalModelsCatalogService.saveActiveModels(anyString()),
+          never());
     }
   }
 

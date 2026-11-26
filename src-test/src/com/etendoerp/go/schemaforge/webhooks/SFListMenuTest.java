@@ -18,6 +18,7 @@ package com.etendoerp.go.schemaforge.webhooks;
 
 import static com.etendoerp.go.schemaforge.TestConstants.*;
 import static org.junit.jupiter.api.Assertions.*;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -46,11 +47,16 @@ import org.openbravo.model.ad.access.ProcessAccess;
 import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.WindowAccess;
 
+import com.etendoerp.go.schemaforge.util.GoFeature;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
+
 /**
  * Unit tests for {@link SFListMenu}.
  * Covers tree building, search mode, resolveType/str helpers,
  * exception handling, edge cases, and role-based access filtering
  * (ETP-4511: menu filtered by AD_Window_Access / AD_Process_Access).
+ *
+ * @covers com.etendoerp.go.schemaforge.webhooks.SFListMenu
  */
 @MockitoSettings(strictness = Strictness.LENIENT)
 class SFListMenuTest {
@@ -65,10 +71,16 @@ class SFListMenuTest {
     private Map<String, String> parameters;
     private Map<String, String> responseVars;
 
+    private MockedStatic<GoFeatureAccess> goFeatureAccessMock;
+
     @BeforeEach
     void setUp() {
         obDalMock = mockStatic(OBDal.class);
         obContextMock = mockStatic(OBContext.class);
+        // ETP-4802: the real GoFeatureAccess runs; no role has a GO Access row here, so every
+        // answer stays the classic one.
+        goFeatureAccessMock = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
 
         mockDal = mock(OBDal.class);
         mockSession = mock(Session.class);
@@ -178,6 +190,7 @@ class SFListMenuTest {
     void tearDown() {
         obDalMock.close();
         obContextMock.close();
+        goFeatureAccessMock.close();
     }
 
     // ── helpers ──────────────────────────────────────────────────────────
@@ -945,5 +958,58 @@ class SFListMenuTest {
                 "Node must be dropped using the captured (restricted) role, "
                         + "not a later-resolved ambient admin role");
         assertEquals(0, result.getJSONArray("tree").length());
+    }
+
+    // ── ETP-4802: GO Access rows in the role-pruned menu ─────────────────────────────────
+
+    @Test
+    @DisplayName("A GO Access row keeps the Not Posted Documents node without the classic process grant")
+    void testGoAccessRowKeepsNotPostedNodeWithoutClassicGrant() throws Exception {
+        givenRestrictedRole("role-go-notposted");
+        stubObuiappProcessAccess(false);
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.NOT_POSTED_DOCUMENTS.id, "read-only"));
+        List<Object[]> rows = new ArrayList<>();
+        rows.add(new Object[]{"3EB0F5F33ECC4FEBABD8F513E9C49521", "0", 10, "Not Posted Documents",
+                "N", "OBUIAPP_Process", null, null, GoFeature.NOT_POSTED_DOCUMENTS.legacyId, null, 0});
+        stubNativeQuery(rows);
+
+        webhook.get(parameters, responseVars);
+
+        assertEquals(1, new JSONObject(responseVars.get(RESULT)).getInt(COUNT));
+    }
+
+    @Test
+    @DisplayName("A GO Access row keeps a feature anchor window node without the classic window grant")
+    void testGoAccessRowKeepsAnchorWindowNodeWithoutClassicGrant() throws Exception {
+        givenRestrictedRole("role-go-anchor");
+        stubWindowAccess(false);
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.FISCAL_MODELS.id, "full"));
+        List<Object[]> rows = new ArrayList<>();
+        rows.add(new Object[]{"2", "0", 20, "Fiscal Models", "N", "W",
+                GoFeature.FISCAL_MODELS.legacyId, null, null, null, 0});
+        stubNativeQuery(rows);
+
+        webhook.get(parameters, responseVars);
+
+        assertEquals(1, new JSONObject(responseVars.get(RESULT)).getInt(COUNT));
+    }
+
+    @Test
+    @DisplayName("A fiscal-monitor GO Access row does not make the real SII Monitor window appear")
+    void testFiscalMonitorRowDoesNotRevealSiiMonitor() throws Exception {
+        givenRestrictedRole("role-go-monitor");
+        stubWindowAccess(false);
+        goFeatureAccessMock.when(() -> GoFeatureAccess.grantedTiers(any()))
+                .thenReturn(Map.of(GoFeature.FISCAL_MONITOR.id, "full"));
+        List<Object[]> rows = new ArrayList<>();
+        rows.add(new Object[]{"2", "0", 20, "SII Monitor", "N", "W",
+                GoFeature.FISCAL_MONITOR.legacyId, null, null, null, 0});
+        stubNativeQuery(rows);
+
+        webhook.get(parameters, responseVars);
+
+        assertEquals(0, new JSONObject(responseVars.get(RESULT)).getInt(COUNT));
     }
 }

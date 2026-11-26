@@ -22,8 +22,10 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.CALLS_REAL_METHODS;
 import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -36,9 +38,11 @@ import java.util.concurrent.atomic.AtomicReference;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.criterion.SimpleExpression;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
 import org.mockito.junit.jupiter.MockitoSettings;
 import org.mockito.quality.Strictness;
 import org.openbravo.dal.service.OBCriteria;
@@ -48,6 +52,7 @@ import org.openbravo.model.ad.system.Client;
 import org.openbravo.model.ad.ui.Window;
 
 import com.etendoerp.go.roles.SystemRoleTemplates;
+import com.etendoerp.go.schemaforge.util.GoFeatureAccess;
 import com.etendoerp.go.schemaforge.data.SFSpec;
 
 /**
@@ -60,6 +65,8 @@ import com.etendoerp.go.schemaforge.data.SFSpec;
  * Purchasing/Inventory ordering, graceful degradation when a template id no longer resolves to
  * an active role, the Etendo-GO-window intersection + tier resolution (same convention as
  * {@code SFRolesOverview}), and exception handling.</p>
+ *
+ * @covers com.etendoerp.go.schemaforge.webhooks.SFSystemRoleTemplates
  */
 @MockitoSettings(strictness = Strictness.LENIENT)
 class SFSystemRoleTemplatesTest extends BaseWebhookTest {
@@ -67,10 +74,21 @@ class SFSystemRoleTemplatesTest extends BaseWebhookTest {
     private static final String CALLER_CLIENT_ID = "some-tenant-client";
 
     private SFSystemRoleTemplates webhook;
+    private MockedStatic<GoFeatureAccess> goFeatureAccess;
 
     @BeforeEach
     void setUp() {
         webhook = new SFSystemRoleTemplates();
+
+        // ETP-4802: the real GoFeatureAccess overlay runs; no role has a GO Access row here, so
+        // every tier stays the legacy classic one.
+        goFeatureAccess = mockStatic(GoFeatureAccess.class, CALLS_REAL_METHODS);
+        goFeatureAccess.when(() -> GoFeatureAccess.grantedTiers(any())).thenReturn(Map.of());
+    }
+
+    @AfterEach
+    void closeGoFeatureAccess() {
+        goFeatureAccess.close();
     }
 
     // ── mocking helpers ──────────────────────────────────────────────────

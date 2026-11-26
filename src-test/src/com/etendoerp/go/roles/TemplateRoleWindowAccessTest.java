@@ -43,7 +43,9 @@ import javax.tools.ToolProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.etendoerp.go.roles.TemplateRoleWindowAccess.FeatureGrant;
 import com.etendoerp.go.roles.TemplateRoleWindowAccess.WindowGrant;
+import com.etendoerp.go.schemaforge.util.GoFeature;
 
 /**
  * Plain, DB-free unit tests for the ETP-4878 window-access permission matrix in {@link
@@ -788,5 +790,49 @@ class TemplateRoleWindowAccessTest {
     assertEquals(4, second.size(),
         "Mutating a caller's copy must never affect the next caller — "
             + "standaloneClassicProcessGrantsByRoleId() must return a fresh map each time");
+  }
+
+  /**
+   * ETP-4802: each template's GO Access grants are exactly the ones its window / standalone
+   * process grants give today (same tier), so seeding them changes nobody's access.
+   */
+  @Test
+  void featureGrantsMirrorTheLegacyGrantsOfEveryTemplateAtTheSameTier() {
+    Map<String, List<FeatureGrant>> byRole = TemplateRoleWindowAccess.featureGrantsByRoleId();
+
+    assertEquals(4, byRole.size());
+    assertEquals(
+        Set.of(GoFeature.FISCAL_MONITOR, GoFeature.FISCAL_MODELS, GoFeature.FINANCIAL_REPORTS,
+            GoFeature.INVENTORY_STOCK_REPORT, GoFeature.NOT_POSTED_DOCUMENTS),
+        features(byRole.get(SystemRoleTemplates.FINANCE_ROLE_ID)));
+    assertEquals(Set.of(GoFeature.INVENTORY_STOCK_REPORT),
+        features(byRole.get(SystemRoleTemplates.PURCHASING_ROLE_ID)));
+    assertEquals(Set.of(GoFeature.INVENTORY_STOCK_REPORT),
+        features(byRole.get(SystemRoleTemplates.INVENTORY_ROLE_ID)));
+    assertTrue(features(byRole.get(SystemRoleTemplates.SALES_ROLE_ID)).isEmpty(),
+        "Ventas holds none of the six anchors today");
+    for (List<FeatureGrant> grants : byRole.values()) {
+      for (FeatureGrant grant : grants) {
+        assertFalse(grant.isReadOnly(), grant.getFeature().id + " is granted full today");
+      }
+    }
+    // every feature of the window matrix resolves through its GoFeature, no id is left inline
+    for (Map.Entry<String, List<WindowGrant>> role : TemplateRoleWindowAccess.byRoleId()
+        .entrySet()) {
+      for (WindowGrant grant : role.getValue()) {
+        GoFeature feature = GoFeature.forLegacyId(grant.getWindowId());
+        if (feature != null && feature.legacyKind == GoFeature.LegacyKind.WINDOW) {
+          assertTrue(features(byRole.get(role.getKey())).contains(feature));
+        }
+      }
+    }
+  }
+
+  private static Set<GoFeature> features(List<FeatureGrant> grants) {
+    Set<GoFeature> features = new HashSet<>();
+    for (FeatureGrant grant : grants) {
+      features.add(grant.getFeature());
+    }
+    return features;
   }
 }

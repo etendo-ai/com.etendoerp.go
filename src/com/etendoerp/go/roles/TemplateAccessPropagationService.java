@@ -19,6 +19,7 @@ package com.etendoerp.go.roles;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -36,6 +37,8 @@ import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.access.ProcessAccess;
 import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.WindowAccess;
+
+import com.etendoerp.go.roles.goaccess.GoAccessLegacyMirror;
 
 /**
  * ETP-5565 — propagates the system template roles' access rows to the personal roles that inherit
@@ -99,6 +102,8 @@ public class TemplateAccessPropagationService {
   private static final String SYSTEM_TEMPLATES_SQL = "SELECT tr.ad_role_id FROM ad_role tr "
       + "WHERE tr.istemplate = 'Y' AND tr.ad_client_id = '0'";
 
+  /** Roles per query when snapshotting the classic grants of the GO features (ETP-4802). */
+  private static final int MIRROR_CHUNK_SIZE = 500;
   private static final String ROLES_PARAM = "roles";
   private static final String AD_PROCESS_ID = "ad_process_id";
   private static final String OBUIAPP_PROCESS_ID = "obuiapp_process_id";
@@ -357,6 +362,13 @@ public class TemplateAccessPropagationService {
     if (roleIds.isEmpty()) {
       return counts;
     }
+    // ETP-4802: the sweep is native SQL, so the DAL observer never sees it; the GO Access rows of
+    // the features whose classic grant it changed are mirrored afterwards.
+    List<List<String>> roleChunks = chunks(new ArrayList<>(roleIds), MIRROR_CHUNK_SIZE);
+    Map<String, Map<String, String>> grantsBefore = new HashMap<>();
+    for (List<String> chunk : roleChunks) {
+      grantsBefore.putAll(GoAccessLegacyMirror.snapshot(chunk));
+    }
     for (AccessTable access : AccessTable.values()) {
       if (access == AccessTable.WINDOW) {
         removeChildrenOfOrphanWindowAccess(roleIds);
@@ -367,6 +379,9 @@ public class TemplateAccessPropagationService {
       }
       counts.updated += execute(access.sql(UPDATE_SQL), roleIds);
       counts.inserted += execute(access.sql(INSERT_SQL), roleIds);
+    }
+    for (List<String> chunk : roleChunks) {
+      GoAccessLegacyMirror.syncChanged(grantsBefore, chunk);
     }
     return counts;
   }

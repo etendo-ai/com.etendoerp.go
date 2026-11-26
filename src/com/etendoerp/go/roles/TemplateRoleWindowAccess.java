@@ -22,6 +22,8 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+import com.etendoerp.go.schemaforge.util.GoFeature;
+
 /**
  * ETP-4878 — the real window-access permission matrix for the four system-level template roles
  * ({@link SystemRoleTemplates}), replacing the old 2-window-per-role smoke test that only proved
@@ -148,7 +150,8 @@ public final class TemplateRoleWindowAccess {
    * permission anchor (ETP-5116) — granted to Compras/Financiero/Almacén, NOT Ventas. See class
    * javadoc ("Informes de inventario" paragraph) for why this window exists.
    */
-  private static final String INVENTORY_STOCK_REPORT_WINDOW_ID = "6346B88619F948F9A42224BDB0B239FA";
+  private static final String INVENTORY_STOCK_REPORT_WINDOW_ID =
+      GoFeature.INVENTORY_STOCK_REPORT.legacyId;
 
   /**
    * {@code AD_Window_ID} of the Invoice Inbox window (ETP-6047), granted FULL to Compras and
@@ -186,6 +189,11 @@ public final class TemplateRoleWindowAccess {
       return windowId;
     }
 
+    /**
+     * Returns the tier of the grant.
+     *
+     * @return {@code true} for read-only access, {@code false} for full access
+     */
     public boolean isReadOnly() {
       return readOnly;
     }
@@ -309,12 +317,12 @@ public final class TemplateRoleWindowAccess {
         full("138"),                                          // Categoría de impuesto — Tax Category
         full("192"),                                          // Categoría de contacto — Business Partner Category
         full("6FEBA130CDE24CC09041FFA6117ADFA9"),             // Registro descarga tipos de cambio — Conversion Rate Downloader Log
-        full("FEF76C3E0F104F06A89AAD15A4A4A35C"),              // SII Monitor — proxies "Monitor Fiscal" (ETP-5116)
-        full("3E8FEA1EA7404D979306C9EE7FD2E7E8"),              // Tax Report — proxies "Modelos Fiscales" (ETP-5116)
+        full(GoFeature.FISCAL_MONITOR.legacyId),              // SII Monitor — proxies "Monitor Fiscal" (ETP-5116)
+        full(GoFeature.FISCAL_MODELS.legacyId),              // Tax Report — proxies "Modelos Fiscales" (ETP-5116)
         full("C1D3A2A017AC4B82B9FEE6F4D2A0C55A"),              // SII Configuration — "Configuración fiscal" (ETP-5116)
         full("C327DE215AC945F69363905840118177"),              // TBAI Configuration — "Configuración fiscal" (ETP-5116)
         full("27A453FA86974745977672F1A8DCCEFF"),              // Verifactu Configuration — "Configuración fiscal" (ETP-5116)
-        full("D647D118F5014D00AF47A636B2CD0DD3"),              // Informes financieros — Financial Reports (ETP-5116, Financiero-only)
+        full(GoFeature.FINANCIAL_REPORTS.legacyId),              // Informes financieros — Financial Reports (ETP-5116, Financiero-only)
         full(INVENTORY_STOCK_REPORT_WINDOW_ID),              // Informes de inventario — Inventory Stock Report (ETP-5116)
         full(INVOICE_INBOX_WINDOW_ID),                       // Bandeja de facturas — Invoice Inbox (ETP-6047)
         full(REMITTANCE_WINDOW_ID));                         // Remesas — Remittance (ETP-6148, Financiero-only)
@@ -382,7 +390,7 @@ public final class TemplateRoleWindowAccess {
    */
   private static List<String> financeStandaloneProcessGrants() {
     return List.of(
-        "D6AB95CE52D34E1599590526115E26C6",   // Documentos no contabilizados (Not Posted Documents proxy)
+        GoFeature.NOT_POSTED_DOCUMENTS.legacyId,   // Documentos no contabilizados (Not Posted Documents proxy)
         "0D37A9F6109549DEB058373EF2DAEB6A",   // Informe Antigüedad de Cobros (Receivables Aging Schedule)
         "EB4C4053F3B94A17A08D1DD7E89CEB7E");  // Informe Antigüedad de Pagos (Payables Aging Schedule)
   }
@@ -450,6 +458,75 @@ public final class TemplateRoleWindowAccess {
     map.put(SystemRoleTemplates.SALES_ROLE_ID, Collections.emptyList());
     map.put(SystemRoleTemplates.PURCHASING_ROLE_ID, Collections.emptyList());
     map.put(SystemRoleTemplates.INVENTORY_ROLE_ID, Collections.emptyList());
+    return map;
+  }
+
+  /** One GO Access grant of a template: the feature and whether it is read-only. */
+  public static final class FeatureGrant {
+    private final GoFeature feature;
+    private final boolean readOnly;
+
+    /**
+     * Creates a feature grant.
+     *
+     * @param feature the granted feature
+     * @param readOnly {@code true} for read-only access, {@code false} for full access
+     */
+    public FeatureGrant(GoFeature feature, boolean readOnly) {
+      this.feature = feature;
+      this.readOnly = readOnly;
+    }
+
+    /**
+     * Returns the granted feature.
+     *
+     * @return the feature
+     */
+    public GoFeature getFeature() {
+      return feature;
+    }
+
+    /**
+     * Returns the tier of the grant.
+     *
+     * @return {@code true} for read-only access, {@code false} for full access
+     */
+    public boolean isReadOnly() {
+      return readOnly;
+    }
+  }
+
+  /**
+   * ETP-4802 — the GO Access rows each template holds, derived from the window grants and the
+   * standalone OBUIAPP process grants above that are a feature's legacy record
+   * ({@link GoFeature#legacyId}), at the same tier. A template role gets, for each of these, both
+   * the legacy grant and the GO Access row, so new and existing roles resolve the same way and
+   * nobody's access changes. This is only a declaration of the intended
+   * grants, covered by {@code TemplateRoleWindowAccessTest}; nothing reads it at runtime. The
+   * seeding script mirrors the classic grants themselves and keeps its own literal feature table,
+   * which {@code SeedGoAccessScriptTest} checks against {@link GoFeature}.
+   *
+   * @return a fresh, mutable {@link LinkedHashMap} from template role id to its feature grants
+   */
+  public static Map<String, List<FeatureGrant>> featureGrantsByRoleId() {
+    Map<String, List<FeatureGrant>> map = new LinkedHashMap<>();
+    Map<String, List<String>> processes = standaloneProcessGrantsByRoleId();
+    for (Map.Entry<String, List<WindowGrant>> role : byRoleId().entrySet()) {
+      List<FeatureGrant> grants = new ArrayList<>();
+      for (WindowGrant window : role.getValue()) {
+        GoFeature feature = GoFeature.forLegacyId(window.getWindowId());
+        if (feature != null && feature.legacyKind == GoFeature.LegacyKind.WINDOW) {
+          grants.add(new FeatureGrant(feature, window.isReadOnly()));
+        }
+      }
+      for (String processId : processes.getOrDefault(role.getKey(), Collections.emptyList())) {
+        GoFeature feature = GoFeature.forLegacyId(processId);
+        if (feature != null && feature.legacyKind == GoFeature.LegacyKind.OBUIAPP_PROCESS) {
+          grants.add(new FeatureGrant(feature, false));
+        }
+      }
+      map.put(role.getKey(), Collections.unmodifiableList(grants));
+    }
     return map;
   }
 }
