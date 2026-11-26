@@ -55,6 +55,10 @@ import org.junit.jupiter.api.Test;
  * ETP-5646 — {@link NeoRequestContextFilter}, {@link NeoRequestLogContext} and
  * {@link NeoFeatureContext}: menu / direct-URL requests, missing context, concurrent requests,
  * failure and rollback, MDC cleanup and trusted-origin restrictions.
+ *
+ * @covers com.etendoerp.go.common.NeoRequestContextFilter
+ * @covers com.etendoerp.go.common.NeoRequestLogContext
+ * @covers com.etendoerp.go.common.NeoFeatureContext
  */
 class NeoRequestContextFilterTest {
 
@@ -239,6 +243,7 @@ class NeoRequestContextFilterTest {
 
     String line = onlyLine();
     assertTrue(line.contains("\"outcome\":\"rollback\""), line);
+    assertTrue(line.contains("\"http_status\":500"), line);
     assertFalse(line.contains("boom"), "no exception message in the log line");
     assertTrue(ThreadContext.isEmpty(), "MDC must be empty after a failed request");
   }

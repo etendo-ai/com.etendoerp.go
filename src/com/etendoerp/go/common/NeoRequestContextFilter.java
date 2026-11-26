@@ -115,7 +115,8 @@ public class NeoRequestContextFilter implements Filter {
   private static void finish(boolean completed, int status, long startNanos) {
     try {
       String outcome = completed ? outcomeOf(status) : "rollback";
-      logOutcome(outcome, status, (System.nanoTime() - startNanos) / 1_000_000L);
+      // A rollback leaves the response status unset (it is still the default 200): report 500.
+      logOutcome(outcome, completed ? status : 500, (System.nanoTime() - startNanos) / 1_000_000L);
     } finally {
       NeoRequestLogContext.clear();
     }

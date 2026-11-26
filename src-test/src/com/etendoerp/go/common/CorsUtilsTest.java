@@ -41,6 +41,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
  * Unit tests for {@link CorsUtils}.
+ *
+ * @covers com.etendoerp.go.common.CorsUtils
  */
 @ExtendWith(MockitoExtension.class)
 class CorsUtilsTest {
