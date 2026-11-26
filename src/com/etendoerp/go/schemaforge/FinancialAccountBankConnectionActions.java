@@ -167,10 +167,11 @@ class FinancialAccountBankConnectionActions {
         "Tells whether a bank synchronization of this account is running right now and how the "
             + "last one ended, without starting one. Use it after syncBank answers IN_PROGRESS "
             + "or times out, polling every few seconds until inProgress is false. Returns "
-            + "{inProgress, lastSyncDate, lastResult: {status: OK|ERROR|null, message, at}}: "
-            + "lastSyncDate is the last successful import into Etendo; lastResult is the last "
-            + "attempt of the bank connection to reach the bank (ERROR carries the bank's "
-            + "message), null fields when it never ran.")
+            + "{inProgress, lastSyncDate, lastResult: {status: OK|WARNING|ERROR|null, message, at}}: "
+            + "lastSyncDate is the last successful import into Etendo; lastResult is the "
+            + "same {status, message} the last syncBank returned when it finished (UI or MCP), "
+            + "or, after a restart, the last attempt of the bank connection to reach the bank; "
+            + "null fields when it never ran.")
         .withIdDescription(syncIdDescription));
     return contracts;
   }
