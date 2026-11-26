@@ -85,6 +85,7 @@ import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
  * {@code mockConstruction}, so a test reads which contract was asked to send what.
  *
  * @covers com.etendoerp.go.portal.PortalDecisionService
+ * @covers com.etendoerp.go.portal.PortalQuotationSends
  */
 @SuppressWarnings({ "rawtypes", "unchecked" })
 public class PortalDecisionServiceTest {
@@ -119,6 +120,12 @@ public class PortalDecisionServiceTest {
   private long recentRequests;
   /** Other pending requests of the quotation, voided by a confirmation. */
   private List<String> otherPending = new ArrayList<>();
+  /**
+   * The quotation's send history ({@code etgo_email_send_log}), newest first, as
+   * {@code [id, recipients_to, recipients_cc, subject]}: by default one send that reached the
+   * session's email (ETP-6209 QA CP-49).
+   */
+  private List<Object[]> sendLog = new ArrayList<>();
   /** Every native statement run, as {@code [sql, params]}. */
   private final List<Object[]> statements = new ArrayList<>();
 
@@ -156,6 +163,8 @@ public class PortalDecisionServiceTest {
     PortalLink sessionLink = link("first@customer.test", null);
     when(linkService.findLink("LINK-1")).thenReturn(Optional.of(sessionLink));
     session = new PortalSession(sessionLink);
+    sendLog.add(new Object[] { "LOG-1", "not-an-address, first@customer.test, second@customer.test",
+        "cc@customer.test", "Presupuesto de Ventas #PR1" });
     // An open customer unless a test closes it (Optional.empty: not blocked, active, plan current).
     accessChecks = mock(PortalAccessChecks.class);
     when(accessChecks.blockReasonOrClosed(anyString(), anyString())).thenReturn(Optional.empty());
@@ -206,10 +215,16 @@ public class PortalDecisionServiceTest {
     when(quotation.getDocumentStatus()).thenReturn(QuotationDecisions.STATUS_UNDER_EVALUATION);
     when(quotation.getValidUntil()).thenReturn(day(-1));
     assertBlocked(PortalDecisionService.Blocked.EXPIRED);
-    // No To on the root send: a CC alone never confirms.
+    // QA CP-49: never sent to the email the portal was accessed with — only to someone else, or
+    // never sent at all — is readable but not decidable.
     when(quotation.getValidUntil()).thenReturn(null);
-    PortalLink ccOnly = link(null, "cc@customer.test");
-    when(linkService.findLink(ROOT_ID)).thenReturn(Optional.of(ccOnly));
+    sendLog.set(0, new Object[] { "LOG-1", "someone@else.test", null, "S" });
+    assertBlocked(PortalDecisionService.Blocked.NOT_RECIPIENT);
+    sendLog.clear();
+    assertBlocked(PortalDecisionService.Blocked.NOT_RECIPIENT);
+    // The original send reached the session's email in CC but has no valid To: a CC alone never
+    // confirms.
+    sendLog.add(new Object[] { "LOG-1", "not-an-address", "first@customer.test", "S" });
     assertBlocked(PortalDecisionService.Blocked.NO_RECIPIENT);
 
     assertTrue(emails.constructed().isEmpty());
@@ -224,18 +239,72 @@ public class PortalDecisionServiceTest {
     }
   }
 
+  /**
+   * QA CP-45 (as revised): the confirmation goes to every To of the quotation's original send,
+   * never its CC (it went to the first To of the link's root send only); invalid addresses are
+   * dropped, and {@code email} stays the first valid To. The history is read for this tenant, this
+   * quotation, the quotation's own send contract and delivered sends only.
+   */
   @Test
-  public void theConfirmationGoesToTheFirstValidToInFullAndNeverToCc() throws Exception {
+  public void theConfirmationGoesToEveryToOfTheOriginalSendNeverCc() throws Exception {
     PortalDecisionService.RequestResult result = service().request(session, QUOTATION_ID,
         "REJECT", "PRICE", null);
 
     assertEquals(PortalDecisionService.RequestOutcome.SENT, result.getOutcome());
     assertEquals("first@customer.test", result.getEmail());
+    assertEquals(Arrays.asList("first@customer.test", "second@customer.test"),
+        result.getRecipients());
+    Map<String, Object> history = firstStatement("FROM etgo_email_send_log");
+    assertEquals(CLIENT_ID, history.get("client"));
+    assertEquals(QUOTATION_ID, history.get("record"));
+    assertEquals("sales-quotation-send", history.get("contract"));
+    assertEquals(TransactionalEmailService.STATUS_SENT, history.get("status"));
+    // The portal's /me address is still the root send's first valid To.
     assertEquals("first@customer.test", service().confirmationRecipient(ROOT_ID));
     JSONObject command = sentCommand(PortalDecisionService.CONFIRM_CONTRACT);
     assertEquals(QUOTATION_ID, command.getString("recordId"));
     assertEquals("REJECT", command.getString(PortalDecisionService.FIELD_DECISION));
     events.verify(() -> PortalDecisionEvents.requested(session, QUOTATION_ID, "REJECT"));
+  }
+
+  /**
+   * QA CP-49: the original send is the newest delivered send of the quotation that shares an
+   * address with the accessing email, compared case-insensitively in To or CC; the confirmation
+   * contract finds it from a link id, with that link's To and CC as the accessing email.
+   */
+  @Test
+  public void theOriginalSendIsTheNewestThatReachedTheAccessingEmailInAnyCase() {
+    // Newest first, as the history query orders it.
+    sendLog.clear();
+    sendLog.add(new Object[] { "LOG-3", "someone@else.test", null, "newest, elsewhere" });
+    sendLog.add(new Object[] { "LOG-2", "x@else.test", " First@Customer.TEST ", "in CC" });
+    sendLog.add(new Object[] { "LOG-1", "first@customer.test", null, "oldest" });
+
+    Optional<PortalQuotationSends.Send> send = PortalQuotationSends.originalSend(session,
+        QUOTATION_ID);
+
+    assertEquals("LOG-2", send.get().getId());
+    assertEquals("in CC", send.get().getSubject());
+    assertTrue(firstStatementSql("FROM etgo_email_send_log").contains("ORDER BY sent_at DESC"));
+    assertEquals("LOG-2", service().originalSend("LINK-1", QUOTATION_ID).get().getId());
+    // No link, or an unknown one: no accessing email, so no original send.
+    assertFalse(service().originalSend(null, QUOTATION_ID).isPresent());
+    when(linkService.findLink("GONE")).thenReturn(Optional.empty());
+    assertFalse(service().originalSend("GONE", QUOTATION_ID).isPresent());
+  }
+
+  /** The list's {@code canDecide} (QA CP-49): exactly the page's quotations nothing blocks. */
+  @Test
+  public void decidableIdsAreThePageQuotationsNothingBlocks() {
+    Order closed = mock(Order.class);
+    when(closed.getId()).thenReturn("Q-2");
+    when(closed.getDocumentStatus()).thenReturn("CO");
+
+    assertEquals(Collections.singleton(QUOTATION_ID),
+        service().decidableIds(session, Arrays.asList(quotation, closed)));
+    sendLog.clear();
+    assertTrue("never sent to this email: none",
+        service().decidableIds(session, Arrays.asList(quotation, closed)).isEmpty());
   }
 
   @Test
@@ -306,7 +375,9 @@ public class PortalDecisionServiceTest {
 
   @Test
   public void mintStoresOnlyTheTokensHash() {
-    when(quotation.getClient()).thenReturn(mock(Client.class));
+    Client client = mock(Client.class);
+    when(client.getId()).thenReturn("CLIENT-1");
+    when(quotation.getClient()).thenReturn(client);
     when(quotation.getOrganization()).thenReturn(mock(Organization.class));
     try (MockedStatic<PublicUrlResolver> urls = mockStatic(PublicUrlResolver.class);
         MockedStatic<SequenceIdData> ids = mockStatic(SequenceIdData.class)) {
@@ -319,7 +390,7 @@ public class PortalDecisionServiceTest {
           "REJECT", "PRICE", null, "first@customer.test", "es_ES").get();
 
       assertEquals(DECISION_ID, minted.getId());
-      String token = minted.getUrl().substring("https://app.test/portal/decision/".length());
+      String token = minted.getUrl().substring("https://app.test/portal/CLIENT-1/decision/".length());
       Map<String, Object> inserted = onlyStatement("INSERT INTO etgo_portal_decision");
       assertEquals(PortalTokens.hash(token), inserted.get("hash"));
       assertFalse("the raw token is never stored", inserted.containsValue(token));
@@ -328,6 +399,9 @@ public class PortalDecisionServiceTest {
 
   @Test
   public void mintWithoutAnAppBaseUrlWritesNothing() {
+    Client client = mock(Client.class);
+    when(client.getId()).thenReturn(CLIENT_ID);
+    when(quotation.getClient()).thenReturn(client);
     try (MockedStatic<PublicUrlResolver> urls = mockStatic(PublicUrlResolver.class)) {
       urls.when(PublicUrlResolver::resolveConfiguredAppBaseUrl).thenReturn(" ");
 
@@ -341,11 +415,17 @@ public class PortalDecisionServiceTest {
   public void viewNeverWritesAndAnUnknownTokenIsInvalid() {
     decisionRow = row("REJECT", "PRICE", null, PortalDecisionService.STATUS_PENDING, true);
 
-    assertEquals(PortalDecisionService.State.PENDING, service().view(TOKEN).getState());
-    assertEquals(PortalDecisionService.State.INVALID, service().view("unknown").getState());
+    assertEquals(PortalDecisionService.State.PENDING, service().view(TOKEN, null).getState());
+    assertEquals(PortalDecisionService.State.INVALID, service().view("unknown", null).getState());
+    // QA CP-43: the landing URL's tenant must be the decision's; another answers as an unknown
+    // token (no oracle), the right one as no tenant at all.
+    assertEquals(PortalDecisionService.State.PENDING,
+        service().view(TOKEN, CLIENT_ID).getState());
+    assertEquals(PortalDecisionService.State.INVALID,
+        service().view(TOKEN, "OTHER-CLIENT").getState());
     // A decision whose email never left is not usable either.
     decisionRow = row("REJECT", "PRICE", null, PortalDecisionService.STATUS_PENDING, false);
-    assertEquals(PortalDecisionService.State.INVALID, service().view(TOKEN).getState());
+    assertEquals(PortalDecisionService.State.INVALID, service().view(TOKEN, null).getState());
 
     assertTrue("view runs no write", statements.stream()
         .allMatch(s -> ((String) s[0]).startsWith("SELECT")));
@@ -371,7 +451,7 @@ public class PortalDecisionServiceTest {
       decisionRow = row("REJECT", (String) c[0], (String) c[1],
           PortalDecisionService.STATUS_PENDING, true);
 
-      PortalDecisionService.View view = service().confirm(TOKEN);
+      PortalDecisionService.View view = service().confirm(TOKEN, null);
 
       assertEquals(PortalDecisionService.State.CONFIRMED, view.getState());
       assertTrue(view.isAppliedNow());
@@ -393,7 +473,7 @@ public class PortalDecisionServiceTest {
   public void aConfirmedAcceptMarksTheQuotationAccepted() {
     decisionRow = row("ACCEPT", null, null, PortalDecisionService.STATUS_PENDING, true);
 
-    PortalDecisionService.View view = service().confirm(TOKEN);
+    PortalDecisionService.View view = service().confirm(TOKEN, null);
 
     assertEquals(PortalDecisionService.State.CONFIRMED, view.getState());
     verify(quotation).setDocumentStatus(QuotationDecisions.STATUS_ACCEPTED);
@@ -411,7 +491,7 @@ public class PortalDecisionServiceTest {
     decisionRow = row("ACCEPT", null, null, PortalDecisionService.STATUS_PENDING, true);
     otherPending = new ArrayList<>(Arrays.asList("D-2", "D-3"));
 
-    service().confirm(TOKEN);
+    service().confirm(TOKEN, null);
 
     Map<String, Object> voided = onlyStatement("SET status = 'VOIDED'");
     assertEquals(Arrays.asList("D-2", "D-3"), voided.get("ids"));
@@ -426,7 +506,7 @@ public class PortalDecisionServiceTest {
     decisionRow = row("REJECT", "PRICE", null, PortalDecisionService.STATUS_CONFIRMED, true);
     when(quotation.getDocumentStatus()).thenReturn(QuotationDecisions.STATUS_REJECTED);
 
-    PortalDecisionService.View view = service().confirm(TOKEN);
+    PortalDecisionService.View view = service().confirm(TOKEN, null);
 
     assertEquals(PortalDecisionService.State.CONFIRMED, view.getState());
     assertFalse(view.isAppliedNow());
@@ -451,7 +531,7 @@ public class PortalDecisionServiceTest {
       when(quotation.getValidUntil()).thenReturn((Date) c[1]);
       decisionRow = row("ACCEPT", null, null, PortalDecisionService.STATUS_PENDING, true);
 
-      PortalDecisionService.View view = service().confirm(TOKEN);
+      PortalDecisionService.View view = service().confirm(TOKEN, null);
 
       assertEquals(c[2], view.getState());
       assertFalse(view.isAppliedNow());
@@ -492,7 +572,7 @@ public class PortalDecisionServiceTest {
       when(obDal.get(Order.class, QUOTATION_ID)).thenReturn(detachable);
       decisionRow = row("ACCEPT", null, null, PortalDecisionService.STATUS_PENDING, true);
 
-      PortalDecisionService.View view = service().confirm(TOKEN);
+      PortalDecisionService.View view = service().confirm(TOKEN, null);
 
       assertTrue(label + ": the session closed", sessionClosed.get());
       assertEquals(label, c[2], view.getState());
@@ -516,7 +596,7 @@ public class PortalDecisionServiceTest {
       when(accessChecks.blockReasonOrClosed(CLIENT_ID, "BP-1")).thenReturn(Optional.of(closed));
       decisionRow = row("ACCEPT", null, null, PortalDecisionService.STATUS_PENDING, true);
 
-      PortalDecisionService.View view = service().confirm(TOKEN);
+      PortalDecisionService.View view = service().confirm(TOKEN, null);
 
       assertEquals(closed, PortalDecisionService.State.NOT_PENDING, view.getState());
       assertFalse(closed, view.isAppliedNow());
@@ -525,7 +605,7 @@ public class PortalDecisionServiceTest {
     }
     // A link that can no longer be read fails closed the same way.
     when(linkService.findLink("LINK-1")).thenReturn(Optional.empty());
-    PortalDecisionService.View unreadable = service().confirm(TOKEN);
+    PortalDecisionService.View unreadable = service().confirm(TOKEN, null);
     assertEquals(PortalDecisionService.State.NOT_PENDING, unreadable.getState());
     assertTrue(unreadable.isCustomerClosed());
     kpi.verifyNoInteractions();
@@ -536,9 +616,14 @@ public class PortalDecisionServiceTest {
   }
 
   @Test
-  public void anUnknownTokenConfirmsNothing() {
-    assertEquals(PortalDecisionService.State.INVALID, service().confirm("unknown").getState());
-    assertEquals(PortalDecisionService.State.INVALID, service().confirm(" ").getState());
+  public void anUnknownTokenOrAnotherTenantsUrlConfirmsNothing() {
+    decisionRow = row("ACCEPT", null, null, PortalDecisionService.STATUS_PENDING, true);
+
+    assertEquals(PortalDecisionService.State.INVALID, service().confirm("unknown", null).getState());
+    assertEquals(PortalDecisionService.State.INVALID, service().confirm(" ", null).getState());
+    // QA CP-43: a valid token under another tenant's URL is invalid and applies nothing.
+    assertEquals(PortalDecisionService.State.INVALID,
+        service().confirm(TOKEN, "OTHER-CLIENT").getState());
 
     assertTrue(statements.stream().noneMatch(s -> ((String) s[0]).contains("FOR UPDATE")));
     verify(quotation, never()).setDocumentStatus(anyString());
@@ -695,6 +780,9 @@ public class PortalDecisionServiceTest {
     if (sql.startsWith("SELECT count(*)")) {
       return Collections.singletonList(recentRequests);
     }
+    if (sql.startsWith("SELECT etgo_email_send_log_id")) {
+      return sendLog;
+    }
     if (sql.startsWith("SELECT etgo_portal_decision_id, ad_client_id")
         && decisionReadFailure != null) {
       throw decisionReadFailure;
@@ -717,6 +805,24 @@ public class PortalDecisionServiceTest {
     }
     assertEquals(fragment, 1, matching.size());
     return (Map<String, Object>) matching.get(0)[1];
+  }
+
+  private String firstStatementSql(String fragment) {
+    for (Object[] statement : statements) {
+      if (((String) statement[0]).contains(fragment)) {
+        return (String) statement[0];
+      }
+    }
+    throw new AssertionError("no statement with " + fragment);
+  }
+
+  private Map<String, Object> firstStatement(String fragment) {
+    for (Object[] statement : statements) {
+      if (((String) statement[0]).contains(fragment)) {
+        return (Map<String, Object>) statement[1];
+      }
+    }
+    throw new AssertionError("no statement with " + fragment);
   }
 
   private int indexOf(String fragment) {

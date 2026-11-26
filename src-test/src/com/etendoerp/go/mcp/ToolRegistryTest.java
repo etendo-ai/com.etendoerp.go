@@ -171,6 +171,20 @@ public class ToolRegistryTest {
   }
 
   /**
+   * ETP-5810: the unknown-argument guard knows {@code etendo_batch}'s root arguments, so a
+   * mistyped {@code asyn} is refused instead of silently running the batch async.
+   */
+  @Test
+  public void testBatchDeclaresItsRootArguments() {
+    java.util.Optional<java.util.Set<String>> declared =
+        ToolRegistry.declaredArgumentNames("etendo_batch");
+
+    assertTrue(declared.isPresent());
+    assertEquals(java.util.Set.of("operations", "_onlyReturnIds", "_skipRedundantCallouts", "async"),
+        declared.get());
+  }
+
+  /**
    * The vector-search tool requires only {@code query} and remains read-only.
    *
    * <p>IMP-41: {@code targets} used to be required, which forced a caller to name an index before
@@ -341,5 +355,16 @@ public class ToolRegistryTest {
     assertTrue(declared.isPresent());
     assertTrue(declared.get().toString(), declared.get().containsAll(
         java.util.Set.of("spec", "entity", "parentId", "assetId", "view", "recordContext")));
+  }
+
+  @Test
+  public void batchOperationKeysAreExactlyTheDeclaredOnes() {
+    assertEquals(List.of("id", "spec", "entity", "parentRef", "body"),
+        new java.util.ArrayList<>(McpBatchOperationKeys.declaredKeys()));
+  }
+
+  @Test(expected = IllegalStateException.class)
+  public void batchOperationKeysFailFastWhenSchemaHasNoOperationProperties() {
+    McpBatchOperationKeys.keysOf(Map.of("properties", Map.of("operations", Map.of())));
   }
 }

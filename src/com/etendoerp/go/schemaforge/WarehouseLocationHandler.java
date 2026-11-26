@@ -62,10 +62,31 @@ import com.etendoerp.go.schemaforge.util.StructuredAddressComposer.ComposedAddre
  * {@link NeoExtension}, resolved first. Both bindings name this class, so
  * {@code NeoExtensionIndex.warnOnQualifierDisagreement} never fires for it. Uses {@code @Named}
  * (never a normal CDI scope), so handler discovery via {@code @Named} on the concrete class works.
+ *
+ * <p><b>Also serves the Organization fiscal address</b>, not only the Warehouse window:
+ * {@code OrganizationPage.jsx} points its {@code LocationModalField} at the {@code warehouse} base
+ * URL on purpose, because no {@code location} entity was ever registered under the
+ * {@code organization} spec. Any change to the read or write shape below must be exercised on both
+ * windows; the fiscal address is the one feeding ETP-5806's SEPA remittance criterion.
+ *
+ * <p><b>Why there is no {@code responseEnrichedFields()} override here, unlike
+ * {@link ContactsLocationAddressHandler} (ETP-5806 CP-12h).</b> That handler needs one because its
+ * entity is a tabbed wrapper: the read runs the generic path, where
+ * {@code McpQuerySupport#applyProjection} judges a caller's {@code fields:[…]} against the spec's
+ * own {@code ETGO_SF_FIELD} rows and so cannot see the keys injected from the neighbouring table.
+ * This entity is tab-less, so {@link #handle} serves the whole read in the READ pre-phase
+ * ({@code McpHookExecutor#runReadProvider}) and {@code McpProvidedReadShaper#project} derives the
+ * emittable set from <b>the rows themselves</b>; {@code applyProjection} is never reached, and
+ * {@code etendo_schema} — the only other reader — refuses a tab-less entity outright. A declaration
+ * would be dead code. What keeps the projection honest instead is that
+ * {@link #buildRecord} names <b>every</b> emittable key unconditionally, writing
+ * {@code JSONObject.NULL} rather than omitting it: drop a null key and that key stops being
+ * emittable, so a caller asking for it on a record that merely has no value would be told it is
+ * unknown. Pinned by {@code WarehouseLocationHandlerTest}'s two CP-12h tests.
  */
 @Named("warehouseLocationHandler")
 @NeoExtension(spec = "warehouse", entity = "location")
-public class WarehouseLocationHandler implements NeoHandler {
+public class WarehouseLocationHandler implements StructuredAddressCustomization {
 
   private static final Logger log = LogManager.getLogger(WarehouseLocationHandler.class);
   private static final String FIELD_COUNTRY = "country";
@@ -237,7 +258,6 @@ public class WarehouseLocationHandler implements NeoHandler {
         StringUtils.trimToNull(nullIfEmpty(body.optString(FIELD_BUILDING_NUMBER, null))));
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(
         streetName,
-        buildingNumber,
         nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
         countryId);
     if (!missing.isEmpty()) {

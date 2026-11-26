@@ -23,9 +23,12 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.ZoneId;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Optional;
+import java.util.Set;
 
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
@@ -46,6 +49,7 @@ import com.etendoerp.go.schemaforge.NeoResponse;
 import com.etendoerp.go.schemaforge.QuotationDecisions;
 import com.etendoerp.go.schemaforge.data.Account;
 import com.etendoerp.go.schemaforge.email.EmailContractCommandSupport;
+import com.etendoerp.go.schemaforge.email.EmailRecipientSet;
 import com.etendoerp.go.schemaforge.email.TransactionalEmailService;
 import com.etendoerp.go.schemaforge.email.render.EmailMessages;
 
@@ -59,8 +63,10 @@ import com.etendoerp.go.schemaforge.email.render.EmailMessages;
  *       ({@link QuotationDecisions#isDecidable}, Under evaluation: PO answer to Q3), not expired (no
  *       {@code ValidUntil} = not expired, user decision) and the link's root send must have a To
  *       recipient. A per-quotation cool-down keeps the button from flooding the customer's inbox.
- *       The confirmation email goes to the <b>first To</b> of the root send only, never CC (user
- *       decision): one confirmer, no race between several people of the customer.</li>
+ *       The quotation must have been sent to the email the portal was accessed with
+ *       ({@link PortalQuotationSends}, ETP-6209 QA CP-49), and the confirmation goes to the
+ *       <b>every To of that original send, never its CC</b> (QA CP-45 as revised). The first
+ *       confirmed request still wins, so several confirmers cannot both apply one.</li>
  *   <li><b>Mint</b> ({@link #mint}, from the confirmation contract's {@code resolve}): one
  *       {@code ETGO_PORTAL_DECISION} row, pending until its email leaves ({@link #markSent}, from
  *       {@code onDelivered}) — Part A's pending-until-sent rule, so a failed send leaves no usable
@@ -114,11 +120,17 @@ public class PortalDecisionService {
   static final String STATUS_CONFIRMED = "CONFIRMED";
   static final String STATUS_VOIDED = "VOIDED";
   static final String STATUS_NOT_APPLIED = "NOT_APPLIED";
-  private static final String DECISION_ROUTE = "portal/decision";
+  /** Route segment of the confirmation link: {@code /portal/{AD_Client_ID}/decision/{token}}. */
+  private static final String DECISION_SEGMENT = "decision";
 
   /** Why a quotation cannot be decided now, as the API names it. */
   public enum Blocked {
-    NOT_PENDING("not_pending"), EXPIRED("expired"), NO_RECIPIENT("no_recipient");
+    NOT_PENDING("not_pending"), EXPIRED("expired"), NO_RECIPIENT("no_recipient"),
+    /**
+     * The quotation was never sent to the email the portal was accessed with (ETP-6209 QA CP-49,
+     * {@link PortalQuotationSends}): readable, never decidable from this session.
+     */
+    NOT_RECIPIENT("not_recipient");
 
     private final String code;
 
@@ -141,11 +153,18 @@ public class PortalDecisionService {
     private final RequestOutcome outcome;
     private final Blocked blocked;
     private final String email;
+    private final List<String> recipients;
 
     RequestResult(RequestOutcome outcome, Blocked blocked, String email) {
+      this(outcome, blocked, email, Collections.emptyList());
+    }
+
+    RequestResult(RequestOutcome outcome, Blocked blocked, String email,
+        List<String> recipients) {
       this.outcome = outcome;
       this.blocked = blocked;
       this.email = email;
+      this.recipients = recipients == null ? Collections.emptyList() : recipients;
     }
 
     public RequestOutcome getOutcome() {
@@ -156,9 +175,17 @@ public class PortalDecisionService {
       return blocked;
     }
 
-    /** The confirmation's recipient, in full (design decision, Figma). */
+    /** The confirmation's first To recipient, in full (design decision, Figma). */
     public String getEmail() {
       return email;
+    }
+
+    /**
+     * Every address the confirmation went to: every To of the quotation's original send, never its
+     * CC (ETP-6209 QA CP-45), for the portal's "Se ha enviado un correo a …" notice.
+     */
+    public List<String> getRecipients() {
+      return recipients;
     }
   }
 
@@ -418,7 +445,52 @@ public class PortalDecisionService {
     if (isExpired(quotation)) {
       return Blocked.EXPIRED;
     }
-    return confirmationRecipient(session.getRootLinkId()) == null ? Blocked.NO_RECIPIENT : null;
+    // CP-49: only a quotation sent to the accessing email; its send names the confirmation's
+    // recipients (CP-45), so a send with no valid To leaves nobody to confirm.
+    Optional<PortalQuotationSends.Send> send = PortalQuotationSends.originalSend(session,
+        quotation.getId());
+    if (!send.isPresent()) {
+      return Blocked.NOT_RECIPIENT;
+    }
+    return PortalQuotationSends.recipientsOf(send.get()).isToEmpty() ? Blocked.NO_RECIPIENT
+        : null;
+  }
+
+  /**
+   * The ids, among a page of quotations already in the session's scope, the session can decide
+   * now: the list's {@code canDecide} (ETP-6209 QA CP-49). One send-history query per quotation
+   * that passes the cheap checks (pending, not expired); a page holds at most the list's limit.
+   *
+   * @param session the validated session
+   * @param quotations the page's quotations
+   * @return the decidable ids
+   */
+  public Set<String> decidableIds(PortalSession session, List<Order> quotations) {
+    Set<String> ids = new HashSet<>();
+    for (Order quotation : quotations) {
+      if (blockedReason(session, quotation) == null) {
+        ids.add(quotation.getId());
+      }
+    }
+    return ids;
+  }
+
+  /**
+   * The quotation's original send for a decision requested from a link (its To are the
+   * confirmation's recipients, ETP-6209 QA CP-45), re-derived from the link, never from a caller.
+   *
+   * @param linkId the link the decision was requested from
+   * @param quotationId the quotation
+   * @return the send, or empty when the quotation was never sent to that link's email
+   */
+  public Optional<PortalQuotationSends.Send> originalSend(String linkId, String quotationId) {
+    Optional<PortalLink> link = linkId == null ? Optional.empty() : linkService.findLink(linkId);
+    if (!link.isPresent()) {
+      return Optional.empty();
+    }
+    List<String> access = new ArrayList<>(link.get().getRecipientsTo());
+    access.addAll(link.get().getRecipientsCc());
+    return PortalQuotationSends.originalSend(link.get().getClientId(), quotationId, access);
   }
 
   /**
@@ -484,12 +556,14 @@ public class PortalDecisionService {
    */
   private RequestResult deliverConfirmation(PortalSession session, Order quotation,
       String normalizedDecision, String reason, String text) {
-    String recipient = confirmationRecipient(session.getRootLinkId());
+    EmailRecipientSet recipients = PortalQuotationSends.originalSend(session, quotation.getId())
+        .map(PortalQuotationSends::recipientsOf)
+        .orElse(EmailRecipientSet.of(Collections.emptyList(), Collections.emptyList()));
     String status = sendConfirmation(session, quotation, normalizedDecision, reason, text);
     if (TransactionalEmailService.STATUS_SENT.equals(status)) {
       PortalDecisionEvents.requested(session, quotation.getId(), normalizedDecision);
       return new RequestResult(RequestOutcome.SENT, null,
-          StringUtils.trimToEmpty(recipient));
+          recipients.getTo().isEmpty() ? "" : recipients.getTo().get(0), recipients.getTo());
     }
     // The email did not leave: its pending row must not count against the cool-down (Part A's
     // renewal rule), so a provider failure does not lock the customer out for the whole window.
@@ -539,16 +613,19 @@ public class PortalDecisionService {
   public Optional<MintedDecision> mint(String linkId, String quotationId, String decision,
       String reasonCode, String reasonText, String recipient, String language) {
     String token = PortalTokens.newToken();
-    String baseUrl = PublicUrlResolver.resolveConfiguredAppBaseUrl();
-    if (StringUtils.isBlank(baseUrl)) {
-      log.warn("A decision confirmation was requested but {} is not configured",
-          PublicUrlResolver.APP_BASE_URL_PROPERTY);
-      return Optional.empty();
-    }
     OBContext.setAdminMode(true);
     try {
       Order quotation = OBDal.getInstance().get(Order.class, quotationId);
       if (quotation == null) {
+        return Optional.empty();
+      }
+      // CP-43: /portal/{AD_Client_ID}/decision/{token}, the same tenant prefix as the portal link.
+      Optional<String> url = PortalLinkPolicy.buildPath(
+          quotation.getClient() == null ? null : quotation.getClient().getId(),
+          DECISION_SEGMENT, token);
+      if (!url.isPresent()) {
+        log.warn("A decision confirmation was requested but {} is not configured",
+            PublicUrlResolver.APP_BASE_URL_PROPERTY);
         return Optional.empty();
       }
       String id = SequenceIdData.getUUID();
@@ -570,8 +647,7 @@ public class PortalDecisionService {
           .setParameter("recipient", recipient)
           .setParameter("language", StringUtils.defaultIfBlank(language, "es_ES"))
           .executeUpdate();
-      return Optional.of(new MintedDecision(id,
-          PublicUrlResolver.appendPath(baseUrl, DECISION_ROUTE + "/" + token)));
+      return Optional.of(new MintedDecision(id, url.get()));
     } finally {
       OBContext.restorePreviousMode();
     }
@@ -638,10 +714,13 @@ public class PortalDecisionService {
    * What the landing shows for a token. Never writes. Admin mode by the caller.
    *
    * @param rawToken the token of the email's link
+   * @param presentedClientId the tenant id of the landing URL
+   *     ({@code /portal/{AD_Client_ID}/decision/{token}}, ETP-6209 QA CP-43), or {@code null} for a
+   *     link in the old shape; a mismatch answers {@code INVALID}, exactly as an unknown token
    * @return the decision's state, or {@code INVALID}
    */
-  public View view(String rawToken) {
-    Decision decision = findByToken(rawToken);
+  public View view(String rawToken, String presentedClientId) {
+    Decision decision = findByToken(rawToken, presentedClientId);
     if (decision == null) {
       return new View(State.INVALID, null, null);
     }
@@ -656,12 +735,14 @@ public class PortalDecisionService {
    * applies nothing.
    *
    * @param rawToken the token of the email's link
+   * @param presentedClientId the tenant id of the landing URL, or {@code null}; a mismatch
+   *     answers {@code INVALID} and applies nothing, exactly as an unknown token
    * @return the resulting view: {@code CONFIRMED} with {@link View#isAppliedNow} when this call
    *     applied it, else the state found (an already confirmed decision answers {@code CONFIRMED}
    *     without {@code appliedNow})
    */
-  public View confirm(String rawToken) {
-    Decision decision = findByToken(rawToken);
+  public View confirm(String rawToken, String presentedClientId) {
+    Decision decision = findByToken(rawToken, presentedClientId);
     if (decision == null) {
       return new View(State.INVALID, null, null);
     }
@@ -887,8 +968,11 @@ public class PortalDecisionService {
     return rows.isEmpty() ? null : toDecision((Object[]) rows.get(0));
   }
 
-  /** A sent decision by its raw token; {@code null} for unknown, blank or not sent. */
-  private Decision findByToken(String rawToken) {
+  /**
+   * A sent decision by its raw token; {@code null} for unknown, blank or not sent, and for a
+   * presented tenant id that is not the decision's (ETP-6209 QA CP-43: no oracle).
+   */
+  private Decision findByToken(String rawToken, String presentedClientId) {
     String hash = PortalTokens.hash(StringUtils.trimToNull(rawToken));
     if (hash == null) {
       return null;
@@ -896,7 +980,8 @@ public class PortalDecisionService {
     List<?> rows = OBDal.getInstance().getSession().createNativeQuery(SELECT_DECISION
         + " WHERE token_hash = :hash AND isactive = 'Y'").setParameter("hash", hash).list();
     Decision decision = rows.isEmpty() ? null : toDecision((Object[]) rows.get(0));
-    return decision == null || !decision.sent ? null : decision;
+    return decision == null || !decision.sent
+        || !PortalLinkPolicy.clientMatches(presentedClientId, decision.clientId) ? null : decision;
   }
 
   private static final String SELECT_DECISION = "SELECT etgo_portal_decision_id, ad_client_id,"

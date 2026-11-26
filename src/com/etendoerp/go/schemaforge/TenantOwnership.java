@@ -17,6 +17,9 @@
 
 package com.etendoerp.go.schemaforge;
 
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.SQLException;
 import java.util.Arrays;
 
 import org.apache.commons.lang3.StringUtils;
@@ -152,6 +155,47 @@ public final class TenantOwnership {
       return true;
     }
     return hasReadableClient(entity, context);
+  }
+
+  /**
+   * Prepares a raw-SQL read of one row by id, restricted to the clients the caller may read: its
+   * own and System, the scope of {@link #loadOwnedByClient(String, String)} (ETP-6176).
+   *
+   * <p>For a pre-hook that reads the stored row an update targets straight from the database: the
+   * id comes from the request, and a bare {@code WHERE x_id = ?} reads another tenant's row as
+   * readily as the caller's. With the filter, another tenant's row reads as a missing one.
+   *
+   * <p>{@code selectByIdSql} must end in {@code WHERE <key> = ?} on a table with an
+   * {@code ad_client_id} column; the filter is appended to it. Without a session the read is left
+   * unscoped, the same fail-open contract as {@link #belongsToReadableClient(BaseOBObject)}; a
+   * session without readable clients reads nothing.
+   *
+   * @param conn          the connection of the request
+   * @param selectByIdSql the read, ending in its single id parameter
+   * @param id            the id to bind
+   * @return the prepared statement with every parameter bound; the caller closes it
+   * @throws SQLException if the statement cannot be prepared or bound
+   */
+  public static PreparedStatement prepareByIdForReadableClients(Connection conn,
+      String selectByIdSql, String id) throws SQLException {
+    OBContext context = OBContext.getOBContext();
+    String[] clients = null;
+    if (context != null) {
+      String[] readable = context.getReadableClients();
+      clients = readable != null ? readable : new String[0];
+    }
+    PreparedStatement ps = conn.prepareStatement(
+        clients == null ? selectByIdSql : selectByIdSql + " AND ad_client_id = ANY(?)");
+    try {
+      ps.setString(1, id);
+      if (clients != null) {
+        ps.setArray(2, conn.createArrayOf("varchar", clients));
+      }
+      return ps;
+    } catch (SQLException | RuntimeException e) {
+      ps.close();
+      throw e;
+    }
   }
 
   /**

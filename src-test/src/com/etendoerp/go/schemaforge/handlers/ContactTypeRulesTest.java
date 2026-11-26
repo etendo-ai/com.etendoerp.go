@@ -437,6 +437,79 @@ class ContactTypeRulesTest {
     verify(conn, never()).prepareStatement(anyString());
   }
 
+  // ── Stored rows are read only within the caller's clients (ETP-6176) ─────────────────────────
+
+  /** Stubs a session whose readable clients are {@code clients}, for the scope of the try block. */
+  private static MockedStatic<OBContext> sessionReading(String... clients) {
+    OBContext context = mock(OBContext.class);
+    when(context.getReadableClients()).thenReturn(clients);
+    MockedStatic<OBContext> obContextStatic = mockStatic(OBContext.class);
+    obContextStatic.when(OBContext::getOBContext).thenReturn(context);
+    return obContextStatic;
+  }
+
+  /** The stored contact's types are read with the client filter, the id and the clients bound. */
+  @Test
+  void theStoredContactTypesAreReadWithinTheReadableClients() throws Exception {
+    PreparedStatement statement = givenRow(CONTACT_TYPES_SQL, "Y", "N");
+    java.sql.Array clients = mock(java.sql.Array.class);
+    when(conn.createArrayOf(eq("varchar"), any(Object[].class))).thenReturn(clients);
+
+    try (MockedStatic<OBContext> session = sessionReading("CLI-1", "0")) {
+      assertNotNull(ContactTypeRules.queryContactTypes(RECORD_ID));
+    }
+
+    verify(conn).prepareStatement(argThat(sql -> sql.contains(CONTACT_TYPES_SQL)
+        && sql.endsWith(" AND ad_client_id = ANY(?)")));
+    verify(statement).setString(1, RECORD_ID);
+    verify(statement).setArray(2, clients);
+  }
+
+  /** The category the write names is another request-supplied id: same scope. */
+  @Test
+  void theCategoryTypesAndTheStoredCategoryAreReadWithinTheReadableClients() throws Exception {
+    PreparedStatement categoryStatement = givenRow(CATEGORY_TYPES_SQL, "N", "Y");
+    PreparedStatement storedCategory = givenRow(CONTACT_CATEGORY_SQL, CATEGORY_ID);
+    java.sql.Array clients = mock(java.sql.Array.class);
+    when(conn.createArrayOf(eq("varchar"), any(Object[].class))).thenReturn(clients);
+
+    try (MockedStatic<OBContext> session = sessionReading("CLI-1")) {
+      assertNotNull(ContactTypeRules.queryCategoryTypes(CATEGORY_ID));
+      assertEquals(CATEGORY_ID, ContactTypeRules.queryContactCategoryId(RECORD_ID));
+    }
+
+    verify(categoryStatement).setString(1, CATEGORY_ID);
+    verify(categoryStatement).setArray(2, clients);
+    verify(storedCategory).setString(1, RECORD_ID);
+    verify(storedCategory).setArray(2, clients);
+  }
+
+  /** Another tenant's row is filtered out by the database: it reads as a missing one. */
+  @Test
+  void aRowOfAnotherClientReadsAsMissing() throws Exception {
+    ResultSet none = mock(ResultSet.class);
+    when(none.next()).thenReturn(false);
+    PreparedStatement statement = mock(PreparedStatement.class);
+    when(statement.executeQuery()).thenReturn(none);
+    when(conn.prepareStatement(anyString())).thenReturn(statement);
+
+    try (MockedStatic<OBContext> session = sessionReading("CLI-1")) {
+      assertNull(ContactTypeRules.queryContactTypes("FOREIGN"));
+      assertNull(ContactTypeRules.queryCategoryTypes("FOREIGN"));
+      assertNull(ContactTypeRules.queryContactCategoryId("FOREIGN"));
+    }
+  }
+
+  /** A blank id never reaches the database. */
+  @Test
+  void aBlankIdIsNotQueried() throws Exception {
+    assertNull(ContactTypeRules.queryContactTypes(" "));
+    assertNull(ContactTypeRules.queryCategoryTypes(null));
+    assertNull(ContactTypeRules.queryContactCategoryId(""));
+
+    verify(conn, never()).prepareStatement(anyString());
+  }
+
   // ── Flag targeting: per account (ETGO_ACCOUNT email) + tenant ─────────────────────────────
 
   /**

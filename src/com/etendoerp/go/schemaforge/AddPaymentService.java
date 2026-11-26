@@ -282,6 +282,9 @@ final class AddPaymentService {
       if (psd == null) {
         throw new OBException("Invoice installment not found: " + psdId);
       }
+      // ETP-6247: a detail already linked to a payment is not payable — in particular the part of
+      // an installment that sits in a confirmed remittance, which the remittance collects.
+      InvoiceRemittance.assertDetailPayable(psd);
       boolean isWriteoff = writeoffs != null && writeoffs.optBoolean(psdId, false);
       FIN_AddPayment.updatePaymentDetail(psd, payment, amt, isWriteoff);
     }
