@@ -414,6 +414,9 @@ The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-po
   the client blocks remote images. Words and logo are **one** anchor to the footer link below. No
   button, no «Conoce más», no social, no privacy link (dropped from the spec). These emails have no
   plain-text part, so there is no text variant of the footer.
+- **The footer logo is a marketing-owned asset** on etendo.ai (the WordPress uploads path above),
+  not shipped with this module: if marketing moves or renames it, update `EmailFooter.LOGO_URL`,
+  or every email silently falls back to the `alt` text — nothing fails or logs.
 - **Footer link.** `https://etendo.ai/` with the email's UTM, declared per `EmailFooter.Piece`
   (each contract passes its own piece; the layout names no contract):
   `utm_source=portal_clientes&utm_medium=email&utm_campaign=portal_clientes&utm_content=` +
