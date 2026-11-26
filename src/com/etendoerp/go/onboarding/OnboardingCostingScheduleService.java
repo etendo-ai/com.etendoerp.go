@@ -28,6 +28,12 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.FutureTask;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+
+import javax.servlet.ServletException;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -38,6 +44,7 @@ import org.openbravo.base.secureApp.VariablesSecureApp;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.database.SessionInfo;
 import org.openbravo.model.ad.access.User;
 import org.openbravo.model.ad.system.Client;
 import org.openbravo.model.ad.ui.Process;
@@ -47,6 +54,8 @@ import org.openbravo.scheduling.OBScheduler;
 import org.openbravo.scheduling.ProcessBundle;
 import org.openbravo.scheduling.ProcessContext;
 import org.openbravo.service.db.DalConnectionProvider;
+import org.quartz.JobKey;
+import org.quartz.SchedulerException;
 
 /**
  * Provisions, per onboarded client, a scheduled {@code AD_Process_Request} that runs the core
@@ -101,7 +110,12 @@ import org.openbravo.service.db.DalConnectionProvider;
  * {@code SiiTbaiAutoSendScheduleService} uses: {@link #scheduleCostingBackground} runs inside the
  * onboarding transaction so it commits atomically with the rest of provisioning, and
  * {@link #activateSchedule(String)} is called AFTER that commit, once the row is visible to the
- * scheduler's own DB connection. Both halves are non-fatal — a costing schedule is worth having, but
+ * scheduler's own DB connection. Since ETP-6408 the activation does not run on the request
+ * thread: it runs on a short-lived daemon thread with a clean {@code SessionInfo} connection, bounded
+ * to 10 seconds, and is skipped unless the request is {@code SCH}, scheduling is allowed and the job
+ * does not already exist in Quartz. That thread is a mitigation of an unconfirmed hypothesis (a
+ * stale/aborted connection on the long-lived onboarding thread); remove it if the real cause turns
+ * out to be something else. Both halves are non-fatal — a costing schedule is worth having, but
  * never worth failing an environment creation over — and the {@code SCH} status means an activation
  * that could not run is still picked up on the next scheduler initialization.
  *
@@ -145,6 +159,12 @@ public class OnboardingCostingScheduleService {
 
   /** Seconds in the cadence, i.e. the width of the window the start instant is spread over. */
   private static final int CADENCE_SECONDS = INTERVAL_SECONDS.intValue();
+
+  /** Upper bound for the activation thread, so a hung scheduler cannot stall the onboarding stream. */
+  static final long ACTIVATION_TIMEOUT_SECONDS = 10L;
+
+  /** Instance field only so tests can shorten the wait. */
+  long activationTimeoutSeconds = ACTIVATION_TIMEOUT_SECONDS;
 
   private static final SecureRandom RANDOM = new SecureRandom();
 
@@ -208,15 +228,126 @@ public class OnboardingCostingScheduleService {
         return;
       }
       String requestId = request.getId();
+      if (!STATUS_SCHEDULED.equals(request.getStatus())) {
+        log.info("Costing schedule {} for client {} is not in status SCH; not activating it",
+            requestId, clientId);
+        return;
+      }
+      if (!schedulingAllowed()) {
+        log.info("Scheduler does not allow scheduling now; costing schedule {} for client {} "
+            + "will be picked up on the next scheduler initialization", requestId, clientId);
+        return;
+      }
+      if (OBScheduler.getInstance().getScheduler()
+          .checkExists(JobKey.jobKey(requestId, OBScheduler.OB_GROUP))) {
+        log.info("Costing schedule {} for client {} is already armed", requestId, clientId);
+        return;
+      }
+      scheduleOnCleanConnection(requestId, OBContext.getOBContext());
+      log.info("Activated costing schedule {} for client {}", requestId, clientId);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+      logActivationFailure(clientId, e);
+    } catch (Exception e) {
+      logActivationFailure(clientId, e);
+    } finally {
+      OBContext.restorePreviousMode();
+    }
+  }
+
+  private void logActivationFailure(String clientId, Exception e) {
+    log.warn("Could not immediately activate the costing schedule for client {} (it will be "
+        + "picked up on the next scheduler initialization): {}", clientId, e.getMessage(), e);
+  }
+
+  /**
+   * Runs {@link #armOnCurrentThread} on a short-lived dedicated thread and waits for it, bounded.
+   * The thread starts with no connection in {@code SessionInfo}'s thread-local, so core's
+   * {@code TriggerData} query gets a fresh pooled connection instead of the one the long-lived
+   * onboarding request thread has been using (and may have left aborted or severed).
+   *
+   * @param requestId     the {@code AD_PROCESS_REQUEST} id to arm
+   * @param callerContext the caller's context, applied on the activation thread
+   * @throws SchedulerException  the scheduler rejected the activation
+   * @throws ServletException     the process bundle could not be built
+   * @throws TimeoutException     the activation did not finish within the bound
+   * @throws InterruptedException the calling thread was interrupted while waiting
+   */
+  void scheduleOnCleanConnection(String requestId, OBContext callerContext)
+      throws SchedulerException, ServletException, TimeoutException, InterruptedException {
+    FutureTask<Void> task = new FutureTask<>(() -> {
+      armOnCurrentThread(requestId, callerContext);
+      return null;
+    });
+    Thread thread = new Thread(task, "costing-schedule-activation");
+    thread.setDaemon(true);
+    thread.start();
+    try {
+      task.get(activationTimeoutSeconds, TimeUnit.SECONDS);
+    } catch (ExecutionException e) {
+      rethrowActivationFailure(e.getCause());
+    } catch (TimeoutException | InterruptedException e) {
+      // cancel(true) only interrupts: the worker may still finish arming the job in the background
+      log.warn("Costing schedule activation of {} did not finish in time; it may still complete "
+          + "in the background", requestId);
+      task.cancel(true);
+      throw e;
+    }
+  }
+
+  /** Rethrows the failure of the activation thread as its own type. */
+  private static void rethrowActivationFailure(Throwable cause)
+      throws SchedulerException, ServletException {
+    if (cause instanceof SchedulerException) {
+      throw (SchedulerException) cause;
+    }
+    if (cause instanceof ServletException) {
+      throw (ServletException) cause;
+    }
+    if (cause instanceof RuntimeException) {
+      throw (RuntimeException) cause;
+    }
+    throw new IllegalStateException("Costing schedule activation failed", cause);
+  }
+
+  /**
+   * Body of the activation thread: applies the caller's context, resolves the request and builds
+   * the bundle here (the request thread's DAL session is not shared), arms Quartz, and always
+   * releases what this thread acquired.
+   *
+   * @param requestId     the {@code AD_PROCESS_REQUEST} id to arm
+   * @param callerContext the context to apply on this thread
+   * @throws SchedulerException the scheduler rejected the activation
+   * @throws ServletException   the process bundle could not be built
+   */
+  void armOnCurrentThread(String requestId, OBContext callerContext)
+      throws SchedulerException, ServletException {
+    OBContext.setOBContext(callerContext);
+    OBContext.setAdminMode(true);
+    try {
+      ProcessRequest request = OBDal.getInstance().get(ProcessRequest.class, requestId);
       VariablesSecureApp vars = ProcessContext.newInstance(request.getOpenbravoContext()).toVars();
       DalConnectionProvider conn = new DalConnectionProvider(false);
       OBScheduler.getInstance().schedule(requestId, ProcessBundle.request(requestId, vars, conn));
-      log.info("Activated costing schedule {} for client {}", requestId, clientId);
-    } catch (Exception e) {
-      log.warn("Could not immediately activate the costing schedule for client {} (it will be "
-          + "picked up on the next scheduler initialization): {}", clientId, e.getMessage());
+    } finally {
+      releaseThreadResources();
+    }
+  }
+
+  /**
+   * Closes the DAL session, restores the context and, last, resets {@link SessionInfo}: the
+   * trigger query makes {@code ConnectionProviderImpl} cache its pooled connection in this
+   * thread's {@code SessionInfo} (and {@code releaseConnection} then leaves it open).
+   * {@code SessionInfo.init()} closes that cached connection (returning it to the pool) before
+   * clearing the thread-local, so nothing leaks when the thread ends.
+   */
+  private void releaseThreadResources() {
+    try {
+      OBDal.getInstance().rollbackAndClose();
     } finally {
       OBContext.restorePreviousMode();
+      OBContext.setOBContext((OBContext) null);
+      SessionInfo.init();
     }
   }
 
