@@ -177,9 +177,12 @@ public class PortalDecisionEntryTest {
       boolean added = (Boolean) c[1];
       assertEquals(added, body.has(PortalDecisionEntry.FIELD_PORTAL_TOKEN));
       assertEquals(added, body.has(PortalDecisionEntry.FIELD_QUOTATION_ID));
+      assertEquals(added, body.has(PortalDecisionEntry.FIELD_CLIENT_ID));
       if (added) {
         assertEquals(TOKEN, body.getString(PortalDecisionEntry.FIELD_PORTAL_TOKEN));
         assertEquals(QUOTATION_ID, body.getString(PortalDecisionEntry.FIELD_QUOTATION_ID));
+        // QA CP-43: the tenant, so the landing opens /portal/{clientId} without the token.
+        assertEquals(CLIENT_ID, body.getString(PortalDecisionEntry.FIELD_CLIENT_ID));
       }
     }
   }
@@ -388,6 +391,7 @@ public class PortalDecisionEntryTest {
       String reasonText) {
     PortalDecisionService.Decision decision = new PortalDecisionService.Decision();
     decision.linkId = DECISION_LINK_ID;
+    decision.clientId = CLIENT_ID;
     decision.quotationId = QUOTATION_ID;
     decision.action = action;
     decision.reasonCode = reasonCode;

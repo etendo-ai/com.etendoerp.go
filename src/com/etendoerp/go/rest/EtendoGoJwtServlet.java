@@ -7039,16 +7039,15 @@ public class EtendoGoJwtServlet extends EtendoGoCorsServlet {
     if (!addressBlockStarted) {
       return true;
     }
-    // ETP-5806 follow-up — Building Number is not independently mandatory: a blank value with a
-    // present Street Name falls back to "s/n" (StructuredAddressComposer#effectiveBuildingNumber),
-    // the same rule already applied by the 3 NEO handlers (Contacts/Warehouse/BpLocation) and by
-    // OnboardingOrgInfoService#applyAddressFields when it persists this same data a moment later.
-    // Reusing missingMandatoryFields here (instead of a 4th hand-rolled copy of the field list)
-    // keeps this validator from drifting out of sync with that rule again. Country is passed as
-    // the already-defaulted ISO code (never blank at this point) purely to satisfy the shared
-    // method's signature — it is validated independently elsewhere in this request.
+    // ETP-5806 follow-up, narrowed by CP-13 — Building Number is not part of this check at all
+    // any more: a blank value becomes "s/n" (StructuredAddressComposer#effectiveBuildingNumber)
+    // before it is persisted, by the 3 NEO handlers and by OnboardingOrgInfoService#applyAddressFields
+    // when it stores this same data a moment later, so it is never something the caller still has
+    // to supply. Reusing missingMandatoryFields here (instead of a 4th hand-rolled copy of the
+    // field list) keeps this validator from drifting out of sync with that rule again. Country is
+    // passed as the already-defaulted ISO code (never blank at this point) purely to satisfy the
+    // shared method's signature — it is validated independently elsewhere in this request.
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(data.streetName,
-        StructuredAddressComposer.effectiveBuildingNumber(data.streetName, data.buildingNumber),
         data.city, data.countryCode);
     if (missing.isEmpty()) {
       return true;

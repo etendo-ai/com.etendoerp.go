@@ -89,18 +89,32 @@ final class CostingStall {
    * @return {@code true} when an uncalculated stocked transaction is older than the threshold
    */
   static boolean isQueueStalled(AcctServer acct) {
-    if (StringUtils.isAnyBlank(acct.AD_Client_ID, acct.AD_Org_ID)) {
+    return isQueueStalled(acct.AD_Client_ID, acct.AD_Org_ID);
+  }
+
+  /**
+   * {@link #isQueueStalled(AcctServer)} for a post refused before an accounting server exists: the
+   * cost pre-check of Physical Inventory and Internal Consumption (ETP-6406) knows the document's
+   * client and organisation, not an {@code AcctServer}.
+   *
+   * @param clientId the document's client
+   * @param orgId    the document's organisation
+   * @return {@code true} when an uncalculated stocked transaction is older than the threshold;
+   *     {@code false} when either id is blank or the queue cannot be read
+   */
+  static boolean isQueueStalled(String clientId, String orgId) {
+    if (StringUtils.isAnyBlank(clientId, orgId)) {
       return false;
     }
     try (PreparedStatement ps = OBDal.getInstance().getConnection().prepareStatement(QUEUE_SQL)) {
-      ps.setString(1, acct.AD_Client_ID);
-      ps.setString(2, acct.AD_Org_ID);
+      ps.setString(1, clientId);
+      ps.setString(2, orgId);
       ps.setInt(3, STALLED_AFTER_MINUTES);
       try (ResultSet rs = ps.executeQuery()) {
         return rs.next() && rs.getBoolean(1);
       }
     } catch (Exception e) {
-      log.debug("Could not probe the costing queue of org {}", acct.AD_Org_ID, e);
+      log.debug("Could not probe the costing queue of org {}", orgId, e);
       return false;
     }
   }

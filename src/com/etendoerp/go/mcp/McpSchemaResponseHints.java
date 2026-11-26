@@ -34,6 +34,7 @@ import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoDefaultsService;
 import com.etendoerp.go.schemaforge.NeoResponse;
 import com.etendoerp.go.schemaforge.data.SFEntity;
+import com.etendoerp.go.schemaforge.selector.policy.NeoSelectorPolicy;
 
 /**
  * The derivations {@code etendo_schema} adds on top of the field list: what a caller must supply,
@@ -114,6 +115,48 @@ final class McpSchemaResponseHints {
       log.warn("etendo_schema view:create could not resolve defaults for {}/{}; falling back to the "
           + "AD_Column.DefaultValue rule", specName, entityName, e);
       return Collections.emptySet();
+    }
+  }
+
+  /**
+   * ETP-5806 CP-13 (QA finding) — republishes the composer-owned address lines as read-only while
+   * {@code structured-address-for-sepa} is on for the caller's account.
+   *
+   * <p>{@code addressLine1}/{@code addressLine2} were advertised under {@code view:"create"}'s
+   * {@code optional} group, which its own hint describes as "accepted but not needed", while the
+   * structured-address handlers overwrite both from {@code streetName}/{@code buildingNumber}/
+   * {@code buildingName} on every write and report nothing. Read-only keeps them discoverable and
+   * readable — {@link McpSchemaFieldBuilder#isAgentSuppliable} is what drops them from the create
+   * projection — and removes the only part of the descriptor that was false.
+   *
+   * <p>Applied as a post-processing overlay, for the same two reasons
+   * {@link McpSchemaFieldBuilder#applyPreconditionRequirements} is: that builder's
+   * {@code buildSchemaField} is at its parameter budget (Sonar S107) and cannot take the gate, and
+   * this one overlay covers both the direct table walk
+   * ({@code bp-location}, whose entity IS {@code C_Location}) and the wrapper path
+   * ({@code contacts/locationAddress}, {@code warehouse/location}) with one rule instead of two.
+   *
+   * <p>The gate is consulted only after a composer-owned column is actually found, so a walk over a
+   * table that has none — almost every table — never resolves the account, and a table that has
+   * both resolves it once (see {@code McpSchemaFieldBuilder.StructuredAddressGate}).
+   *
+   * @param fieldsArray the fully assembled field array, mutated in place; may be {@code null}
+   * @throws JSONException if a descriptor cannot be rewritten
+   */
+  static void applyComposerOwnedVisibility(JSONArray fieldsArray) throws JSONException {
+    if (fieldsArray == null) {
+      return;
+    }
+    McpSchemaFieldBuilder.StructuredAddressGate gate =
+        new McpSchemaFieldBuilder.StructuredAddressGate();
+    for (int i = 0; i < fieldsArray.length(); i++) {
+      JSONObject field = fieldsArray.optJSONObject(i);
+      String column = field == null ? null : field.optString("column", null);
+      if (NeoSelectorPolicy.isComposerOwnedColumn(column) && gate.isEnabled()) {
+        field.put(McpSchemaFieldBuilder.KEY_VISIBILITY, McpSchemaFieldBuilder.VISIBILITY_READ_ONLY);
+        field.put(McpSchemaFieldBuilder.KEY_READ_ONLY, true);
+        field.put(McpSchemaFieldBuilder.KEY_USER_REQUIRED, false);
+      }
     }
   }
 

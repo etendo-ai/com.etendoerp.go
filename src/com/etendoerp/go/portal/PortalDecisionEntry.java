@@ -48,6 +48,7 @@ class PortalDecisionEntry {
   static final String FIELD_PORTAL_TOKEN = "portalToken";
   /** The answer's field with the quotation the portal opens on. */
   static final String FIELD_QUOTATION_ID = "quotationId";
+  static final String FIELD_CLIENT_ID = "clientId";
 
   private static final String FIELD_STATE = "state";
   private static final String FIELD_TENANT_NAME = "tenantName";
@@ -146,6 +147,9 @@ class PortalDecisionEntry {
     if (token != null) {
       body.put(FIELD_PORTAL_TOKEN, token);
       body.put(FIELD_QUOTATION_ID, decision.getQuotationId());
+      // CP-43: the tenant id, so the landing opens /portal/{clientId} and never puts the token in
+      // the URL.
+      body.put(FIELD_CLIENT_ID, StringUtils.defaultString(decision.getClientId()));
     }
   }
 

@@ -270,6 +270,9 @@ class McpDocumentEmailToolTest {
           edits.getString("message"));
       assertFalse(command.has("recipientEdits"), "the contact is the recipient: nothing to edit");
       assertEquals("purchase-order-send:PO1:send:v1", command.getString("idempotencyKey"));
+      // No portalLink fact in the SENT answer (a purchase document has no portal): the PDF link.
+      assertTrue(result.getString("detail").endsWith("It carries a link to the document's PDF."),
+          result.getString("detail"));
     }
 
     @Test
@@ -534,7 +537,9 @@ class McpDocumentEmailToolTest {
       JSONObject result = McpDocumentEmailTool.run(argsTo(BASE));
 
       assertNotSent(result, 409, "no_pdf");
-      assertTrue(result.getString("hint").contains("preview"), result.getString("hint"));
+      String hint = result.getString("hint");
+      assertTrue(hint.contains("etendo_feedback"), hint);
+      assertFalse(hint.toLowerCase().contains("preview"), hint);
     }
 
     @Test
@@ -657,10 +662,9 @@ class McpDocumentEmailToolTest {
       assertNotSent(result, 409, "no_pdf");
       String hint = result.getString("hint");
       assertFalse(hint.contains("send the document by email"), hint);
-      assertTrue(hint.contains("open the document's preview in the application"), hint);
+      assertFalse(hint.contains("preview in the application"), hint);
       assertTrue(hint.contains("ask again in a few seconds"), hint);
-      assertTrue(hint.contains("ask to send again"), hint);
-      assertTrue(hint.contains("first send must be done from the application"), hint);
+      assertTrue(hint.contains("etendo_feedback"), hint);
       assertFalse(result.getBoolean("sent"));
     }
 
@@ -678,10 +682,10 @@ class McpDocumentEmailToolTest {
           .thenReturn(NeoDocumentPdf.Result.notStoredInStatus("CO"));
       String completed = McpDocumentEmailTool.run(argsTo(BASE)).getString("hint");
       assertTrue(completed.startsWith(McpDocumentPdfTool.JUST_COMPLETED_HINT + "Otherwise the "
-          + "server could not generate it: ask the user to open the document's preview in the "
-          + "application so its PDF is stored, then ask to send again."), completed);
+          + "server could not generate it: tell the user the PDF could not be generated and "
+          + "report it with etendo_feedback."), completed);
       assertFalse(completed.contains("draft"), completed);
-      assertTrue(completed.contains("first send must be done from the application"), completed);
+      assertFalse(completed.contains("preview"), completed);
 
       pdfMock.when(() -> NeoDocumentPdf.resolve(target, header))
           .thenReturn(NeoDocumentPdf.Result.notStored(false));
@@ -700,7 +704,10 @@ class McpDocumentEmailToolTest {
       assertNotSent(result, 409, "pdf_stale");
       String hint = result.getString("hint");
       assertTrue(hint.startsWith(McpDocumentPdfTool.STALE_RETRY_HINT), hint);
-      assertTrue(hint.contains("refreshed") && hint.contains("ask to send again"), hint);
+      assertTrue(hint.contains("report it with etendo_feedback"), hint);
+      // A reactivated document never reaches the PDF gate: the status gate refuses it first.
+      assertFalse(hint.contains("reactivated"), hint);
+      assertFalse(hint.contains("preview"), hint);
       assertFalse(hint.contains("send the document by email"), hint);
     }
 
@@ -1046,6 +1053,7 @@ class McpDocumentEmailToolTest {
       // ETP-6013: the server generates a missing or stale PDF first where it can.
       assertFalse(description.contains("never generates"), description);
       assertTrue(description.contains("ask again in a few seconds"), description);
+      assertFalse(description.contains("preview in the application"), description);
       assertTrue(description.contains("DUPLICATE") || description.contains("identical"),
           description);
     }
@@ -1228,8 +1236,13 @@ class McpDocumentEmailToolTest {
           return portalLinks;
         }
       };
-      sendThroughTheMcp(contract);
+      JSONObject result = sendThroughTheMcp(contract);
 
+      // ETP-6209 QA (MCP parity): the agent is told what the email really carried.
+      assertTrue(result.getString("detail").contains("link to the customer portal"),
+          result.getString("detail"));
+      assertTrue(result.getString("detail").contains("it has no direct PDF link"),
+          result.getString("detail"));
       verify(portalLinks).mintForSend(eq(PortalDocumentKind.INVOICE), eq(RECORD), any(), any(),
           eq("es_ES"), eq(INVOICE_SPEC + "-send"));
       assertEquals(1, delivered.size());
@@ -1249,7 +1262,12 @@ class McpDocumentEmailToolTest {
         access.when(() -> NeoAccessHelper.canWriteSpec(any())).thenReturn(true);
         policy.when(PortalLinkPolicy::isLinkEnabled).thenReturn(false);
 
-        sendThroughTheMcp(new SalesInvoiceSendEmailContract(invoiceResolver()));
+        JSONObject result = sendThroughTheMcp(
+            new SalesInvoiceSendEmailContract(invoiceResolver()));
+
+        // A portal contract that minted nothing reports the PDF link it actually sent.
+        assertTrue(result.getString("detail").endsWith("It carries a link to the document's PDF."),
+            result.getString("detail"));
 
         policy.verify(PortalLinkPolicy::isLinkEnabled);
         portalDal.verifyNoInteractions();
@@ -1261,7 +1279,8 @@ class McpDocumentEmailToolTest {
     }
 
     /** Runs the MCP tool against the real email service, over a registry of {@code contract}. */
-    private void sendThroughTheMcp(DefaultDocumentSendEmailContract contract) throws Exception {
+    private JSONObject sendThroughTheMcp(DefaultDocumentSendEmailContract contract)
+        throws Exception {
       EmailContractRegistry registry = new EmailContractRegistry() {
         @Override
         public Optional<EmailContract> find(String name) {
@@ -1293,6 +1312,7 @@ class McpDocumentEmailToolTest {
           .put("id", RECORD).put("to", new JSONArray(Arrays.asList(BASE))));
 
       assertTrue(result.optBoolean("sent"), result.toString());
+      return result;
     }
 
     private EmailDocumentRecordResolver invoiceResolver() {
