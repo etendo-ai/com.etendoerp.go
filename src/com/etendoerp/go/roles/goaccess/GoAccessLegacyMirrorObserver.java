@@ -46,7 +46,7 @@ import com.etendoerp.go.schemaforge.util.GoFeature;
  */
 public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver {
 
-  private static Entity[] entities;
+  private Entity[] entities;
 
   @Override
   protected Entity[] getObservedEntities() {

@@ -26,7 +26,6 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
-import java.lang.reflect.Field;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -70,9 +69,6 @@ class GoAccessLegacyMirrorObserverTest {
 
   @BeforeEach
   void setUp() throws Exception {
-    Field cache = GoAccessLegacyMirrorObserver.class.getDeclaredField("entities");
-    cache.setAccessible(true);
-    cache.set(null, null);
     windowEntity = entity();
     processEntity = entity();
     ModelProvider instance = mock(ModelProvider.class);
