@@ -205,7 +205,7 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
   // incoming value identical to what is already persisted is never re-validated either — so a
   // dirty legacy value does not block unrelated edits to the same record.
   private static final String FIELD_WEB = "etgoWeb";
-  private static final String FIELD_PHONE = "etgoPhone";
+  private static final String FIELD_PHONE = ContactPhoneText.FIELD_PHONE;
   private static final Pattern EMAIL_PATTERN =
       Pattern.compile("^[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}$", Pattern.CASE_INSENSITIVE);
   private static final Pattern DOMAIN_LABEL_PATTERN =
@@ -591,7 +591,7 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
     if (!touchesAny) {
       return null;
     }
-    stripPhoneWhitespace(body);
+    ContactPhoneText.stripWhitespace(body);
     String[] persisted = null;
     if (!"POST".equals(method)) {
       String recordId = ctx.getRecordId();
@@ -611,30 +611,9 @@ public class BusinessPartnerHandler extends AbstractPersonNameHandler {
     }
     // The persisted phone is compared without whitespace too, so a legacy "+34 910 565 400"
     // re-sent unchanged by an edit form still counts as unchanged once the incoming copy is stripped.
-    return validateFormatField(body, FIELD_PHONE, persisted != null ? withoutWhitespace(persisted[2]) : null,
-        BusinessPartnerHandler::isPlausiblePhone, ERR_PHONE_FORMAT);
-  }
-
-  /**
-   * Drops every whitespace character from an incoming {@code etgoPhone} before it is validated
-   * and stored (ETP-6225): spreadsheets, the export and people type "+34 910 565 400", and the
-   * 15-character cap is meant for the number, not its spacing, so "+34 (910) 565-400" fits once
-   * stripped. Done here, server-side, so every channel (form, import, batch, MCP) stores the same
-   * value. A leading apostrophe is deliberately left in place: it stays invalid.
-   */
-  static void stripPhoneWhitespace(JSONObject body) throws JSONException {
-    if (!body.has(FIELD_PHONE) || body.isNull(FIELD_PHONE)) {
-      return;
-    }
-    Object raw = body.get(FIELD_PHONE);
-    if (raw instanceof String) {
-      body.put(FIELD_PHONE, withoutWhitespace((String) raw));
-    }
-  }
-
-  /** {@code value} without any whitespace (NBSP included); {@code null} stays {@code null}. */
-  private static String withoutWhitespace(String value) {
-    return value == null ? null : value.replaceAll("[\\s\\u00A0\\uFEFF]+", "");
+    String persistedPhone = persisted != null ? ContactPhoneText.withoutWhitespace(persisted[2]) : null;
+    return validateFormatField(body, FIELD_PHONE, persistedPhone, BusinessPartnerHandler::isPlausiblePhone,
+        ERR_PHONE_FORMAT);
   }
 
   /**

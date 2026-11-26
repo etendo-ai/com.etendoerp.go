@@ -2910,15 +2910,15 @@ class BusinessPartnerHandlerTest {
   @Test
   void testStripPhoneWhitespaceKeepsTheApostropheAndIgnoresNonStrings() throws Exception {
     JSONObject quoted = new JSONObject().put("etgoPhone", "'+34 910 565 400");
-    BusinessPartnerHandler.stripPhoneWhitespace(quoted);
+    ContactPhoneText.stripWhitespace(quoted);
     assertEquals("'+34910565400", quoted.getString("etgoPhone"));
 
     JSONObject cleared = new JSONObject().put("etgoPhone", JSONObject.NULL);
-    BusinessPartnerHandler.stripPhoneWhitespace(cleared);
+    ContactPhoneText.stripWhitespace(cleared);
     assertTrue(cleared.isNull("etgoPhone"));
 
     JSONObject untouched = new JSONObject().put("name", "x");
-    BusinessPartnerHandler.stripPhoneWhitespace(untouched);
+    ContactPhoneText.stripWhitespace(untouched);
     assertFalse(untouched.has("etgoPhone"));
   }
 
