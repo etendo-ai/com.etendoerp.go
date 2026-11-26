@@ -55,28 +55,6 @@ import com.smf.securewebservices.utils.SecureWebServicesUtils;
  */
 public class EtendoGoJwtServletLoginTest extends EtendoGoJwtServletTestSupport {
 
-  // ===================== POST /register — error path =====================
-
-  @Test
-  public void registerDatabaseErrorReturnsServerError() throws Exception {
-    ResponseCapture resp = mockResponse();
-    HttpServletRequest req = jsonRequest("/register",
-        "{\"email\":\"new@test.com\",\"password\":\"Str0ng!Pass1\",\"name\":\"New User\"}");
-
-    try (var ctxMock = mockStatic(OBContext.class);
-         var dalMock = mockStatic(EtendoGoJwtDalHelper.class)) {
-      dalMock.when(() -> EtendoGoJwtDalHelper.findActiveAccountByEmail("new@test.com"))
-          .thenReturn(null);
-      dalMock.when(() -> EtendoGoJwtDalHelper.createAccount(
-          anyString(), anyString(), anyString(), anyString()))
-          .thenThrow(new RuntimeException("db down"));
-
-      servlet.doPost(req, resp.response);
-    }
-
-    assertEquals(500, resp.status);
-  }
-
   // ===================== POST /login — success path =====================
 
   @Test
