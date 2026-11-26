@@ -367,16 +367,77 @@ public class PortalDocumentQueryTest {
       return pages.remove(0);
     }).when(session).createQuery(anyString(), any(Class.class));
 
-    List<BaseOBObject> found = PortalDocumentQuery.search(SESSION, "PV-0", 3);
+    List<BaseOBObject> found = PortalDocumentQuery.search(SESSION, "PV-0", 3, 3).documents;
 
     assertEquals(Arrays.asList(invoice, order, shipment), found);
-    assertEquals(4, hqls.size());
+    assertEquals("no page came back full: no count query", 4, hqls.size());
     for (String hql : hqls) {
       assertTrue(hql, hql.contains("lower(e.documentNo) like :search"));
     }
 
-    built.clear();
-    assertTrue(PortalDocumentQuery.search(SESSION, "  ", 3).isEmpty());
+    hqls.clear();
+    PortalDocumentQuery.SearchResult blank = PortalDocumentQuery.search(SESSION, "  ", 3, 3);
+    assertTrue(blank.documents.isEmpty());
+    assertTrue(blank.groups.isEmpty());
+    assertTrue("a blank search queries nothing", hqls.isEmpty());
+  }
+
+  /**
+   * The search's per-kind groups: only kinds with a match, in kind order, each with its newest up
+   * to the group limit and a count that a full page asks the database for, so it is not capped by
+   * either limit. The merged list is the same as without groups.
+   */
+  @Test
+  public void searchGroupsEveryKindWithAMatchAndCountsBeyondTheGroupLimit() {
+    BaseOBObject order8 = document(Order.ENTITY_NAME, Order.PROPERTY_ORDERDATE, 8);
+    BaseOBObject order7 = document(Order.ENTITY_NAME, Order.PROPERTY_ORDERDATE, 7);
+    BaseOBObject order6 = document(Order.ENTITY_NAME, Order.PROPERTY_ORDERDATE, 6);
+    BaseOBObject shipment = document(ShipmentInOut.ENTITY_NAME,
+        ShipmentInOut.PROPERTY_MOVEMENTDATE, 5);
+    BaseOBObject invoice9 = document(Invoice.ENTITY_NAME, Invoice.PROPERTY_INVOICEDATE, 9);
+    BaseOBObject invoice4 = document(Invoice.ENTITY_NAME, Invoice.PROPERTY_INVOICEDATE, 4);
+    Query quotationPage = page();
+    Query orderPage = page(order8, order7, order6);
+    Query orderCount = mock(Query.class);
+    when(orderCount.uniqueResult()).thenReturn(12L);
+    Query shipmentPage = page(shipment);
+    Query invoicePage = page(invoice9, invoice4);
+    // In build order: a full page (the orders) is followed by its count query.
+    List<Query> answers = new ArrayList<>(Arrays.asList(quotationPage, orderPage, orderCount,
+        shipmentPage, invoicePage));
+    List<String> hqls = new ArrayList<>();
+    doAnswer(invocation -> {
+      hqls.add(invocation.getArgument(0));
+      return answers.remove(0);
+    }).when(session).createQuery(anyString(), any(Class.class));
+
+    PortalDocumentQuery.SearchResult result = PortalDocumentQuery.search(SESSION, "PV", 3, 2);
+
+    assertEquals("merged: the newest 3 across kinds", Arrays.asList(invoice9, order8, order7),
+        result.documents);
+    // Columns: kind, count, documents.
+    Object[][] expected = {
+        { PortalDocumentKind.ORDER, 12L, Arrays.asList(order8, order7) },
+        { PortalDocumentKind.SHIPMENT, 1L, Collections.singletonList(shipment) },
+        { PortalDocumentKind.INVOICE, 2L, Arrays.asList(invoice9, invoice4) } };
+    assertEquals("no group for the kind without a match", expected.length, result.groups.size());
+    for (int i = 0; i < expected.length; i++) {
+      PortalDocumentQuery.KindMatches group = result.groups.get(i);
+      assertEquals(expected[i][0], group.kind);
+      assertEquals(group.kind.name(), expected[i][1], group.count);
+      assertEquals(group.kind.name(), expected[i][2], group.documents);
+    }
+
+    assertEquals(5, hqls.size());
+    String countHql = hqls.get(2);
+    assertTrue(countHql, countHql.startsWith("select count(e) from Order"));
+    assertTrue(countHql, countHql.contains("lower(e.documentNo) like :search"));
+    assertTrue(countHql, countHql.contains("e.businessPartner.id = :bpartnerId"));
+    verify(orderCount).setParameter("bpartnerId", BP_ID);
+    verify(orderCount).setParameter("search", "%pv%");
+    for (Query listed : Arrays.asList(quotationPage, orderPage, shipmentPage, invoicePage)) {
+      verify(listed).setMaxResults(3);
+    }
   }
 
   // ── fixtures ────────────────────────────────────────────────────────────────

@@ -90,12 +90,12 @@ public class ClassicMessageRemapTest {
       + "contra el esquema XSD\" dentro del grupo \"Validación\" en la configuración de este "
       + "Modelo para evitar esta validación y forzar la generación del fichero.";
   private static final String CERT_GO_ES = "No se ha encontrado ningún certificado válido. Sube "
-      + "el certificado de la organización en la sección Certificado digital de Configuración "
-      + "Fiscal.";
+      + "el certificado de la organización en la sección Certificado digital de Impuestos "
+      + "→ Configuración Fiscal.";
   private static final String CONFIG_ES = "No existe configuración de TBAI alcanzable. Revise la "
       + "ventana de configuración.";
   private static final String CONFIG_GO_ES = "No hay ninguna configuración de TicketBAI activa "
-      + "para esta organización. Revísala en Configuración Fiscal (pestaña TicketBAI).";
+      + "para esta organización. Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI).";
   /** The SII literal sentence: needs no AD_MESSAGE row, so it works without the database. */
   private static final String SII_TYPE_CLASSIC = "La factura debe contener información en el campo "
       + "Clave tipo factura.";
@@ -140,7 +140,8 @@ public class ClassicMessageRemapTest {
     ClassicMessageRemap.apply(response, "en_US");
 
     assertEquals("Process execution failed: No valid certificate was found. Upload the "
-        + "organization certificate in the Digital certificate section of Fiscal Configuration.",
+        + "organization certificate in the Digital certificate section of Taxes → Fiscal "
+        + "Configuration.",
         response.getBody().getJSONObject("error").getString("message"));
   }
 
@@ -202,7 +203,7 @@ public class ClassicMessageRemapTest {
   @Test
   public void aRemappedTextIsTrimmed() {
     assertEquals("No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración Fiscal (pestaña TicketBAI).",
+        + "Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI).",
         ClassicMessageRemap.remapText(" @TBAI_ConfigNotFound@ ", "es_ES"));
     assertEquals("  Una nota cualquiera de la factura  ",
         ClassicMessageRemap.remapText("  Una nota cualquiera de la factura  ", "es_ES"));
@@ -230,7 +231,8 @@ public class ClassicMessageRemapTest {
     JSONObject content = new JSONObject(
         body.getJSONArray("content").getJSONObject(0).getString("text"));
     assertEquals("El certificado no es válido. Vuelve a subirlo en la sección Certificado digital "
-        + "de Configuración Fiscal. Detalle: el fichero .p12 caducó", content.getString("message"));
+        + "de Impuestos → Configuración Fiscal. Detalle: el fichero .p12 caducó",
+        content.getString("message"));
     assertEquals("error", content.getString("status"));
     assertEquals("Error: ", content.getString("title"));
     assertEquals("validation_error", content.getString("error"));
@@ -240,7 +242,7 @@ public class ClassicMessageRemapTest {
   @Test
   public void aReplacementAddsNoSpaceAroundIt() {
     assertEquals("Error (No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración Fiscal (pestaña TicketBAI).)",
+        + "Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI).)",
         ClassicMessageRemap.remapText("Error (No existe configuración de TBAI alcanzable. Revise "
             + "la ventana de configuración.)", "es_ES"));
   }
@@ -264,10 +266,12 @@ public class ClassicMessageRemapTest {
     com.fasterxml.jackson.databind.JsonNode strict =
         new com.fasterxml.jackson.databind.ObjectMapper().readTree(out);
     assertEquals("No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración Fiscal (pestaña TicketBAI). Detalle: línea 1\\nlínea 2",
+        + "Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI). "
+        + "Detalle: línea 1\\nlínea 2",
         strict.get("message").asText());
     assertEquals("No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración Fiscal (pestaña TicketBAI). Detalle: línea 1\\nlínea 2",
+        + "Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI). "
+        + "Detalle: línea 1\\nlínea 2",
         ClassicMessageRemap.remapText(classic + "  Detalle: línea 1\\nlínea 2", "es_ES"));
   }
 
@@ -393,7 +397,7 @@ public class ClassicMessageRemapTest {
   @Test
   public void theRawTokenIsReplaced() {
     assertEquals("Error: No hay ninguna configuración de TicketBAI activa para esta organización. "
-        + "Revísala en Configuración Fiscal (pestaña TicketBAI).",
+        + "Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI).",
         ClassicMessageRemap.remapText("Error: @TBAI_ConfigNotFound@", "es_ES"));
   }
 
