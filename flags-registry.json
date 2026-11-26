@@ -804,15 +804,15 @@
           },
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/RemittanceFileActionTest.java",
-            "note": "ETP-6247 (New): RemittanceFileAction: 405 for non-POST writes, 404, 403 with the flag off, fileReadiness, invalid grouping 422; confirm refuses processed, no lines and not ready (error.problems); happy path sets ETAR automatic process, saves, flushes, ensures the file setup, runs the process with the grouping and answers {status, attachmentId, fileName, downloadUrl}; REM error or success-but-unprocessed -> ProcessFailed + rollback; a generator Refusal -> 422 key/args + rollback; unexpected -> 500 + rollbackUnlessBatchOwned; generateFile (NotProcessed, happy path); is_regeneration false/true telemetry. ETP-6247 returns: generateFile of a remittance with returns (RemittanceReturnState.hasReturns, a static seam mocked in setUp, false by default) -> 422 ETGO_RemittanceFileHasReturns before the readiness, the setup, the generator or the storage run."
+            "note": "ETP-6247 (New): RemittanceFileAction: 405 for non-POST writes, 404, 403 with the flag off, fileReadiness, invalid grouping 422; confirm refuses processed, no lines and not ready (error.problems); happy path never turns ETAR automatic process on (an automatic one is reset to N), ensures the file setup, runs the process with the grouping (GGP, GGPD, default P), generates the file to check it and answers {status, fileName} with nothing attached (no attachmentId, downloadUrl or content; NeoAttachmentsHelper untouched, no telemetry); REM error or success-but-unprocessed -> ProcessFailed + rollback; a generator Refusal -> 422 key/args + rollback; unexpected -> 500 + rollback. downloadFile (read-only, not mutating): unprocessed -> 422 NotProcessed; not ready -> 422 NotReady with error.problems and nothing generated; generated on the fly and answered {fileName, contentType, content, returnedCount} without storing or reprocessing, always rolled back, one fileDownloaded telemetry event; a remittance with returns is downloaded whole with its returnedCount (RemittanceReturnState.returnedCount, a static seam); a generator Refusal -> 422 + rollback. fileName is Classic's <documentNo>_<name> (CreateFile.replaceStrangeCharacters) with the type's FILE_EXTENSION lower-cased, xml without one. Contracts: fileReadiness, confirm, downloadFile; generateFile is no longer served."
           },
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/RemittanceFileGeneratorTest.java",
-            "note": "ETP-6247 (New): RemittanceFileGenerator with mocked generators: NoGenerator for null/blank/unknown/foreign class or no type; getMyError + line detail, title fallback, null output, a RuntimeException caught; ISO-8859-1 recovery; a SEPA generator whose version has no XSD next to it nor bundled is refused with ETGO_RemittanceFileSchemaMissing [version] ('-' without a version), never stored unvalidated; a version GO bundles is validated against GO's copy (ETGO_RemittanceFileInvalid naming the version and GrpHdr); file name sanitisation and _2/_3 suffixes; store marks the new attachment main keeping the previous ones (markAsMain(.., true)); IOException when the record or its tab is not found. The validation itself moved to RemittanceSepaSchemaTest."
+            "note": "ETP-6247 (New): RemittanceFileGenerator with mocked generators: NoGenerator for null/blank/unknown/foreign class or no type; getMyError + line detail, title fallback, null output, a RuntimeException caught; ISO-8859-1 recovery; a SEPA generator whose version has no XSD next to it nor bundled is refused with ETGO_RemittanceFileSchemaMissing [version] ('-' without a version), never stored unvalidated; a version GO bundles is validated against GO's copy (ETGO_RemittanceFileInvalid naming the version and GrpHdr); the output is never stored (the file name and the attachment storage left the generator: the name is RemittanceFileActionTest's). The validation itself moved to RemittanceSepaSchemaTest."
           },
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/RemittanceFileTelemetryTest.java",
-            "note": "ETP-6247 (New): RemittanceFileTelemetry emits the remittance file event with direction AR/AP, invoice_count, is_regeneration and role_groups, and never throws."
+            "note": "ETP-6247 (New): RemittanceFileTelemetry emits one remittance file event per download with direction AR/AP, invoice_count, channel, flag_enabled and role_groups (left off when empty; no is_regeneration, there is nothing to regenerate), and fileDownloaded never throws."
           },
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/telemetry/NeoRoleGroupsTest.java",
@@ -832,7 +832,7 @@
           },
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/RemittanceReturnIntegrationTest.java",
-            "note": "ETP-6247 returns (New, WeldBaseTest, rolled back; runs in goIsolatedDalTest): a GOClient collection remittance (sales invoice FV1000045, plus FV1000046 for GGPD) confirmed by REM with the automated hook, then returned through RemittanceReturnAction with the real module code. A settled line is SETTLED and returnable; returnLines (explicit date) -> payment RPVOID, no Cancel row left, a Return row, a negative payment of the amount, the due pending again (outstanding 40.91, paid 0, pending details 40.91, invoice not paid: the reactivated settlement transaction does not corrupt the dues), remittance status CP, returnState RETURNED with the date, generateFile -> ETGO_RemittanceFileHasReturns, a second return -> ALREADY_RETURNED; a reconciled settlement transaction -> RECONCILED, 422 NotAllowed and nothing changed; GGPD merges two lines into one payment (paymentLineIds both), one line alone -> SHARED_PAYMENT and nothing changed, both together are returned and both dues pending. No request context is set up by the test: the bank transaction removal needs the request's VariablesSecureApp and the action pushes it itself (NeoProcessService.pushRequestContextVars), so a return without it proves that push."
+            "note": "ETP-6247 returns (New, WeldBaseTest, rolled back; runs in goIsolatedDalTest): a GOClient collection remittance (sales invoice FV1000045, plus FV1000046 for GGPD) confirmed by REM with the automated hook, then returned through RemittanceReturnAction with the real module code. A settled line is SETTLED and returnable; returnLines (explicit date) -> payment RPVOID, no Cancel row left, a Return row, a negative payment of the amount, the due pending again (outstanding 40.91, paid 0, pending details 40.91, invoice not paid: the reactivated settlement transaction does not corrupt the dues), remittance status CP, returnState RETURNED with the date, a second return -> ALREADY_RETURNED, then downloadFile still generates the file whole (returnedCount 1, the returned receipt still listed, as Classic's Create File); confirm answers PR and a fileName with no attachment on the remittance; a reconciled settlement transaction -> RECONCILED, 422 NotAllowed and nothing changed; GGPD merges two lines into one payment (paymentLineIds both), one line alone -> SHARED_PAYMENT and nothing changed, both together are returned and both dues pending. No request context is set up by the test: the bank transaction removal needs the request's VariablesSecureApp and the action pushes it itself (NeoProcessService.pushRequestContextVars), so a return without it proves that push."
           },
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/RemittanceSepaSchemaTest.java",
@@ -881,7 +881,34 @@
         "ETGO_FLAG_SII_IMPORT_DUA",
         "etendo.go.flags.sii-import-dua",
         "ETGO_SiiImportDuaDisabled"
-      ]
+      ],
+      "paths": [
+        "src/com/etendoerp/go/schemaforge/SiiImportDuaFlag.java",
+        "src/com/etendoerp/go/schemaforge/PurchaseInvoiceSiiDeferredVat.java",
+        "src/com/etendoerp/go/schemaforge/PurchaseInvoiceTaxExtension.java"
+      ],
+      "testSpecs": {
+        "unit": [
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/SiiImportDuaFlagTest.java",
+            "expected": true,
+            "note": "Copy SepaRemittancesFlagTest: isEnabled(email, clientId) publishes the targeting key, Email and lowercase email plus clientId into a capturing provider; targeted account true, other false; blank or null email -> clientId only, default false; isEnabled() passes GoAccountResolver.currentAccountEmail() and the OBContext tenant; no OBContext -> null client id, no throw; unset, non-boolean and failing provider read false; local property arm true/false; featureDisabled() is 403 feature_disabled with messageKeys [ETGO_SiiImportDuaDisabled]."
+          },
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/PurchaseInvoiceTaxExtensionTest.java",
+            "note": "Existing cases pin the flag on. Off-state cases expected (tester-go): POST/PUT/PATCH/DELETE -> 403 feature_disabled before any read; a GET (or non-CRUD) is not gated."
+          },
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/PurchaseInvoiceSiiDeferredVatTest.java",
+            "note": "Existing cases pin the flag on. Off-state case expected (tester-go): siiDeferredVat -> 403 feature_disabled; another action is not judged (null)."
+          },
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/webhooks/SFWindowAccessMapTest.java",
+            "note": "Expected extension (tester-go): capabilities.siiImportDua on and off for a restricted role and the admin branch, an explicit false when off."
+          }
+        ],
+        "e2e": []
+      }
     }
   ]
 }
