@@ -566,6 +566,125 @@ public class NeoReferenceSelectorValidationTest {
     assertEquals("N", contextFor(ADDRESS).get("IsSOTrx"));
   }
 
+  /**
+   * ETP-6452 repro: a create that echoes what {@code /defaults} proposes for the field passes even
+   * when the selector does not list it (a sales representative defaulted from the session user,
+   * who has no business partner). The defaults are computed in the record's context: the other
+   * fields the request sets, never the judged one.
+   */
+  @Test
+  public void testACreateEchoingTheServerDefaultIsAccepted() throws Exception {
+    offers(Boolean.TRUE);
+    selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), eq(ADDRESS),
+        anyString(), any())).thenReturn(java.util.Optional.of(Boolean.FALSE));
+    com.etendoerp.go.schemaforge.data.SFEntity sfEntity = sfEntity();
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults(ADDRESS_ID)) {
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(sfEntity, tab, null, null,
+          new JSONObject().put(PARTNER, PARTNER_ID).put(ADDRESS, ADDRESS_ID)));
+
+      ArgumentCaptor<NeoContext> ctx = ArgumentCaptor.forClass(NeoContext.class);
+      defaults.verify(() -> NeoDefaultsService.resolveDefaults(ctx.capture(), any()));
+      assertEquals(PARTNER_ID, ctx.getValue().getQueryParams().get(PARTNER));
+      assertFalse(ctx.getValue().getQueryParams().containsKey(ADDRESS));
+      assertEquals(sfEntity, ctx.getValue().getSfEntity());
+    }
+  }
+
+  /** A non-offered value that is not the server default is still refused, verified. */
+  @Test
+  public void testANonOfferedValueOtherThanTheDefaultIsRefused() throws Exception {
+    offers(Boolean.FALSE);
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults("OTHER-ADDR")) {
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(sfEntity(), tab, null, null,
+              new JSONObject().put(ADDRESS, ADDRESS_ID));
+
+      assertEquals(ADDRESS, refused.fieldName());
+      assertEquals(ADDRESS_ID, refused.value());
+      assertTrue(refused.isVerified());
+    }
+  }
+
+  /** Defaults that cannot be computed accept nothing: the refusal stands. */
+  @Test
+  public void testDefaultsThatFailKeepTheRefusal() throws Exception {
+    offers(Boolean.FALSE);
+    try (MockedStatic<NeoDefaultsService> defaults = mockStatic(NeoDefaultsService.class)) {
+      defaults.when(() -> NeoDefaultsService.resolveDefaults(any(), any()))
+          .thenReturn(NeoResponse.error(500, "boom"));
+
+      assertEquals(ADDRESS, NeoReferenceSelectorValidation.findRefusedReference(sfEntity(), tab,
+          null, null, new JSONObject().put(ADDRESS, ADDRESS_ID)).fieldName());
+    }
+  }
+
+  /** An update is unchanged: the default is never consulted, the refusal stands. */
+  @Test
+  public void testAnUpdateDoesNotConsultTheDefaults() throws Exception {
+    storedOrder();
+    offers(Boolean.FALSE);
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults("ADDR-NEW")) {
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(sfEntity(), tab, ORDER_ID, null,
+              new JSONObject().put(ADDRESS, "ADDR-NEW"));
+
+      assertEquals(ADDRESS, refused.fieldName());
+      defaults.verify(() -> NeoDefaultsService.resolveDefaults(any(), any()), never());
+    }
+  }
+
+  /** The happy path pays nothing: an offered value never computes the defaults. */
+  @Test
+  public void testAnOfferedValueDoesNotComputeTheDefaults() throws Exception {
+    offers(Boolean.TRUE);
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults(ADDRESS_ID)) {
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(sfEntity(), tab, null, null,
+          new JSONObject().put(ADDRESS, ADDRESS_ID)));
+
+      defaults.verify(() -> NeoDefaultsService.resolveDefaults(any(), any()), never());
+    }
+  }
+
+  /**
+   * ETP-6452: the window direction does not shadow a direction flag the record carries under
+   * another casing. A payment publishes {@code Isreceipt}; adding {@code IsReceipt} from the window
+   * would be what a rule reading {@code @IsReceipt@} gets, not the record's value.
+   */
+  @Test
+  public void testTheRecordDirectionIsNotShadowedByTheWindowInAnotherCasing() throws Exception {
+    org.openbravo.model.ad.ui.Window window = mock(org.openbravo.model.ad.ui.Window.class);
+    when(window.isSalesTransaction()).thenReturn(Boolean.TRUE);
+    when(tab.getWindow()).thenReturn(window);
+    Property receipt = mock(Property.class);
+    when(receipt.getName()).thenReturn("receipt");
+    when(receipt.getColumnName()).thenReturn("Isreceipt");
+    when(receipt.isBoolean()).thenReturn(true);
+    when(receipt.isPrimitive()).thenReturn(true);
+    when(order.getProperty("receipt", false)).thenReturn(receipt);
+    offers(Boolean.TRUE);
+
+    check(new JSONObject().put("receipt", false).put(ADDRESS, ADDRESS_ID));
+
+    Map<String, String> context = contextFor(ADDRESS);
+    assertEquals("N", context.get("Isreceipt"));
+    assertNull(context.get("IsReceipt"));
+  }
+
+  private static com.etendoerp.go.schemaforge.data.SFEntity sfEntity() {
+    return mock(com.etendoerp.go.schemaforge.data.SFEntity.class);
+  }
+
+  /** {@code /defaults} proposes {@code addressId} for the address. */
+  private static MockedStatic<NeoDefaultsService> serverDefaults(String addressId)
+      throws Exception {
+    MockedStatic<NeoDefaultsService> defaults = mockStatic(NeoDefaultsService.class);
+    JSONObject body = new JSONObject().put("defaults", new JSONObject().put(ADDRESS, addressId)
+        .put(ADDRESS + "$_identifier", "Main street"));
+    defaults.when(() -> NeoDefaultsService.resolveDefaults(any(), any()))
+        .thenReturn(NeoResponse.ok(body));
+    return defaults;
+  }
+
   private Map<String, String> contextFor(String field) {
     @SuppressWarnings("unchecked")
     ArgumentCaptor<Map<String, String>> context = ArgumentCaptor.forClass(Map.class);

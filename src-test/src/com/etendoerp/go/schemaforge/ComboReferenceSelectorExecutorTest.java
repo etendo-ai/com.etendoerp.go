@@ -49,6 +49,8 @@ import com.etendoerp.go.schemaforge.data.SFEntity;
 
 /**
  * Unit tests for {@link ComboReferenceSelectorExecutor}.
+ *
+ * @covers com.etendoerp.go.schemaforge.ComboReferenceSelectorExecutor
  */
 class ComboReferenceSelectorExecutorTest {
 
@@ -417,6 +419,52 @@ class ComboReferenceSelectorExecutorTest {
       // hasMore = false (2 <= 5), totalCount = offset + visibleRows = 10 + 2 = 12
       assertEquals(12, body.getInt("totalCount"));
       assertFalse(body.getBoolean("hasMore"));
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // contextFields — how ComboTableData reads the record context (ETP-6452)
+  // ---------------------------------------------------------------------------
+
+  @Nested
+  @DisplayName("contextFields")
+  class ContextFields {
+
+    /**
+     * ETP-6452 repro: ComboTableData asks for a rule variable exactly as the rule spells it
+     * ({@code @FIN_Financial_Account_ID@}), while the record publishes it under its AD column name
+     * ({@code Fin_Financial_Account_ID}). Classic matches them regardless of case (it reads
+     * {@code inp}+camelCase), so the selector must too, or the rule resolves empty and offers
+     * nothing.
+     */
+    @Test
+    @DisplayName("finds a value published under a different casing of the variable")
+    void findsADifferentlyCasedName() {
+      java.util.Map<String, String> context = new java.util.HashMap<>();
+      context.put("Fin_Financial_Account_ID", "ACC-1");
+      context.put("Fin_Paymentmethod_ID", "PM-1");
+      context.put("Isreceipt", "N");
+
+      FieldProvider fields = ComboReferenceSelectorExecutor.contextFields(context);
+
+      assertEquals("ACC-1", fields.getField("FIN_Financial_Account_ID"));
+      assertEquals("PM-1", fields.getField("FIN_PaymentMethod_ID"));
+      assertEquals("N", fields.getField("IsReceipt"));
+    }
+
+    @Test
+    @DisplayName("an exact name wins over another casing, and an unknown name is null")
+    void exactNameWins() {
+      java.util.Map<String, String> context = new java.util.HashMap<>();
+      context.put("IsSOTrx", "Y");
+      context.put("ISSOTRX", "N");
+
+      FieldProvider fields = ComboReferenceSelectorExecutor.contextFields(context);
+
+      assertEquals("Y", fields.getField("IsSOTrx"));
+      assertEquals("N", fields.getField("ISSOTRX"));
+      assertNull(fields.getField("C_BPartner_ID"));
+      assertNull(fields.getField(null));
     }
   }
 }

@@ -17,7 +17,9 @@
 package com.etendoerp.go.schemaforge;
 
 import java.util.Arrays;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.stream.Collectors;
 
@@ -36,7 +38,6 @@ import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.data.FieldProvider;
 import org.openbravo.erpCommon.utility.ComboTableData;
-import org.openbravo.erpCommon.utility.FieldProviderFactory;
 import org.openbravo.model.ad.datamodel.Column;
 import org.openbravo.model.ad.domain.Validation;
 import org.openbravo.model.ad.ui.Field;
@@ -103,8 +104,7 @@ final class ComboReferenceSelectorExecutor {
         ? field.getTab().getWindow().getId()
         : null;
     Map<String, String> resolvedParams = comboTableData.fillSQLParametersIntoMap(
-        new DalConnectionProvider(false), vars, new FieldProviderFactory(selectorParams), windowId,
-        null);
+        new DalConnectionProvider(false), vars, contextFields(selectorParams), windowId, null);
     log.info("[ComboSelector] resolvedParams={}", resolvedParams);
 
     if (restrictToId != null) {
@@ -124,6 +124,46 @@ final class ComboReferenceSelectorExecutor {
     rawRows = ComboRowSelectorPolicy.filter(column.getDBColumnName(), rawRows);
 
     return buildResponse(rawRows, limit, offset);
+  }
+
+  /**
+   * The record context as ComboTableData reads it: a rule variable is looked up by its exact name
+   * first, then regardless of case (ETP-6452).
+   *
+   * <p>ComboTableData asks for each variable exactly as the rule spells it
+   * ({@code @FIN_Financial_Account_ID@}), while the context publishes a field under its AD column
+   * name ({@code Fin_Financial_Account_ID}). Classic matches them regardless of case, because the
+   * form sends {@code inp}+camelCase ({@code Sqlc.TransformaNombreColumna}) and the HQL route
+   * ({@code SelectorValidationResolver}) already folds case; without the same here the rule
+   * resolved empty and the selector offered nothing. Purely structural: no name is special.
+   */
+  static FieldProvider contextFields(Map<String, String> context) {
+    return new CaseInsensitiveContext(context);
+  }
+
+  /** Exact name first, then any casing of it; {@code null} when the context does not carry it. */
+  private static final class CaseInsensitiveContext implements FieldProvider {
+    private static final long serialVersionUID = 1L;
+    private final HashMap<String, String> exact;
+    private final HashMap<String, String> folded = new HashMap<>();
+
+    CaseInsensitiveContext(Map<String, String> context) {
+      exact = context == null ? new HashMap<>() : new HashMap<>(context);
+      exact.forEach((name, value) -> {
+        if (name != null) {
+          folded.putIfAbsent(name.toUpperCase(Locale.ROOT), value);
+        }
+      });
+    }
+
+    @Override
+    public String getField(String fieldName) {
+      if (fieldName == null) {
+        return null;
+      }
+      String value = exact.get(fieldName);
+      return value != null ? value : folded.get(fieldName.toUpperCase(Locale.ROOT));
+    }
   }
 
   private static boolean hasSqlValidationRule(Column column) {
