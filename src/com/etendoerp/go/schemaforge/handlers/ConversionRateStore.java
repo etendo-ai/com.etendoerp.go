@@ -24,6 +24,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashSet;
@@ -377,6 +378,14 @@ class ConversionRateStore {
   /** The server's current wall-clock time; a seam for unit tests. */
   LocalDateTime now() {
     return LocalDateTime.now();
+  }
+
+  /**
+   * The zone of the server's wall clock — the JVM default, the zone {@link #now()} and every
+   * stored range datetime are read in; a seam for unit tests.
+   */
+  ZoneId zone() {
+    return ZoneId.systemDefault();
   }
 
   private String callFunction(String rateId) {

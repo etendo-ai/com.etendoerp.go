@@ -982,7 +982,9 @@ class ProductTransactionsHandlerTest {
       org.mockito.ArgumentCaptor<String> sql = org.mockito.ArgumentCaptor.forClass(String.class);
       Mockito.verify(session, Mockito.atLeastOnce()).createNativeQuery(sql.capture());
       String stockSql = sql.getAllValues().stream().filter(q -> q.contains("stock_after")).findFirst().orElseThrow();
-      assertTrue(stockSql.contains("t.movementdate <= (SELECT MAX(q.movementdate)"));
+      assertTrue(stockSql.contains("t.trxprocessdate <= (SELECT MAX(q.trxprocessdate)"));
+      // The running sum no longer reads the movement date: the date of the feature is TrxProcessDate.
+      assertFalse(stockSql.contains("movementdate"));
       assertTrue(stockSql.contains("q.m_transaction_id IN (:ids)"));
       Mockito.verify(stock).setParameterList("ids", Collections.singletonList("TX-001"));
       Mockito.verify(stock).setParameterList("orgs", Arrays.asList("0", "ORG-1"));
@@ -1186,7 +1188,9 @@ class ProductTransactionsHandlerTest {
     String stockSql = sql.getAllValues().stream().filter(q -> q.contains("stock_after")).findFirst().orElseThrow();
     assertTrue(stockSql.contains("s.trxprocessdate AS process_time"));
     assertTrue(stockSql.contains("SELECT t.m_transaction_id, t.trxprocessdate,"));
-    assertTrue(stockSql.contains("ORDER BY t.movementdate, t.trxprocessdate, t.m_transaction_id"));
+    // Stock after runs in the order of the date the tab shows and sorts by: TrxProcessDate, then id.
+    assertTrue(stockSql.contains("ORDER BY t.trxprocessdate, t.m_transaction_id"));
+    assertFalse(stockSql.contains("movementdate"));
   }
 
   /** Both windows run in one statement: the per-warehouse partition is in the SQL and ids/orgs stay bound. */
