@@ -106,10 +106,6 @@
       "id": "demo-data-transfer",
       "contribution": true,
       "symbols": [
-        "FLAG_DEMO_DATA_TRANSFER",
-        "ETGO_FLAG_DEMO_DATA_TRANSFER",
-        "etendo.go.flags.demo-data-transfer",
-        "DemoDataTransferFlag",
         "DemoDataTransferService",
         "demoDataTransferService",
         "recordDemoDataTransferSelection",
@@ -127,12 +123,7 @@
             "path": "src-test/src/com/etendoerp/go/payment/DemoDataTransferServiceTest.java"
           },
           {
-            "path": "src-test/src/com/etendoerp/go/payment/DemoDataTransferFlagTest.java",
-            "note": "Present in Go; covers default-off and configured-on flag evaluation."
-          },
-          {
-            "path": "src-test/src/com/etendoerp/go/rest/EtendoGoJwtServletDemoDataTransferFlagTest.java",
-            "note": "Present in Go; 12 passing tests cover route gating, selection recording and projection, and flag-dependent onboarding paths."
+            "path": "src-test/src/com/etendoerp/go/rest/EtendoGoJwtServletDemoDataTransferTest.java"
           }
         ],
         "e2e": []
