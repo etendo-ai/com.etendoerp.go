@@ -173,15 +173,7 @@ public class NeoCalloutService {
 
           SimpleCallout calloutInstance = (SimpleCallout) calloutObject;
 
-          // Initialize with a servlet config (required by DelegateConnectionProvider)
-          try {
-            CalloutServletConfig config = new CalloutServletConfig(
-                calloutInfo.className, RequestContext.getServletContext());
-            calloutInstance.init(config);
-          } catch (Exception e) {
-            log.debug("Could not initialize callout servlet config, proceeding without it: {}",
-                e.getMessage());
-          }
+          initWithServletConfig(calloutInstance, calloutInfo.className);
 
           long perfInitEnd = System.nanoTime();
           JSONObject calloutResult = calloutInstance.executeSimpleCallout(requestContext);
@@ -220,6 +212,21 @@ public class NeoCalloutService {
     } catch (Exception e) {
       log.error("Error executing callout: {}", e.getMessage(), e);
       return NeoResponse.error(500, "Callout execution failed: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Initializes the callout with a servlet config (required by DelegateConnectionProvider); a
+   * callout that cannot be initialized runs without it.
+   */
+  private static void initWithServletConfig(SimpleCallout calloutInstance, String className) {
+    try {
+      CalloutServletConfig config = new CalloutServletConfig(className,
+          RequestContext.getServletContext());
+      calloutInstance.init(config);
+    } catch (Exception e) {
+      log.debug("Could not initialize callout servlet config, proceeding without it: {}",
+          e.getMessage());
     }
   }
 

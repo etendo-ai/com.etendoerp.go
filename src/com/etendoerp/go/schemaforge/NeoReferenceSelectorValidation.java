@@ -353,15 +353,15 @@ public final class NeoReferenceSelectorValidation {
         return false;
       }
     }
-  }
 
-  /** A request value as the {@code /defaults} record context carries it, or {@code null}. */
-  private static String recordContextValue(Object value) {
-    Object raw = value instanceof JSONObject ? ((JSONObject) value).opt(ID) : value;
-    if (raw instanceof Boolean) {
-      return Boolean.TRUE.equals(raw) ? YES : NO;
+    /** A request value as the {@code /defaults} record context carries it, or {@code null}. */
+    private static String recordContextValue(Object value) {
+      Object raw = value instanceof JSONObject ? ((JSONObject) value).opt(ID) : value;
+      if (raw instanceof Boolean) {
+        return Boolean.TRUE.equals(raw) ? YES : NO;
+      }
+      return raw instanceof String || raw instanceof Number ? String.valueOf(raw) : null;
     }
-    return raw instanceof String || raw instanceof Number ? String.valueOf(raw) : null;
   }
 
   /**
