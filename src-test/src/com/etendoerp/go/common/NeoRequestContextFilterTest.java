@@ -337,26 +337,38 @@ class NeoRequestContextFilterTest {
   }
 
   @Test
-  @DisplayName("wrap() on the caller's own thread keeps the caller's context")
+  @DisplayName("wrap() on the caller's own thread puts the thread's own context back")
   void wrappedTaskOnCallerThreadRestoresContext() {
-    NeoRequestLogContext.bindIdentity("100", "C1");
+    ThreadContext.put(NeoRequestLogContext.AD_USER_ID, "100");
     Runnable wrapped = NeoRequestLogContext.wrap(() -> { });
+    ThreadContext.put(NeoRequestLogContext.AD_USER_ID, "200");
 
     wrapped.run();
 
-    assertEquals("100", ThreadContext.get(NeoRequestLogContext.AD_USER_ID));
-    assertEquals("C1", ThreadContext.get(NeoRequestLogContext.AD_CLIENT_ID));
+    assertEquals("200", ThreadContext.get(NeoRequestLogContext.AD_USER_ID));
   }
 
   @Test
-  @DisplayName("wrap() clears the context even when the task throws")
-  void wrappedTaskThatThrowsStillClears() {
+  @DisplayName("wrap() clears a worker thread's context even when the task throws")
+  void wrappedTaskThatThrowsStillClears() throws Exception {
     ThreadContext.put(NeoRequestLogContext.REQUEST_ID, "abcdefgh");
     Runnable wrapped = NeoRequestLogContext.wrap(() -> {
       throw new IllegalStateException("x");
     });
-    assertThrows(IllegalStateException.class, wrapped::run);
-    assertNull(ThreadContext.get(NeoRequestLogContext.REQUEST_ID));
+    ExecutorService worker = Executors.newSingleThreadExecutor();
+    try {
+      AtomicReference<String> left = new AtomicReference<>("unset");
+      worker.submit(() -> {
+        try {
+          wrapped.run();
+        } catch (IllegalStateException expected) {
+          left.set(ThreadContext.get(NeoRequestLogContext.REQUEST_ID));
+        }
+      }).get(5, TimeUnit.SECONDS);
+      assertNull(left.get());
+    } finally {
+      worker.shutdownNow();
+    }
   }
 
   @Test
