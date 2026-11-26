@@ -90,8 +90,11 @@ public final class OcrSanitizer {
     out.put(KEY_CURRENCY, isoCurrency(out.opt(KEY_CURRENCY)));
     Object raw = out.opt(KEY_CURRENCY_RAW);
     String printed = raw instanceof String ? text((String) raw) : "";
-    out.put(KEY_CURRENCY_RAW, printed.isEmpty() ? JSONObject.NULL
-        : printed.length() > MAX_CURRENCY_RAW ? printed.substring(0, MAX_CURRENCY_RAW) : printed);
+    out.put(KEY_CURRENCY_RAW, printed.isEmpty() ? JSONObject.NULL : truncated(printed));
+  }
+
+  private static String truncated(String printed) {
+    return printed.length() > MAX_CURRENCY_RAW ? printed.substring(0, MAX_CURRENCY_RAW) : printed;
   }
 
   private static Object isoCurrency(Object value) {

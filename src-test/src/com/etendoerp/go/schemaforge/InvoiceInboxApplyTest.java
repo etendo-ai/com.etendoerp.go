@@ -2767,15 +2767,15 @@ class InvoiceInboxApplyTest {
     when(client.getId()).thenReturn("CL1");
     when(row.getOrganization()).thenReturn(org);
     when(row.getClient()).thenReturn(client);
-    Currency record = null;
+    Currency currencyRecord = null;
     if (exists) {
-      record = mock(Currency.class);
-      when(record.isActive()).thenReturn(active);
+      currencyRecord = mock(Currency.class);
+      when(currencyRecord.isActive()).thenReturn(active);
       Client owner = mock(Client.class);
       when(owner.getId()).thenReturn("0");
-      when(record.getClient()).thenReturn(owner);
+      when(currencyRecord.getClient()).thenReturn(owner);
     }
-    when(dal.get(Currency.class, id)).thenReturn(record);
+    when(dal.get(Currency.class, id)).thenReturn(currencyRecord);
     java.util.Map<String, String> offered = new java.util.LinkedHashMap<>();
     selectable.forEach(key -> offered.put(key, key));
     try (MockedStatic<OBCurrencyUtils> utils = mockStatic(OBCurrencyUtils.class);

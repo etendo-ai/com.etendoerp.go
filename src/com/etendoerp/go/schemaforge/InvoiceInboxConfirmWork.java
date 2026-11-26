@@ -81,6 +81,8 @@ final class InvoiceInboxConfirmWork {
   private static final String SPEC_CONTACTS = "contacts";
   private static final String SPEC_PRODUCT = "product";
   private static final String SPEC_INVOICE = "purchase-invoice";
+  private static final String KEY_FAILED_AT = "failedAt";
+  private static final String KEY_DETAIL = "detail";
   private static final String OP_VENDOR = "bp";
   private static final String OP_ADDRESS = "loc";
   private static final String OP_INVOICE = "inv";
@@ -413,7 +415,7 @@ final class InvoiceInboxConfirmWork {
   /** Runs the operations in the caller's transaction; the ids they created by operation id. */
   private static Map<String, String> runOps(JSONArray ops) throws JSONException {
     JSONObject result = BatchService.forBatchOnly().executeInCallerTransaction(ops);
-    if (result.has("failedAt")) {
+    if (result.has(KEY_FAILED_AT)) {
       Map<String, Object> step = stepParams(result, ops);
       String stepText = InvoiceInboxFailureDetail.stepText(step);
       log.warn("Inbox confirm: the creation failed at {}: {}", stepText, result);
@@ -437,7 +439,7 @@ final class InvoiceInboxConfirmWork {
    * creation) plus {@code n} for a line (1-based) and {@code name} for a new product.
    */
   static Map<String, Object> stepParams(JSONObject failure, JSONArray ops) {
-    JSONObject failedAt = failure.optJSONObject("failedAt");
+    JSONObject failedAt = failure.optJSONObject(KEY_FAILED_AT);
     String id = failedAt == null ? "" : failedAt.optString("id", "");
     Map<String, Object> step = new java.util.LinkedHashMap<>();
     if (OP_VENDOR.equals(id)) {
@@ -509,7 +511,7 @@ final class InvoiceInboxConfirmWork {
   /** The names of the missing fields the failed operation reported; empty when none. */
   private static List<String> missingOf(JSONObject failure) {
     JSONObject error = failure.optJSONObject(K_ERROR);
-    JSONObject detail = error == null ? null : error.optJSONObject("detail");
+    JSONObject detail = error == null ? null : error.optJSONObject(KEY_DETAIL);
     JSONObject nested = detail == null ? null : detail.optJSONObject(K_ERROR);
     JSONArray fields = nested == null ? null : nested.optJSONArray("fields");
     if (fields == null || fields.length() == 0) {
@@ -535,7 +537,7 @@ final class InvoiceInboxConfirmWork {
   /** The message the refused operation itself gave; empty when it gave none. */
   private static String operationReason(JSONObject failure) {
     JSONObject error = failure.optJSONObject(K_ERROR);
-    JSONObject detail = error == null ? null : error.optJSONObject("detail");
+    JSONObject detail = error == null ? null : error.optJSONObject(KEY_DETAIL);
     JSONObject nested = detail == null ? null : detail.optJSONObject(K_ERROR);
     String reason = nested != null ? nested.optString(K_MESSAGE, "") : "";
     if (reason.isEmpty() && detail != null) {
@@ -564,14 +566,14 @@ final class InvoiceInboxConfirmWork {
   }
 
   private static String failedId(JSONObject failure) {
-    JSONObject failedAt = failure.optJSONObject("failedAt");
+    JSONObject failedAt = failure.optJSONObject(KEY_FAILED_AT);
     return failedAt == null ? "" : failedAt.optString("id", "");
   }
 
   /** The refused body for the support log: its keys and size only, never its values. */
   private static String bodyForLog(JSONObject failure) {
     JSONObject error = failure.optJSONObject(K_ERROR);
-    Object detail = error == null ? null : error.opt("detail");
+    Object detail = error == null ? null : error.opt(KEY_DETAIL);
     if (!(detail instanceof JSONObject)) {
       return detail == null ? "none" : "non-object, length " + String.valueOf(detail).length();
     }

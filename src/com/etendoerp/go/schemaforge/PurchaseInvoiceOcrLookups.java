@@ -56,7 +56,6 @@ import com.etendoerp.go.schemaforge.data.SFSpec;
 import com.etendoerp.go.schemaforge.ocr.OcrLookups;
 import com.etendoerp.go.schemaforge.ocr.OcrUnitMatcher;
 import com.etendoerp.go.schemaforge.ocr.TaxIdNormalizer;
-import com.etendoerp.go.schemaforge.selector.policy.ProductPriceSelectorPolicy;
 import com.etendoerp.go.schemaforge.util.NeoLanguage;
 import com.etendoerp.go.schemaforge.util.NeoTrl;
 
@@ -81,7 +80,7 @@ import com.etendoerp.go.schemaforge.util.NeoTrl;
  * a lookup that fails is logged (class name only, never document text) and answers "nothing found" or
  * "unknown".</p>
  */
-public final class PurchaseInvoiceOcrLookups implements OcrLookups {
+public final class PurchaseInvoiceOcrLookups extends PurchaseInvoicePricingLookups {
 
   /** The name the OCR configuration uses to bind a document type to these lookups. */
   public static final String RESOLVER = "purchase-invoice";
@@ -330,70 +329,6 @@ public final class PurchaseInvoiceOcrLookups implements OcrLookups {
       return Optional.ofNullable(currency).map(PurchaseInvoiceOcrLookups::describe);
     } catch (RuntimeException e) {
       log.warn("OCR document currency lookup failed: {}", e.getClass().getSimpleName());
-      return Optional.empty();
-    }
-  }
-
-  @Override
-  public Optional<PurchasePriceList> documentPriceList(String vendorId) {
-    try {
-      InvoiceInboxPriceList.Resolved list = InvoiceInboxPriceList.forVendor(vendorId);
-      return list == null ? Optional.empty()
-          : Optional.of(new PurchasePriceList(list.id(), list.includesTax()));
-    } catch (RuntimeException e) {
-      log.warn("OCR document price list lookup failed: {}", e.getClass().getSimpleName());
-      return Optional.empty();
-    }
-  }
-
-  /** Same version rule as the product selector: see {@link ProductPriceSelectorPolicy}. */
-  @Override
-  public Optional<BigDecimal> productStandardPrice(String priceListId, String productId) {
-    try {
-      return ProductPriceSelectorPolicy.standardPrice(priceListId, productId);
-    } catch (RuntimeException e) {
-      log.warn("OCR product price lookup failed: {}", e.getClass().getSimpleName());
-      return Optional.empty();
-    }
-  }
-
-  @Override
-  public Optional<String> organizationCurrencyId(String organizationId) {
-    try {
-      return Optional.ofNullable(StringUtils.isBlank(organizationId) ? null
-          : OBCurrencyUtils.getOrgCurrency(organizationId));
-    } catch (RuntimeException e) {
-      log.warn("OCR organization currency lookup failed: {}", e.getClass().getSimpleName());
-      return Optional.empty();
-    }
-  }
-
-  @Override
-  public Optional<Integer> priceScale(String currencyId) {
-    try {
-      Currency currency = StringUtils.isBlank(currencyId) ? null
-          : OBDal.getInstance().get(Currency.class, currencyId);
-      Long precision = currency == null ? null : currency.getPricePrecision();
-      return precision == null || precision < 0 ? Optional.empty()
-          : Optional.of(precision.intValue());
-    } catch (RuntimeException e) {
-      log.warn("OCR currency price scale lookup failed: {}", e.getClass().getSimpleName());
-      return Optional.empty();
-    }
-  }
-
-  @Override
-  public Optional<BigDecimal> conversionRate(String organizationId, String clientId,
-      String toCurrencyId, LocalDate date) {
-    try {
-      Optional<String> from = organizationCurrencyId(organizationId);
-      if (from.isEmpty() || date == null || StringUtils.isBlank(toCurrencyId)) {
-        return Optional.empty();
-      }
-      return Optional.ofNullable(DocumentCurrencyRate.lookupRate(from.get(), toCurrencyId, date,
-          organizationId, clientId));
-    } catch (RuntimeException e) {
-      log.warn("OCR conversion rate lookup failed: {}", e.getClass().getSimpleName());
       return Optional.empty();
     }
   }

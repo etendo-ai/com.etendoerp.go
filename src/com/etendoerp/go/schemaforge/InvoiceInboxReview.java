@@ -119,6 +119,7 @@ final class InvoiceInboxReview {
   private static final String K_TAX_ID = "taxId";
   private static final String K_NAME = "name";
 
+  private static final String KEY_SOURCE = "source";
   private static final Logger log = LogManager.getLogger(InvoiceInboxReview.class);
 
   private InvoiceInboxReview() {
@@ -204,7 +205,7 @@ final class InvoiceInboxReview {
     out.put("editable", isEditable(status, errorCode));
     out.put("fileName", StringUtils.defaultString(row.getFileName()));
     out.put("sender", StringUtils.defaultString(row.getSender()));
-    out.put("source", StringUtils.defaultString(row.getSource()));
+    out.put(KEY_SOURCE, StringUtils.defaultString(row.getSource()));
     out.put("created", orNull(NeoDateFormat.toAuditToken(row.getCreationDate())));
     out.put("invoice", invoice == null ? JSONObject.NULL
         : new JSONObject().put("id", invoice.getId())
@@ -278,7 +279,7 @@ final class InvoiceInboxReview {
     Object symbol = found.get().symbol() == null ? JSONObject.NULL : found.get().symbol();
     return new JSONObject().put("id", found.get().id()).put("isoCode", found.get().isoCode())
         .put("symbol", symbol).put("scale", found.get().scale())
-        .put("rate", rateOf(row, document, found.get().id())).put("source", sourceOf(document));
+        .put("rate", rateOf(row, document, found.get().id())).put(KEY_SOURCE, sourceOf(document));
   }
 
   /**
@@ -395,7 +396,7 @@ final class InvoiceInboxReview {
         .put("isoCode", currency == null ? JSONObject.NULL : currency.getISOCode())
         .put("symbol", currency == null ? JSONObject.NULL : currency.getSymbol())
         .put("scale", 2)
-        .put("rate", currency == null ? JSONObject.NULL : 1).put("source", CURRENCY_DEFAULT);
+        .put("rate", currency == null ? JSONObject.NULL : 1).put(KEY_SOURCE, CURRENCY_DEFAULT);
   }
 
   /** The stored document (or the skeleton) with the verdict recomputed and the read-time enrichment. */
