@@ -98,7 +98,7 @@ class McpActionEnvelopeTest {
   }
 
   private static final String CONFIG_GO_ES = "No hay ninguna configuración de TicketBAI activa "
-      + "para esta organización. Revísala en Configuración Fiscal (pestaña TicketBAI).";
+      + "para esta organización. Revísala en Impuestos → Configuración Fiscal (pestaña TicketBAI).";
 
   /** An etendo_action result as a tool returned it, before the envelope renders it again. */
   private static JSONObject rawResult(boolean isError, String body) throws Exception {
