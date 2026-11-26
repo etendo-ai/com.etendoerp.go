@@ -158,11 +158,9 @@
     },
     {
       "id": "mcp-dual-era",
-      "flagKey": "mcp-modern-era-disabled",
+      "contribution": true,
       "symbols": [
-        "FLAG_MCP_MODERN_ERA_DISABLED",
-        "ETGO_FLAG_MCP_MODERN_ERA_DISABLED",
-        "etendo.go.flags.mcp-modern-era-disabled"
+        "McpRequestEra"
       ],
       "testSpecs": {
         "unit": [
