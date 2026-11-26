@@ -24,7 +24,9 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import org.hibernate.FlushMode;
 import org.hibernate.Session;
+import org.hibernate.query.NativeQuery;
 import org.openbravo.dal.service.OBDal;
 
 import com.etendoerp.go.schemaforge.util.GoFeature;
@@ -95,7 +97,7 @@ public final class GoAccessLegacyMirror {
    *     features with no active classic grant are absent
    */
   public static Map<String, String> legacyTiers(String roleId, String excludeAccessId) {
-    List<?> rows = session().createNativeQuery(LEGACY_TIERS_SQL)
+    List<?> rows = query(LEGACY_TIERS_SQL)
         .setParameterList("roles", List.of(roleId))
         .setParameterList("windows", legacyIds(GoFeature.LegacyKind.WINDOW))
         .setParameterList("processes", legacyIds(GoFeature.LegacyKind.OBUIAPP_PROCESS))
@@ -125,7 +127,7 @@ public final class GoAccessLegacyMirror {
     for (String roleId : roleIds) {
       result.put(roleId, new HashMap<>());
     }
-    List<?> rows = session().createNativeQuery(SNAPSHOT_SQL)
+    List<?> rows = query(SNAPSHOT_SQL)
         .setParameterList("roles", roleIds)
         .setParameterList("windows", legacyIds(GoFeature.LegacyKind.WINDOW))
         .setParameterList("processes", legacyIds(GoFeature.LegacyKind.OBUIAPP_PROCESS)).list();
@@ -207,11 +209,11 @@ public final class GoAccessLegacyMirror {
    */
   public static void apply(String roleId, GoFeature feature, String tier) {
     if (tier == null) {
-      session().createNativeQuery(DELETE_SQL).setParameter("role", roleId)
+      query(DELETE_SQL).setParameter("role", roleId)
           .setParameter("feature", feature.id).executeUpdate();
       return;
     }
-    session().createNativeQuery(UPSERT_SQL).setParameter("role", roleId)
+    query(UPSERT_SQL).setParameter("role", roleId)
         .setParameter("feature", feature.id)
         .setParameter("rw", RoleAccessMatrix.FULL.equals(tier) ? "Y" : "N")
         .setParameter("user", SYSTEM_USER_ID).executeUpdate();
@@ -229,6 +231,17 @@ public final class GoAccessLegacyMirror {
   private static String tier(Object isReadWrite) {
     return "Y".equals(String.valueOf(isReadWrite).trim()) ? RoleAccessMatrix.FULL
         : RoleAccessMatrix.READ_ONLY;
+  }
+
+  /**
+   * A native query that never auto-flushes the session. The observer runs inside a DAL persistence
+   * event, where flushing the whole session would nest a flush inside the one being processed.
+   */
+  @SuppressWarnings("rawtypes")
+  private static NativeQuery query(String sql) {
+    NativeQuery query = session().createNativeQuery(sql);
+    query.setHibernateFlushMode(FlushMode.MANUAL);
+    return query;
   }
 
   private static Session session() {

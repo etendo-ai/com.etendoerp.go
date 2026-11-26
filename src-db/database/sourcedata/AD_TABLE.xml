@@ -630,8 +630,8 @@
 <!--7F2BFEF837DF4633BA65997A99CCE71B-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--7F2BFEF837DF4633BA65997A99CCE71B-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--7F2BFEF837DF4633BA65997A99CCE71B-->  <NAME><![CDATA[ETGO_Go_Access]]></NAME>
-<!--7F2BFEF837DF4633BA65997A99CCE71B-->  <DESCRIPTION><![CDATA[Grants of a role on Etendo GO features (ETP-4802)]]></DESCRIPTION>
-<!--7F2BFEF837DF4633BA65997A99CCE71B-->  <HELP><![CDATA[One row per role and GO feature. A GO feature is a page or endpoint with no classic window or process of its own. IsReadWrite = N grants read only. The feature declaration (identifier and support tables) lives in GoFeature; the list reference ETGO_GoFeature is kept in sync with it by GoFeatureAccessTest.]]></HELP>
+<!--7F2BFEF837DF4633BA65997A99CCE71B-->  <DESCRIPTION><![CDATA[Grants of a role on Etendo GO features]]></DESCRIPTION>
+<!--7F2BFEF837DF4633BA65997A99CCE71B-->  <HELP><![CDATA[One row per role and GO feature. A GO feature is a page or endpoint with no classic window or process of its own. IsReadWrite = N grants read only. The list of features is fixed by the application; a role without a row falls back to its classic window or process grant.]]></HELP>
 <!--7F2BFEF837DF4633BA65997A99CCE71B-->  <TABLENAME><![CDATA[ETGO_Go_Access]]></TABLENAME>
 <!--7F2BFEF837DF4633BA65997A99CCE71B-->  <CLASSNAME><![CDATA[GoAccess]]></CLASSNAME>
 <!--7F2BFEF837DF4633BA65997A99CCE71B-->  <ISVIEW><![CDATA[N]]></ISVIEW>

@@ -41,8 +41,8 @@ import com.etendoerp.go.schemaforge.util.GoFeature;
  * through the DAL: the Role window, the template injectors, role composition and the roles-matrix
  * editor. See {@link GoAccessLegacyMirror} for the rule and for the native writers.
  *
- * <p>Runs after the unprioritised core observers and the overlap guards, so it sees the final
- * tier of the row.</p>
+ * <p>It declares no priority: it relies on reading the row's state from the event, which the
+ * overlap guards update in place before this observer's query runs.</p>
  */
 public class GoAccessLegacyMirrorObserver extends EntityPersistenceEventObserver {
 

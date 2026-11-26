@@ -131,10 +131,11 @@ public class SeedGoAccessScript extends ModuleScript {
       ps.setString(1, first);
       ps.setString(2, second);
       return ps.executeUpdate();
-    } catch (SQLException e) {
-      throw e;
     } catch (Exception e) {
       // ConnectionProvider#getPreparedStatement declares a bare Exception
+      if (e instanceof SQLException) {
+        throw (SQLException) e;
+      }
       throw new SQLException("Could not prepare the GO Access seeding statement", e);
     }
   }

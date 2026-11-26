@@ -672,7 +672,7 @@ com.etendoerp.go.usageevents.UsageEventTypesTest
 com.etendoerp.go.usageevents.UsageEventWriterJdbcTest
 com.etendoerp.go.usageevents.UsageEventWriterTest
 
-# --- integración (BD) (55)
+# --- integración (BD) (56)
 com.etendoerp.go.accounts.AccountGroupServiceIntegrationTest
 com.etendoerp.go.accounts.DemoExpiryIntegrationTest
 com.etendoerp.go.hubspot.DalHubSpotOutboxStoreIntegrationTest
@@ -707,6 +707,7 @@ com.etendoerp.go.roles.UserRoleCompositionServiceIntegrationTest
 com.etendoerp.go.roles.UserRoleCompositionServiceOverlapIntegrationTest
 com.etendoerp.go.roles.UserRoleCompositionServiceOverlapReverificationIntegrationTest
 com.etendoerp.go.roles.UserRoleCompositionServiceRealAccessControlIntegrationTest
+com.etendoerp.go.roles.goaccess.GoAccessLegacyMirrorObserverIntegrationTest
 com.etendoerp.go.schemaforge.DocActionIdempotencyIntegrationTest
 com.etendoerp.go.schemaforge.DocTemplateConfigStoreIntegrationTest
 com.etendoerp.go.schemaforge.NativeWriteIsolationIntegrationTest
