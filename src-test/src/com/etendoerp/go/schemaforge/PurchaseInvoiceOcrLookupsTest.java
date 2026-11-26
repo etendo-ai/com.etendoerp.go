@@ -1641,25 +1641,281 @@ class PurchaseInvoiceOcrLookupsTest {
       assertTrue(lookups.taxNames(List.of("T1")).isEmpty());
     }
 
+    // ---- currencyByCode: only the tenant's and System's currencies
+
+    private org.openbravo.model.common.currency.Currency currencyOf(String id, String iso,
+        String clientId, boolean visible) {
+      org.openbravo.model.common.currency.Currency currency = currency(id, iso, "$", 2L);
+      org.openbravo.model.ad.system.Client owner = mock(org.openbravo.model.ad.system.Client.class);
+      when(owner.getId()).thenReturn(clientId);
+      when(currency.getClient()).thenReturn(owner);
+      tenantMock.when(() -> TenantOwnership.isVisibleToCurrentTenant(currency)).thenReturn(visible);
+      return currency;
+    }
+
+    private OBQuery<org.openbravo.model.common.currency.Currency> currencyQuery(
+        org.openbravo.model.common.currency.Currency... found) {
+      OBQuery<org.openbravo.model.common.currency.Currency> query = mock(OBQuery.class);
+      when(query.list()).thenReturn(List.of(found));
+      when(dal.createQuery(eq(org.openbravo.model.common.currency.Currency.class), anyString()))
+          .thenReturn(query);
+      return query;
+    }
+
+    @Test
+    @DisplayName("a currency by ISO code is asked of the session client and System only, and the tenant's own wins over System")
+    void currencyByCodePrefersTheTenantsOwnThenSystem() {
+      OBQuery<org.openbravo.model.common.currency.Currency> query = currencyQuery(
+          currencyOf("A-SYS", "USD", "0", true), currencyOf("Z-OWN", "USD", "CLIENT1", true));
+
+      assertEquals("Z-OWN", lookups.currencyByCode("USD").orElseThrow().id());
+      @SuppressWarnings("unchecked")
+      ArgumentCaptor<List<String>> clients = ArgumentCaptor.forClass(List.class);
+      verify(query).setNamedParameter(eq("clients"), clients.capture());
+      assertEquals(List.of("CLIENT1", "0"), clients.getValue());
+    }
+
+    @Test
+    @DisplayName("with System currencies only the lowest id wins; a row of another tenant is dropped even when returned")
+    void currencyByCodeIsDeterministicAndDropsAForeignRow() {
+      currencyQuery(currencyOf("B", "USD", "0", true), currencyOf("A", "USD", "0", true),
+          currencyOf("F", "USD", "OTHER", false));
+      assertEquals("A", lookups.currencyByCode("USD").orElseThrow().id());
+
+      currencyQuery(currencyOf("F2", "USD", "OTHER", false));
+      assertTrue(lookups.currencyByCode("USD").isEmpty());
+      assertTrue(lookups.currencyByCode(" ").isEmpty());
+    }
+
+    @Test
+    @DisplayName("a currency by id of another tenant is not returned")
+    void currencyByIdOfAnotherTenantIsEmpty() {
+      currencyOf("C1", "USD", "OTHER", false);
+      currencyOf("C2", "EUR", "0", true);
+
+      assertTrue(lookups.currencyById("C1").isEmpty());
+      assertEquals("C2", lookups.currencyById("C2").orElseThrow().id());
+    }
+
+    @Test
+    @DisplayName("a currency by ISO code: the query is limited to active rows, blank is empty, an unknown code is empty")
+    void currencyByCodeIsActiveBlankAndUnknown() {
+      OBQuery<org.openbravo.model.common.currency.Currency> query = currencyQuery();
+
+      assertTrue(lookups.currencyByCode("XXX").isEmpty());
+      assertTrue(lookups.currencyByCode(null).isEmpty());
+      assertTrue(lookups.currencyByCode("  ").isEmpty());
+      ArgumentCaptor<String> hql = ArgumentCaptor.forClass(String.class);
+      verify(dal).createQuery(eq(org.openbravo.model.common.currency.Currency.class), hql.capture());
+      assertTrue(hql.getValue().contains("c.active = true"), hql.getValue());
+      verify(query).setNamedParameter("iso", "XXX");
+    }
+
+    // ---- currenciesBySymbol: the organization currency plus what the selector offers
+
+    private org.openbravo.model.common.currency.Currency symbolCurrency(String id, String symbol,
+        boolean active, boolean visible) {
+      org.openbravo.model.common.currency.Currency currency = currency(id, id, symbol, 2L);
+      when(currency.isActive()).thenReturn(active);
+      tenantMock.when(() -> TenantOwnership.isVisibleToCurrentTenant(currency)).thenReturn(visible);
+      return currency;
+    }
+
+    private List<OcrLookups.DocCurrency> bySymbol(String symbol, String organizationId,
+        String orgCurrency, Map<String, String> selectable) throws Exception {
+      java.sql.Connection connection = mock(java.sql.Connection.class);
+      when(dal.getConnection()).thenReturn(connection);
+      try (MockedStatic<org.openbravo.erpCommon.utility.OBCurrencyUtils> utils = mockStatic(
+          org.openbravo.erpCommon.utility.OBCurrencyUtils.class);
+          MockedStatic<CurrencyOptionsHandler> options = mockStatic(CurrencyOptionsHandler.class)) {
+        utils.when(() -> org.openbravo.erpCommon.utility.OBCurrencyUtils.getOrgCurrency(anyString()))
+            .thenReturn(orgCurrency);
+        options.when(() -> CurrencyOptionsHandler.selectableCurrencies(any(), any(), any(), any()))
+            .thenReturn(selectable);
+        return lookups.currenciesBySymbol(symbol, organizationId);
+      }
+    }
+
+    @Test
+    @DisplayName("a symbol matches the selectable currencies and the organization's, active and visible only")
+    void currenciesBySymbolIsRestrictedToWhatTheSelectorOffers() throws Exception {
+      when(organization.getId()).thenReturn("SESSION-ORG");
+      when(organization.getClient()).thenReturn(client);
+      symbolCurrency("EUR", "E", true, true);
+      symbolCurrency("USD", "$", true, true);
+      symbolCurrency("CAD", "$", true, true);
+      symbolCurrency("AUD", "$", false, true);
+      symbolCurrency("ARS", "$", true, false);
+      symbolCurrency("MXN", "$", true, true);
+      Map<String, String> offered = new java.util.LinkedHashMap<>();
+      offered.put("USD", "USD");
+      offered.put("AUD", "AUD");
+      offered.put("ARS", "ARS");
+      offered.put("CAD", "CAD");
+
+      List<OcrLookups.DocCurrency> found = bySymbol("$", null, "EUR", offered);
+
+      assertEquals(List.of("USD", "CAD"), found.stream().map(OcrLookups.DocCurrency::id).toList());
+      assertEquals(List.of("EUR"), bySymbol("E", null, "EUR", offered).stream()
+          .map(OcrLookups.DocCurrency::id).toList(), "the organization currency counts");
+      assertTrue(bySymbol("kr", null, "EUR", offered).isEmpty());
+    }
+
+    @Test
+    @DisplayName("the document's organization and client scope the offered currencies, not the session's")
+    void currenciesBySymbolUsesTheRowsOrganization() throws Exception {
+      when(organization.getId()).thenReturn("SESSION-ORG");
+      Organization rowOrganization = mock(Organization.class);
+      when(rowOrganization.getId()).thenReturn("ROW-ORG");
+      org.openbravo.model.ad.system.Client rowClient = mock(org.openbravo.model.ad.system.Client.class);
+      when(rowClient.getId()).thenReturn("ROW-CLIENT");
+      when(rowOrganization.getClient()).thenReturn(rowClient);
+      when(dal.get(Organization.class, "ROW-ORG")).thenReturn(rowOrganization);
+      tenantMock.when(() -> TenantOwnership.isVisibleToCurrentTenant(rowOrganization))
+          .thenReturn(true);
+      symbolCurrency("USD", "$", true, true);
+      java.sql.Connection connection = mock(java.sql.Connection.class);
+      when(dal.getConnection()).thenReturn(connection);
+
+      try (MockedStatic<org.openbravo.erpCommon.utility.OBCurrencyUtils> utils = mockStatic(
+          org.openbravo.erpCommon.utility.OBCurrencyUtils.class);
+          MockedStatic<CurrencyOptionsHandler> options = mockStatic(CurrencyOptionsHandler.class)) {
+        utils.when(() -> org.openbravo.erpCommon.utility.OBCurrencyUtils.getOrgCurrency("ROW-ORG"))
+            .thenReturn("EUR");
+        options.when(() -> CurrencyOptionsHandler.selectableCurrencies(connection, "EUR",
+            "ROW-CLIENT", "ROW-ORG")).thenReturn(Map.of("USD", "USD"));
+
+        assertEquals("USD", lookups.currenciesBySymbol("$", "ROW-ORG").get(0).id());
+
+        utils.verify(() -> org.openbravo.erpCommon.utility.OBCurrencyUtils.getOrgCurrency(
+            "SESSION-ORG"), never());
+      }
+    }
+
+    @Test
+    @DisplayName("no organization currency, a blank symbol or a failing lookup gives no currency")
+    void currenciesBySymbolIsTotal() throws Exception {
+      when(organization.getId()).thenReturn("SESSION-ORG");
+      when(organization.getClient()).thenReturn(client);
+      symbolCurrency("USD", "$", true, true);
+
+      assertTrue(bySymbol("$", null, null, Map.of("USD", "USD")).isEmpty());
+      assertTrue(bySymbol(" ", null, "EUR", Map.of("USD", "USD")).isEmpty());
+      assertTrue(bySymbol(null, null, "EUR", Map.of("USD", "USD")).isEmpty());
+
+      when(dal.getConnection()).thenThrow(new IllegalStateException("boom"));
+      assertTrue(lookups.currenciesBySymbol("$", null).isEmpty());
+    }
+
+    // ---- conversionRate / productStandardPrice / priceScale (ETP-6051 manual line pricing)
+
+    private static final LocalDate RATE_DATE = LocalDate.parse("2026-11-02");
+
+    private java.util.Optional<BigDecimal> conversionRate(String orgCurrency, BigDecimal rate,
+        RuntimeException failure, LocalDate date, String toCurrency) {
+      try (MockedStatic<org.openbravo.erpCommon.utility.OBCurrencyUtils> utils = mockStatic(
+          org.openbravo.erpCommon.utility.OBCurrencyUtils.class);
+          MockedStatic<DocumentCurrencyRate> rates = mockStatic(DocumentCurrencyRate.class)) {
+        utils.when(() -> org.openbravo.erpCommon.utility.OBCurrencyUtils.getOrgCurrency("ORG"))
+            .thenReturn(orgCurrency);
+        if (failure != null) {
+          rates.when(() -> DocumentCurrencyRate.lookupRate(any(), any(), any(), any(), any()))
+              .thenThrow(failure);
+        } else {
+          rates.when(() -> DocumentCurrencyRate.lookupRate("EUR", "USD", RATE_DATE, "ORG", "CLI"))
+              .thenReturn(rate);
+        }
+        return lookups.conversionRate("ORG", "CLI", toCurrency, date);
+      }
+    }
+
+    @Test
+    @DisplayName("conversionRate answers the org-to-document rate of the date, empty when none is valid")
+    void conversionRateFoundOrNone() {
+      assertEquals(new BigDecimal("1.0855"),
+          conversionRate("EUR", new BigDecimal("1.0855"), null, RATE_DATE, "USD").orElseThrow());
+      assertTrue(conversionRate("EUR", null, null, RATE_DATE, "USD").isEmpty());
+    }
+
+    @Test
+    @DisplayName("conversionRate is empty without an org currency, a date or a target currency,")
+    void conversionRateNeedsItsInputs() {
+      assertTrue(conversionRate(null, new BigDecimal("2"), null, RATE_DATE, "USD").isEmpty());
+      assertTrue(conversionRate("EUR", new BigDecimal("2"), null, null, "USD").isEmpty());
+      assertTrue(conversionRate("EUR", new BigDecimal("2"), null, RATE_DATE, " ").isEmpty());
+      assertTrue(conversionRate("EUR", new BigDecimal("2"), null, RATE_DATE, null).isEmpty());
+    }
+
+    @Test
+    @DisplayName("conversionRate never throws: a failing rate lookup is empty")
+    void conversionRateIsTotal() {
+      assertTrue(conversionRate("EUR", null, new IllegalStateException("boom"), RATE_DATE, "USD")
+          .isEmpty());
+    }
+
+    @Test
+    @DisplayName("priceScale is the price precision of the currency, empty when none, unknown or failing")
+    void priceScaleIsThePricePrecision() {
+      org.openbravo.model.common.currency.Currency usd = mock(
+          org.openbravo.model.common.currency.Currency.class);
+      when(usd.getPricePrecision()).thenReturn(3L);
+      when(dal.get(org.openbravo.model.common.currency.Currency.class, "USD")).thenReturn(usd);
+      org.openbravo.model.common.currency.Currency none = mock(
+          org.openbravo.model.common.currency.Currency.class);
+      when(none.getPricePrecision()).thenReturn(null);
+      when(dal.get(org.openbravo.model.common.currency.Currency.class, "NONE")).thenReturn(none);
+      org.openbravo.model.common.currency.Currency zero = mock(
+          org.openbravo.model.common.currency.Currency.class);
+      when(zero.getPricePrecision()).thenReturn(0L);
+      when(dal.get(org.openbravo.model.common.currency.Currency.class, "JPY")).thenReturn(zero);
+
+      assertEquals(3, lookups.priceScale("USD").orElseThrow());
+      assertEquals(0, lookups.priceScale("JPY").orElseThrow());
+      assertTrue(lookups.priceScale("NONE").isEmpty());
+      assertTrue(lookups.priceScale("MISSING").isEmpty());
+      assertTrue(lookups.priceScale(" ").isEmpty());
+
+      when(dal.get(org.openbravo.model.common.currency.Currency.class, "BOOM"))
+          .thenThrow(new IllegalStateException("boom"));
+      assertTrue(lookups.priceScale("BOOM").isEmpty());
+    }
+
+    @Test
+    @DisplayName("productStandardPrice is the selector's price, and a failing lookup is empty, never thrown")
+    void productStandardPriceDelegatesAndIsTotal() {
+      try (MockedStatic<com.etendoerp.go.schemaforge.selector.policy.ProductPriceSelectorPolicy> policy =
+          mockStatic(com.etendoerp.go.schemaforge.selector.policy.ProductPriceSelectorPolicy.class)) {
+        policy.when(() -> com.etendoerp.go.schemaforge.selector.policy.ProductPriceSelectorPolicy
+            .standardPrice("PL1", "P1")).thenReturn(java.util.Optional.of(new BigDecimal("9.5")));
+        policy.when(() -> com.etendoerp.go.schemaforge.selector.policy.ProductPriceSelectorPolicy
+            .standardPrice("PL1", "BOOM")).thenThrow(new IllegalStateException("boom"));
+
+        assertEquals(new BigDecimal("9.5"), lookups.productStandardPrice("PL1", "P1").orElseThrow());
+        assertTrue(lookups.productStandardPrice("PL1", "BOOM").isEmpty());
+      }
+    }
+
     // ---- documentCurrency
 
     @Test
-    @DisplayName("the currency is the vendor's purchase price list one, with the scale of the currency")
-    void documentCurrencyFromTheVendorPriceList() {
-      vendorWithPriceListCurrency("V1", true, currency("USD", "USD", "$", 3L));
+    @DisplayName("the currency is the organization's, with the symbol and the scale of the currency")
+    void documentCurrencyIsTheOrganizationsWithItsScale() {
+      var c = currency("EUR", "EUR", "E", 3L);
+      when(organization.getCurrency()).thenReturn(c);
 
       OcrLookups.DocCurrency found = lookups.documentCurrency("V1").orElseThrow();
 
-      assertEquals("USD", found.id());
-      assertEquals("USD", found.isoCode());
-      assertEquals("$", found.symbol());
+      assertEquals("EUR", found.id());
+      assertEquals("EUR", found.isoCode());
+      assertEquals("E", found.symbol());
       assertEquals(3, found.scale());
     }
 
     @Test
     @DisplayName("a currency with no standard precision is rounded to two decimals")
     void documentCurrencyWithoutPrecisionIsTwoDecimals() {
-      vendorWithPriceListCurrency("V1", true, currency("USD", "USD", "$", null));
+      var c = currency("EUR", "EUR", "E", null);
+      when(organization.getCurrency()).thenReturn(c);
 
       assertEquals(2, lookups.documentCurrency("V1").orElseThrow().scale());
     }
@@ -1667,9 +1923,23 @@ class PurchaseInvoiceOcrLookupsTest {
     @Test
     @DisplayName("a scale of zero is kept as zero")
     void documentCurrencyScaleZero() {
-      vendorWithPriceListCurrency("V1", true, currency("JPY", "JPY", "Y", 0L));
+      var c = currency("JPY", "JPY", "Y", 0L);
+      when(organization.getCurrency()).thenReturn(c);
 
       assertEquals(0, lookups.documentCurrency("V1").orElseThrow().scale());
+    }
+
+    @Test
+    @DisplayName("a vendor whose purchase price list is in a foreign currency infers nothing: the organization's currency, and the vendor is never read")
+    void documentCurrencyIgnoresTheVendorAndItsPriceList() {
+      var c = currency("EUR", "EUR", "E", 2L);
+      when(organization.getCurrency()).thenReturn(c);
+      var usd = currency("USD", "USD", "$", 3L);
+      vendorWithPriceListCurrency("V1", true, usd);
+
+      assertEquals("EUR", lookups.documentCurrency("V1").orElseThrow().id());
+      assertEquals("EUR", lookups.documentCurrency("V1", null).orElseThrow().id());
+      verify(dal, never()).get(eq(BusinessPartner.class), anyString());
     }
 
     @Test
@@ -1705,32 +1975,16 @@ class PurchaseInvoiceOcrLookupsTest {
     }
 
     @Test
-    @DisplayName("a vendor without a purchase price list falls back to the organization's currency")
-    void documentCurrencyVendorWithoutPriceList() {
-      vendorWithPriceListCurrency("V1", true, null);
+    @DisplayName("a vendor of another tenant or an unknown vendor id changes nothing: the organization's currency")
+    void documentCurrencyIsTheSameForAnyVendor() {
       var c = currency("EUR", "EUR", "E", 2L);
       when(organization.getCurrency()).thenReturn(c);
-
-      assertEquals("EUR", lookups.documentCurrency("V1").orElseThrow().id());
-    }
-
-    @Test
-    @DisplayName("a vendor of another tenant is not read: the organization's currency")
-    void documentCurrencyVendorOfAnotherTenant() {
-      vendorWithPriceListCurrency("V9", false, currency("USD", "USD", "$", 2L));
-      var c = currency("EUR", "EUR", "E", 2L);
-      when(organization.getCurrency()).thenReturn(c);
+      var usd = currency("USD", "USD", "$", 2L);
+      vendorWithPriceListCurrency("V9", false, usd);
 
       assertEquals("EUR", lookups.documentCurrency("V9").orElseThrow().id());
-    }
-
-    @Test
-    @DisplayName("an unknown vendor id falls back to the organization's currency")
-    void documentCurrencyUnknownVendor() {
-      var c = currency("EUR", "EUR", "E", 2L);
-      when(organization.getCurrency()).thenReturn(c);
-
       assertEquals("EUR", lookups.documentCurrency("NOPE").orElseThrow().id());
+      verify(dal, never()).get(eq(BusinessPartner.class), anyString());
     }
 
     @Test
@@ -1758,8 +2012,7 @@ class PurchaseInvoiceOcrLookupsTest {
     void documentCurrencyNothingAndFailure() {
       assertTrue(lookups.documentCurrency(null).isEmpty());
 
-      when(dal.get(eq(BusinessPartner.class), anyString()))
-          .thenThrow(new IllegalStateException("db"));
+      when(organization.getCurrency()).thenThrow(new IllegalStateException("db"));
       assertTrue(lookups.documentCurrency("V1").isEmpty());
     }
 
@@ -1768,7 +2021,8 @@ class PurchaseInvoiceOcrLookupsTest {
     @Test
     @DisplayName("a currency by id carries its scale; blank, unknown and failing ids are empty")
     void currencyById() {
-      currency("JPY", "JPY", "Y", 0L);
+      tenantMock.when(() -> TenantOwnership.isVisibleToCurrentTenant(
+          currency("JPY", "JPY", "Y", 0L))).thenReturn(true);
 
       OcrLookups.DocCurrency found = lookups.currencyById("JPY").orElseThrow();
       assertEquals("JPY", found.isoCode());

@@ -23,17 +23,26 @@ import static com.etendoerp.go.schemaforge.ocr.InboxDocument.A_UNKNOWN;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_ADDRESS_STATE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CANDIDATES;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CATEGORY_ID;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.CURRENCY_MANUAL;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CATEGORY_SOURCE;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_ID;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_SOURCE;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_UNAVAILABLE;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_NOTICES;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.N_CURRENCY_SYMBOL_AMBIGUOUS;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_DESCRIPTION;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_EXTRACTED;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_ID;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_INDEX;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_INVOICE_DATE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_LOCATION_ID;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_MANUAL;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_MATCHED_BY;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_NAME;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_NEW;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_PRODUCT;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_STATE;
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_UNIT_PRICE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_UNIT_PRINTED;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_UOM_ID;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_UOM_SOURCE;
@@ -44,6 +53,10 @@ import static com.etendoerp.go.schemaforge.ocr.InboxDocument.S_NEW;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.SRC_MANUAL;
 
 
+import java.math.BigDecimal;
+import java.sql.SQLException;
+import java.time.LocalDate;
+import java.time.format.DateTimeParseException;
 import java.util.Iterator;
 import java.util.Optional;
 
@@ -51,6 +64,9 @@ import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
+import org.openbravo.dal.service.OBDal;
+import org.openbravo.erpCommon.utility.OBCurrencyUtils;
+import org.openbravo.model.common.currency.Currency;
 
 import com.etendoerp.go.schemaforge.ocr.InboxNewProductDefaults;
 import com.etendoerp.go.schemaforge.ocr.OcrLookups;
@@ -155,7 +171,63 @@ final class InvoiceInboxApplyResolution {
     line.put(K_PRODUCT, new JSONObject().put(K_STATE, S_LINKED).put(K_MATCHED_BY, MATCHED_MANUAL)
         .put(K_ID, found.get().id()).put(K_NAME, found.get().name())
         .put(K_CANDIDATES, candidatesOf(product)));
+    priceManualLine(edit, line, found.get().id());
     edit.changed(InvoiceInboxAdjustedPolicy.selection(false));
+  }
+
+  /**
+   * ETP-6051: a product picked on a MANUAL line ({@code manual: true}, set by {@code addLine}) always
+   * takes the price list price ({@link InvoiceInboxLinePricing}), overwriting any price already on the
+   * line (a typed one, or the one of the previous product), like the purchase invoice window. An OCR
+   * line (no marker) is never touched, and a price the list cannot give leaves the current price as it
+   * is (never zeroed). Not a user adjustment: the line is not marked.
+   */
+  private static void priceManualLine(InvoiceInboxApply.Edit edit, JSONObject line,
+      String productId) {
+    if (edit.lookups == null || !line.optBoolean(K_MANUAL, false)) {
+      return;
+    }
+    String orgId = edit.row == null || edit.row.getOrganization() == null ? null
+        : edit.row.getOrganization().getId();
+    String clientId = edit.row == null || edit.row.getClient() == null ? null
+        : edit.row.getClient().getId();
+    JSONObject vendor = vendorOf(edit);
+    String vendorId = vendor != null && S_LINKED.equals(vendor.optString(K_STATE))
+        ? vendor.optString(K_ID, null) : null;
+    Optional<BigDecimal> price = InvoiceInboxLinePricing.priceFor(edit.lookups, vendorId,
+        productId, currencyIdNow(edit, orgId), orgId, clientId,
+        dateOf(text(edit.header(), K_INVOICE_DATE)));
+    price.ifPresent(value -> putPrice(line, value));
+  }
+
+  private static void putPrice(JSONObject line, BigDecimal value) {
+    try {
+      line.put(K_UNIT_PRICE, value.doubleValue());
+    } catch (JSONException e) {
+      throw new IllegalStateException("Could not store the unit price", e);
+    }
+  }
+
+  /**
+   * The currency the document has right now: the stored one, else the default derived now (the
+   * organization's). A vendor change never moves it: the vendor and its price list infer nothing.
+   */
+  private static String currencyIdNow(InvoiceInboxApply.Edit edit, String orgId) {
+    JSONObject header = edit.header();
+    String stored = text(header, K_CURRENCY_ID);
+    if (!stored.isEmpty()) {
+      return stored;
+    }
+    return edit.lookups.documentCurrency(null, orgId)
+        .map(OcrLookups.DocCurrency::id).orElse(null);
+  }
+
+  private static LocalDate dateOf(String iso) {
+    try {
+      return iso.isEmpty() ? null : LocalDate.parse(iso);
+    } catch (DateTimeParseException e) {
+      return null;
+    }
   }
 
   static void newProduct(InvoiceInboxApply.Edit edit, JSONObject op) throws JSONException {
@@ -278,5 +350,87 @@ final class InvoiceInboxApplyResolution {
   private static JSONArray candidatesOf(JSONObject product) throws JSONException {
     JSONArray candidates = product == null ? null : product.optJSONArray(K_CANDIDATES);
     return candidates == null ? new JSONArray() : new JSONArray(candidates.toString());
+  }
+
+  // ── Currency (ETP-6051) ──────────────────────────────────────────────────────────────────────
+
+  /**
+   * {@code setCurrency {currencyId}}: the user picks the document currency among those registered
+   * for the organization (the organization currency, or one with a conversion range to or from
+   * it: exactly what the invoice's own selector offers). No custom rate: the rate is the one
+   * registered for the invoice date, read at review time. Line prices are not touched.
+   *
+   * <p>The chosen currency becomes {@code currencySource = manual} (so it is the user's choice, and the
+   * source says where the currency came from), drops {@code currencyUnavailable} and the {@code currency_symbol_ambiguous} notice, which
+   * no longer apply. Choosing the stored currency changes nothing and never marks.</p>
+   */
+  static void setCurrency(InvoiceInboxApply.Edit edit, JSONObject op) throws JSONException {
+    String id = op.getString("currencyId");
+    JSONObject header = edit.header();
+    boolean same = id.equals(text(header, K_CURRENCY_ID));
+    // The currency the review shows (the stored one) is accepted without the "selectable" rule:
+    // it may be a vendor default with no conversion range, and the live verdict then decides
+    // whether the exchange-rate blocker stays. Any other id must be one the selector offers.
+    if (!isUsableCurrency(edit, id) || (!same && !isSelectableCurrency(edit, id))) {
+      throw new InvoiceInboxApply.Refusal(InvoiceInboxEditGate.refuse(422,
+          InvoiceInboxApply.CODE_INVALID_CURRENCY, InvoiceInboxMessages.INVALID_CURRENCY, null));
+    }
+    // Accepting the currency already shown still has to be persisted when it was not yet the
+    // user's choice (source not manual, or an unavailable printed currency still flagged): that is
+    // what makes the choice sticky and clears the exchange-rate blocker. It is not an adjustment.
+    boolean pending = header.has(K_CURRENCY_UNAVAILABLE)
+        || !CURRENCY_MANUAL.equals(text(header, K_CURRENCY_SOURCE));
+    if (same && !pending) {
+      return;
+    }
+    header.put(K_CURRENCY_ID, id);
+    header.put(K_CURRENCY_SOURCE, CURRENCY_MANUAL);
+    header.remove(K_CURRENCY_UNAVAILABLE);
+    removeAmbiguityNotice(edit.document);
+    edit.changed(InvoiceInboxAdjustedPolicy.currencyChanged(same));
+  }
+
+  /** Exists, is active and belongs to the system or to the row's tenant. */
+  private static boolean isUsableCurrency(InvoiceInboxApply.Edit edit, String id) {
+    Currency currency = OBDal.getInstance().get(Currency.class, id);
+    if (currency == null || !Boolean.TRUE.equals(currency.isActive())
+        || currency.getClient() == null || edit.row.getClient() == null) {
+      return false;
+    }
+    String owner = currency.getClient().getId();
+    return "0".equals(owner) || owner.equals(edit.row.getClient().getId());
+  }
+
+  /** The organization currency or one the invoice currency selector offers. */
+  private static boolean isSelectableCurrency(InvoiceInboxApply.Edit edit, String id) {
+    String orgId = edit.row.getOrganization() == null ? null : edit.row.getOrganization().getId();
+    String clientId = edit.row.getClient() == null ? null : edit.row.getClient().getId();
+    String orgCurrencyId = orgId == null ? null : OBCurrencyUtils.getOrgCurrency(orgId);
+    if (orgCurrencyId == null || clientId == null) {
+      return false;
+    }
+    if (orgCurrencyId.equals(id)) {
+      return true;
+    }
+    try {
+      return CurrencyOptionsHandler.selectableCurrencies(OBDal.getInstance().getConnection(),
+          orgCurrencyId, clientId, orgId).containsKey(id);
+    } catch (SQLException e) {
+      return false;
+    }
+  }
+
+  private static void removeAmbiguityNotice(JSONObject document) throws JSONException {
+    JSONArray notices = document.optJSONArray(K_NOTICES);
+    if (notices == null) {
+      return;
+    }
+    JSONArray kept = new JSONArray();
+    for (int i = 0; i < notices.length(); i++) {
+      if (!N_CURRENCY_SYMBOL_AMBIGUOUS.equals(notices.opt(i))) {
+        kept.put(notices.get(i));
+      }
+    }
+    document.put(K_NOTICES, kept);
   }
 }

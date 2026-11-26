@@ -40,11 +40,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
-import org.hibernate.criterion.Restrictions;
-import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
-import org.openbravo.model.common.businesspartner.BusinessPartner;
-import org.openbravo.model.pricing.pricelist.PriceList;
 import org.openbravo.model.common.currency.Currency;
 import org.openbravo.erpCommon.utility.OBCurrencyUtils;
 
@@ -151,32 +147,18 @@ final class InvoiceInboxConfirmChecks {
   }
 
   /**
-   * Whether the price list that will price the invoice includes tax (ETP-6051). The invoice takes the
-   * purchase price list of its vendor, else the default purchase price list; a NEW vendor has none yet
-   * and cannot be tax-included. The inbox sends the NET price, so on such a list the engine would total
-   * the draft at zero: the confirm refuses up front, before writing anything and without touching the
-   * row (the fix is in the vendor's price list, not in the document). GO itself discards
-   * {@code priceIncludesTax}; only Classic or imported data has such lists.
-   *
-   * <p>Known limit: for a linked vendor with no purchase list this takes the first default purchase
-   * list ({@code setMaxResults(1)}, no ordering), which may differ from the list the NEO create
-   * defaults assign when several default lists exist. The totals check is the backstop.</p>
+   * Whether the price list that will price the invoice includes tax (ETP-6051). The list is the one
+   * {@link InvoiceInboxPriceList} resolves for the vendor (its purchase list, else the default
+   * purchase list; a new vendor gets the default one). The inbox sends the NET price, so on such a
+   * list the engine would total the draft at zero: the confirm refuses up front, before writing
+   * anything and without touching the row (the fix is in the price list, not in the document). GO
+   * itself discards {@code priceIncludesTax}; only Classic or imported data has such lists.
    */
   private static boolean priceListIncludesTax(JSONObject vendor) {
-    if (vendor == null || !S_LINKED.equals(vendor.optString(K_STATE, ""))) {
-      return false;
-    }
-    BusinessPartner partner = OBDal.getInstance().get(BusinessPartner.class,
-        vendor.optString(K_ID));
-    PriceList list = partner == null ? null : partner.getPurchasePricelist();
-    if (list == null) {
-      OBCriteria<PriceList> criteria = OBDal.getInstance().createCriteria(PriceList.class);
-      criteria.add(Restrictions.eq(PriceList.PROPERTY_SALESPRICELIST, false));
-      criteria.add(Restrictions.eq(PriceList.PROPERTY_DEFAULT, true));
-      criteria.setMaxResults(1);
-      list = (PriceList) criteria.uniqueResult();
-    }
-    return list != null && Boolean.TRUE.equals(list.isPriceIncludesTax());
+    String vendorId = vendor != null && S_LINKED.equals(vendor.optString(K_STATE, ""))
+        ? vendor.optString(K_ID) : null;
+    InvoiceInboxPriceList.Resolved list = InvoiceInboxPriceList.forVendor(vendorId);
+    return list != null && list.includesTax();
   }
 
   private static NeoResponse refuseInvalid(IncomingDocument row,
