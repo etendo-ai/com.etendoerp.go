@@ -92,9 +92,9 @@ final class InvoiceInboxApplyRecompute {
   }
 
   /**
-   * The document currency: derived from the vendor (its purchase price list, else the
-   * organization's) and stored in the header when the document has none yet or the vendor changed,
-   * kept otherwise. Returns the decimals of its amounts, two when it cannot be known. The exchange
+   * The document currency: the organization's default (the vendor and its price list infer
+   * nothing, so a vendor change never moves it), stored in the header when the document has none
+   * yet, kept otherwise. Returns the decimals of its amounts, two when it cannot be known. The exchange
    * rate and the currency picker of the invoice are not touched: this is the scale of the inbox's
    * own amounts.
    */
@@ -104,10 +104,9 @@ final class InvoiceInboxApplyRecompute {
     }
     JSONObject header = edit.header();
     String stored = text(header, K_CURRENCY_ID);
-    if (stored.isEmpty() || edit.vendorChanged) {
-      JSONObject vendor = edit.vendor();
-      String vendorId = S_LINKED.equals(vendor.optString(K_STATE)) ? vendor.optString(K_ID) : null;
-      Optional<OcrLookups.DocCurrency> derived = edit.lookups.documentCurrency(vendorId,
+    if (stored.isEmpty()) {
+      // No vendor: it infers nothing about the document currency (organization default only).
+      Optional<OcrLookups.DocCurrency> derived = edit.lookups.documentCurrency(null,
           edit.row.getOrganization() == null ? null : edit.row.getOrganization().getId());
       if (derived.isPresent()) {
         header.put(K_CURRENCY_ID, derived.get().id());

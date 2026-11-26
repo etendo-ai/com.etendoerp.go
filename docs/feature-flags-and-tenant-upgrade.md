@@ -177,7 +177,6 @@ Declare every flag's key as a constant on `GoFeatureFlags` and add its row here.
 | `bp-portal-link` | `etendo.go.flags.bp-portal-link` | `ETGO_FLAG_BP_PORTAL_LINK` | absent ⇒ **`false`** |
 | `environment-access-enforcement-off` | `etendo.go.flags.environment-access-enforcement-off` | `ETGO_FLAG_ENVIRONMENT_ACCESS_ENFORCEMENT_OFF` | absent ⇒ **`false`** = enforcing (an OFF switch — see its section below) |
 | `onboarding-tenant-pool` | `etendo.go.flags.onboarding-tenant-pool` | `ETGO_FLAG_ONBOARDING_TENANT_POOL` | absent ⇒ **`false`** |
-| `mcp-modern-era-disabled` | `etendo.go.flags.mcp-modern-era-disabled` | `ETGO_FLAG_MCP_MODERN_ERA_DISABLED` | absent ⇒ **`false`** (dual-era on) |
 | `batch-callout-skip-disabled` | `etendo.go.flags.batch-callout-skip-disabled` | `ETGO_FLAG_BATCH_CALLOUT_SKIP_DISABLED` | absent ⇒ **`false`** (opt-in skip honoured) |
 | `contact-category-type` | `etendo.go.flags.contact-category-type` | `ETGO_FLAG_CONTACT_CATEGORY_TYPE` | absent ⇒ **`false`** (pre-ETP-5791 contact behaviour); per account on a hosted arm only — see its section below |
 | `billing-reconciliation-schedule` | `etendo.go.flags.billing-reconciliation-schedule` | `ETGO_FLAG_BILLING_RECONCILIATION_SCHEDULE` | absent ⇒ **`false`** (no schedule is planted) |
@@ -190,7 +189,7 @@ Declare every flag's key as a constant on `GoFeatureFlags` and add its row here.
 | `sepa-remittances` | `etendo.go.flags.sepa-remittances` | `ETGO_FLAG_SEPA_REMITTANCES` | absent ⇒ **`false`** (no SEPA remittances: settings and the `remittance` spec refused, mandate keys dropped; per account on a hosted arm only; TTL 2027-03-31, provisional) — see its section below |
 | `sii-import-dua` | `etendo.go.flags.sii-import-dua` | `ETGO_FLAG_SII_IMPORT_DUA` | absent ⇒ **`false`** (no imports with DUA: turning `etgoImportDua` on, purchase-invoice tax-line writes and `siiDeferredVat` refused with 403 `feature_disabled`; per account on a hosted arm only; TTL 2027-03-31, placeholder) — see its section below |
 | `psd2-statement-import-settings` | `etendo.go.flags.psd2-statement-import-settings` | `ETGO_FLAG_PSD2_STATEMENT_IMPORT_SETTINGS` | absent ⇒ **`false`** (PSD2 import settings, `maxFetchInterval` on `accounts` and deleting statements of connected accounts all as before ETP-6151; per account on a hosted arm only; placeholder TTL 2026-12-31). Registered before any code reads it — see its section below |
-| `mcp-routines` | `etendo.go.flags.mcp-routines` | `ETGO_FLAG_MCP_ROUTINES` | absent ⇒ **`false`** (`etendo_routine` neither listed nor routed: the MCP as before ETP-6236; per account on a hosted arm only; placeholder TTL 2027-03-31) — see its section below |
+| `mcp-routines` | `etendo.go.flags.mcp-routines` | `ETGO_FLAG_MCP_ROUTINES` | absent ⇒ **`false`** (`etendo_routine` neither listed nor routed: the MCP as before ETP-6236; per account on a hosted arm only; TTL 2026-12-01) — see its section below |
 | *(pattern for a new flag)* | `etendo.go.flags.<key>` | `ETGO_FLAG_<KEY>` | absent ⇒ **`false`** |
 
 `bp-portal-link` (ETP-5267, extended in ETP-6209) decides whether a sales document email —
@@ -573,24 +572,13 @@ claim never touches the pool and the filler run does nothing — onboarding is b
 classic path. The pool size and the other knobs are plain runtime properties, not flags. Full
 reference: [`onboarding-flow.md`](onboarding-flow.md), "Tenant pool".
 
-### `mcp-modern-era-disabled` (ETP-5640) — backend-only kill switch, inverted
-
-Turns off the stateless MCP era (spec 2026-07-28) on `/sws/mcp`: `true` makes `server/discover`
-answer `-32601` again and serves every request under the `initialize`-based era, exactly as before
-ETP-5640. **Inverted on purpose**: every flag resolves to `false` when it is missing or the control
-plane is unreachable, and that must leave the server dual-era rather than switch it off. Environment
-level only (evaluated with an empty context) — never target it per account, because MCP clients
-cache the era per origin and one origin serves every tenant. Its only caller is
-`McpRequestEra.modernEnabled()`. Retire it, keeping the modern path, once the modern era is stable in
-production. Full reference: [`neo-headless.md`](neo-headless.md) §4.12.30.
-
 ### `batch-callout-skip-disabled` (ETP-5676) — backend-only kill switch, inverted
 
 Turns off the per-batch redundant-callout skip: `true` makes every `/sws/neo/batch` and
 `etendo_batch` request run every create-cascade callout, even one sent with
 `_skipRedundantCallouts: true`. Unset or `false` honours that opt-in; a batch without it never
-skips anything either way. Inverted for the same reason as `mcp-modern-era-disabled`: a missing
-flag or an unreachable control plane must not change behaviour. Environment level (empty context),
+skips anything either way. **Inverted on purpose**: every flag resolves to `false` when it is missing
+or the control plane is unreachable, and that must not change behaviour. Environment level (empty context),
 evaluated once per batch; its only caller is `NeoBatchScope.calloutSkipKillSwitchOn()`. Retire it,
 keeping the skip, once the skip has run on real tenant imports without a wrong default. Full
 reference: [`neo-headless.md`](neo-headless.md) §4.3.6.

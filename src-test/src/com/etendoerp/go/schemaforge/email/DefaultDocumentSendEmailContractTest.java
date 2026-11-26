@@ -48,6 +48,7 @@ import org.openbravo.model.ad.access.User;
 import com.etendoerp.go.portal.PortalDocumentKind;
 import com.etendoerp.go.portal.PortalLinkService;
 import com.etendoerp.go.schemaforge.email.render.EmailContent;
+import com.etendoerp.go.schemaforge.email.render.EmailFooter;
 
 /**
  * Unit tests for {@link DefaultDocumentSendEmailContract#resolve}, covering ETP-4717's reopened
@@ -512,7 +513,7 @@ public class DefaultDocumentSendEmailContractTest {
     assertFalse("the download link is not offered: " + body, body.contains(DOWNLOAD_LINK));
     // ETP-6209: an email that reaches the customer through the portal closes with the etendo.ai
     // footer, its link tagged as the document send's.
-    assertTrue(body, body.contains("Creado con&nbsp;<a "));
+    assertTrue(body, body.contains("Creado con&nbsp;<img src=\"" + EmailFooter.LOGO_URL + "\""));
     assertTrue(body, body.contains("utm_content=mail_envio_documento"));
     // QA CP-48: the card design of the decision confirmations — the document as the headline, the
     // «tú» letter as its body, the «Datos del documento» box.

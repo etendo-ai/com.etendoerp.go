@@ -58,7 +58,8 @@ runs:
   using: composite
   steps:
     # Same branch choice as the mini pipeline (moduleBranchUtils.groovy): the PR's branch when
-    # the module has it (never for develop, main, hotfix/* or mergeblock/*), otherwise the core's.
+    # the module has it (never for develop, main, hotfix/* or mergeblock/*), otherwise the one
+    # jenkinsExtraModulesBranches.txt gives it (module=branch per line), else the core's.
     - name: Clone the extra modules
       shell: bash
       env:
@@ -82,14 +83,16 @@ runs:
         cd etendo_core/modules
         for url in $(tr ',' ' ' < com.etendoerp.go/jenkinsExtraModules.txt); do
           name="$(basename "$url" .git)"
+          base="$(sed -n "s/^${name}=//p" com.etendoerp.go/jenkinsExtraModulesBranches.txt 2>/dev/null | head -1)"
+          base="${base:-$CORE_BRANCH}"
           case "$url" in
             git@github.com:*) url="https://x-access-token:${ETENDOBOT_TOKEN}@github.com/${url#git@github.com:}" ;;
           esac
           if [ -n "$try_branch" ] && git clone -q --depth 1 --branch "$try_branch" "$url" "$name" 2>/dev/null; then
             echo "$name: $try_branch"
           else
-            git clone -q --depth 1 --branch "$CORE_BRANCH" "$url" "$name"
-            echo "$name: $CORE_BRANCH"
+            git clone -q --depth 1 --branch "$base" "$url" "$name"
+            echo "$name: $base"
           fi
         done
 
@@ -140,6 +143,32 @@ runs:
         distribution: temurin
         java-version: '17'
         cache: gradle
+
+    # ETP-6465: `up` downloads PostgreSQL (zonky, from Maven Central) and Tomcat into
+    # $LOCALENV_CACHE/bin on every fresh runner, and Maven Central answers 429 to the shared runner
+    # IPs. Keys carry the versions pinned in local-env.sh, so a bump refreshes them. pgvector goes
+    # into the PostgreSQL tree, hence its version in that key. Tomcat has its own entry because
+    # this action runs `up --no-tomcat`: it is saved by the first job that starts Tomcat.
+    - name: Binary versions
+      id: le-bins
+      shell: bash
+      run: |
+        f=etendo-localenv/bin/local-env.sh
+        for v in PG_VERSION PGVECTOR_VERSION TOMCAT_VERSION; do
+          echo "$v=$(sed -n "s/^$v=//p" "$f" | head -1)" >> "$GITHUB_OUTPUT"
+        done
+
+    - name: Cache the PostgreSQL binaries
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/localenv-cache/bin/pg-*
+        key: localenv-pg-${{ runner.os }}-${{ runner.arch }}-${{ steps.le-bins.outputs.PG_VERSION }}-vec${{ steps.le-bins.outputs.PGVECTOR_VERSION }}
+
+    - name: Cache the Tomcat binaries
+      uses: actions/cache@v4
+      with:
+        path: ${{ runner.temp }}/localenv-cache/bin/apache-tomcat-*
+        key: localenv-tomcat-${{ runner.os }}-${{ steps.le-bins.outputs.TOMCAT_VERSION }}
 
     # The same properties as the Jenkins Building Environment stage. local-env points bbdd.* at
     # its own PostgreSQL (backing this file up). The email provider goes to the sink the

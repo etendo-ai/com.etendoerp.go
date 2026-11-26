@@ -45,6 +45,7 @@ import javax.enterprise.inject.Vetoed;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
+import org.hibernate.Session;
 import org.junit.Test;
 import org.mockito.ArgumentCaptor;
 import org.mockito.MockedStatic;
@@ -1657,6 +1658,8 @@ public class AbstractInvoiceHeaderHandlerTest {
 
       OBDal dal = mock(OBDal.class);
       dalMock.when(OBDal::getInstance).thenReturn(dal);
+      // InvoiceCompletionService flushes and clears the session before the process (ETP-6414).
+      when(dal.getSession()).thenReturn(mock(Session.class));
       Process process = mock(Process.class);
       when(dal.get(Process.class, "111")).thenReturn(process);
 
@@ -1706,6 +1709,8 @@ public class AbstractInvoiceHeaderHandlerTest {
 
       OBDal dal = mock(OBDal.class);
       dalMock.when(OBDal::getInstance).thenReturn(dal);
+      // InvoiceCompletionService flushes and clears the session before the process (ETP-6414).
+      when(dal.getSession()).thenReturn(mock(Session.class));
       when(dal.get(Process.class, "111")).thenReturn(mock(Process.class));
 
       NeoResponse result = AbstractInvoiceHeaderHandler.completeInvoiceIfNeeded(ctx);
@@ -1778,6 +1783,8 @@ public class AbstractInvoiceHeaderHandlerTest {
 
       OBDal dal = mock(OBDal.class);
       dalMock.when(OBDal::getInstance).thenReturn(dal);
+      // InvoiceCompletionService flushes and clears the session before the process (ETP-6414).
+      when(dal.getSession()).thenReturn(mock(Session.class));
       when(dal.get(Process.class, "111")).thenReturn(mock(Process.class));
 
       NeoResponse result = AbstractInvoiceHeaderHandler.completeInvoiceIfNeeded(ctx);

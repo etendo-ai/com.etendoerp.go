@@ -208,19 +208,18 @@ public class EmailLayoutTest {
       assertFalse(marker, plain.contains(marker));
     }
     String footerMarkup = insertedRun(plain, withFooter);
-    assertTrue(footerMarkup, footerMarkup.contains("Creado con&nbsp;<a href=\""
-        + EmailEscape.escapeHtml(footer.getUrl()) + "\""));
-    assertTrue(footerMarkup, footerMarkup.contains(">etendo.ai</a>"));
+    assertTrue(footerMarkup, footerMarkup.contains(footerAnchor(footer, "Creado con")));
   }
 
   /**
-   * The marketing / legal spec (ETP-6209 QA): one discreet line, «Creado con» and the brand as a
-   * plain link — no image, no button, no second link (the old «Conoce más» pill, the site row and
-   * the privacy row are gone), in the recipient's language.
+   * The marketing / legal spec (ETP-6209 QA): one discreet line, «Creado con» and the etendo.ai
+   * logo (100×15, alt {@value EmailFooter#BRAND}) wrapped by one single anchor to the email's UTM
+   * link — no button, no second link (the old «Conoce más» pill, the site row and the privacy row
+   * are gone), in the recipient's language.
    */
   @Test
-  public void theFooterIsOneLineWithOnlyTheBrandLinkAndNoImageButtonOrPrivacyRow() {
-    // Columns: language, words before the brand.
+  public void theFooterIsOneLinkWrappingTheWordsAndTheLogoWithNoButtonOrPrivacyRow() {
+    // Columns: language, words before the logo.
     String[][] cases = { { "es_ES", "Creado con" }, { "en_US", "Built with" } };
     for (String[] c : cases) {
       EmailFooter footer = EmailFooter.etendo(EmailFooter.Piece.LINK_RENEWAL, c[0]);
@@ -229,13 +228,26 @@ public class EmailLayoutTest {
           .build()));
 
       assertEquals(c[0], c[1], footer.getPrefix());
-      assertTrue(c[0] + ": " + footerMarkup, footerMarkup.contains(c[1] + "&nbsp;<a "));
+      assertTrue(c[0] + ": " + footerMarkup, footerMarkup.contains(footerAnchor(footer, c[1])));
       assertEquals(c[0] + ": one link only", 1, footerMarkup.split("<a ", -1).length - 1);
-      assertFalse(c[0], footerMarkup.contains("<img"));
+      assertEquals(c[0] + ": one image only", 1, footerMarkup.split("<img ", -1).length - 1);
+      assertTrue(c[0] + ": 14px words in the footer colour", footerMarkup.contains(
+          "font-size:14px;line-height:20px;font-weight:400;color:#4B5563;"));
       assertFalse(c[0], footerMarkup.contains("v:roundrect"));
       assertFalse(c[0], footerMarkup.toLowerCase().contains("privac"));
       assertFalse(c[0], footerMarkup.contains("border-radius"));
     }
+  }
+
+  /** The logo is the asset marketing published for emails, drawn at half its 200×30 size. */
+  @Test
+  public void theFooterLogoIsTheMarketingAssetAtHalfSize() {
+    assertEquals("https://etendo.ai/wp-content/uploads/2026/11/etendoai-logo-email-200.png",
+        EmailFooter.LOGO_URL);
+    assertEquals(100, EmailFooter.LOGO_WIDTH);
+    assertEquals(15, EmailFooter.LOGO_HEIGHT);
+    assertEquals(EmailFooter.LOGO_URL,
+        EmailFooter.etendo(EmailFooter.Piece.DOCUMENT_SEND, "es_ES").getLogoUrl());
   }
 
   /**
@@ -258,6 +270,15 @@ public class EmailLayoutTest {
       assertEquals(piece.name(), utm + c[1], EmailFooter.etendo(piece, "en_US").getUrl());
     }
     assertEquals("https://etendo.ai/", EmailFooter.link(null));
+  }
+
+  /** The footer's single anchor: the words and the logo, linked to the piece's UTM URL. */
+  private static String footerAnchor(EmailFooter footer, String prefix) {
+    return "<a href=\"" + EmailEscape.escapeHtml(footer.getUrl()) + "\" style=\"color:"
+        + EmailLayout.FOOTER_TEXT_COLOR + ";text-decoration:none;\">" + prefix + "&nbsp;"
+        + "<img src=\"" + EmailFooter.LOGO_URL + "\" width=\"100\" height=\"15\" alt=\"etendo.ai\" "
+        + "style=\"width:100px;height:15px;border:0;vertical-align:baseline;\">"
+        + "</a>";
   }
 
   /** The run of markup {@code longer} has on top of {@code shorter}, which must be all it adds. */

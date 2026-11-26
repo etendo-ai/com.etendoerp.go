@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -66,7 +67,7 @@ import com.etendoerp.go.schemaforge.email.EmailRecipientSet;
  *
  * <pre>
  * GET /sws/portal/home?months=                          balances, tiles, recent, paid, chart
- * GET /sws/portal/search?q=                             documents of every kind matching q
+ * GET /sws/portal/search?q=                             matches of every kind, merged and per kind
  * GET /sws/portal/documents?type=&amp;group=&amp;status=&amp;dateFrom=&amp;dateTo=&amp;q=&amp;limit=&amp;offset=
  * GET /sws/portal/documents/{kind}/{id}                 header, lines, taxes, payments, links
  * GET /sws/portal/documents/{kind}/{id}/pdf             the main attachment, streamed
@@ -90,10 +91,13 @@ final class PortalDocumentsEndpoint {
   private static final int MAX_LIMIT = 200;
   private static final int RECENT_LIMIT = 5;
   private static final int SEARCH_LIMIT = 8;
+  /** A kind's newest matches in each group of the header search. */
+  private static final int SEARCH_GROUP_LIMIT = 5;
   /** Chart periods the home offers ("Últimos 3 / 6 / 12 meses"); anything else is 12. */
   private static final List<Integer> CHART_MONTHS = List.of(3, 6, 12);
   private static final int DEFAULT_CHART_MONTHS = 12;
   private static final String KIND = "kind";
+  private static final String DOCUMENTS = "documents";
   private static final String ID = "id";
   private static final String CURRENCY = "currency";
   private static final String COUNT = "count";
@@ -254,19 +258,46 @@ final class PortalDocumentsEndpoint {
   }
 
   /**
-   * The header search across every kind: newest matches first, at most {@value #SEARCH_LIMIT}.
-   * A blank query answers an empty list.
+   * The header search across every kind. {@code documents}: the newest matches of all kinds, at
+   * most {@value #SEARCH_LIMIT}. {@code groups}: one entry per kind with at least one match, in
+   * kind order, holding how many match in all ({@code count}) and the kind's
+   * {@value #SEARCH_GROUP_LIMIT} newest, so one kind cannot crowd the others out. A blank query
+   * answers both empty.
    */
   static JSONObject search(PortalSession session, String search) throws JSONException {
-    List<BaseOBObject> documents = PortalDocumentQuery.search(session, search, SEARCH_LIMIT);
-    Map<String, Object[]> schedules = PortalDocumentQuery.invoiceSchedules(invoiceIds(documents),
-        today());
-    JSONArray rows = new JSONArray();
-    for (BaseOBObject document : documents) {
-      rows.put(row(document, schedules));
+    PortalDocumentQuery.SearchResult result = PortalDocumentQuery.search(session, search,
+        SEARCH_LIMIT, SEARCH_GROUP_LIMIT);
+    Set<BaseOBObject> shown = new LinkedHashSet<>(result.documents);
+    for (PortalDocumentQuery.KindMatches matches : result.groups) {
+      shown.addAll(matches.documents);
+    }
+    // One grouped schedule query for every invoice the answer shows, whichever list it is in, and
+    // one row per document even when it is both in the merged list and in its kind's group.
+    Map<String, Object[]> schedules = PortalDocumentQuery.invoiceSchedules(
+        invoiceIds(new ArrayList<>(shown)), today());
+    Map<BaseOBObject, JSONObject> rows = new HashMap<>();
+    for (BaseOBObject document : shown) {
+      rows.put(document, row(document, schedules));
     }
     JSONObject body = new JSONObject();
-    body.put("documents", rows);
+    JSONArray documents = new JSONArray();
+    for (BaseOBObject document : result.documents) {
+      documents.put(rows.get(document));
+    }
+    body.put(DOCUMENTS, documents);
+    JSONArray groups = new JSONArray();
+    for (PortalDocumentQuery.KindMatches matches : result.groups) {
+      JSONArray groupRows = new JSONArray();
+      for (BaseOBObject document : matches.documents) {
+        groupRows.put(rows.get(document));
+      }
+      JSONObject group = new JSONObject();
+      group.put(KIND, matches.kind.name());
+      group.put(COUNT, matches.count);
+      group.put(DOCUMENTS, groupRows);
+      groups.put(group);
+    }
+    body.put("groups", groups);
     return body;
   }
 
@@ -427,7 +458,7 @@ final class PortalDocumentsEndpoint {
     JSONObject body = new JSONObject();
     long totalCount = putTotals(body, session, kind, filter);
     body.put("type", kind.name());
-    body.put("documents", rows);
+    body.put(DOCUMENTS, rows);
     body.put("totalCount", totalCount);
     body.put("offset", offset);
     body.put("limit", limit);

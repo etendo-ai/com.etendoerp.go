@@ -101,6 +101,7 @@ class InvoiceInboxConfirmChecksTest {
         new Tax("T21", "21%", new java.math.BigDecimal("21"))));
     when(lookups.duplicates(anyString(), anyString())).thenReturn(new Duplicates(true, List.of()));
     when(lookups.vendorAddress(anyString())).thenReturn(new Address(AddressState.PRESENT, "LOC1"));
+    stubDefaultCriteria();
     valid();
   }
 
@@ -155,13 +156,27 @@ class InvoiceInboxConfirmChecksTest {
     return list;
   }
 
+  /** The default purchase lists the criteria returns (the first visible one wins), vendor "V1" has none. */
   @SuppressWarnings("unchecked")
-  private void defaultPurchaseList(PriceList list) {
+  private void defaultPurchaseLists(PriceList... lists) {
     BusinessPartner partner = mock(BusinessPartner.class);
     when(dal.get(BusinessPartner.class, "V1")).thenReturn(partner);
+    stubDefaultCriteria(lists);
+  }
+
+  @SuppressWarnings("unchecked")
+  private void stubDefaultCriteria(PriceList... lists) {
     OBCriteria<PriceList> criteria = mock(OBCriteria.class);
     when(dal.createCriteria(PriceList.class)).thenReturn(criteria);
-    when(criteria.uniqueResult()).thenReturn(list);
+    when(criteria.list()).thenReturn(List.of(lists));
+  }
+
+  private void defaultPurchaseList(PriceList list) {
+    if (list == null) {
+      defaultPurchaseLists();
+    } else {
+      defaultPurchaseLists(list);
+    }
   }
 
   // ------------------------------------------------------------------ the verdict
@@ -331,12 +346,38 @@ class InvoiceInboxConfirmChecksTest {
   }
 
   @Test
-  @DisplayName("a new vendor has no price list yet: never asked, never refused")
-  void aNewVendorIsNotAffected() throws Exception {
+  @DisplayName("a new vendor is judged by the default purchase list: tax included is refused, net or none is not")
+  void aNewVendorUsesTheDefaultList() throws Exception {
+    PriceList taxIncluded = mock(PriceList.class);
+    when(taxIncluded.isPriceIncludesTax()).thenReturn(true);
+    stubDefaultCriteria(taxIncluded);
+    assertRefusal(preflight(document(NEW_VENDOR, "[]")), 422, "price_list_tax_included");
+
+    PriceList net = mock(PriceList.class);
+    when(net.isPriceIncludesTax()).thenReturn(false);
+    stubDefaultCriteria(net);
+    assertNull(preflight(document(NEW_VENDOR, "[]")));
+
+    stubDefaultCriteria();
     assertNull(preflight(document(NEW_VENDOR, "[]")));
 
     verify(dal, never()).get(eq(BusinessPartner.class), anyString());
-    verify(dal, never()).createCriteria(PriceList.class);
+  }
+
+  @Test
+  @DisplayName("the vendor's own list wins over a tax-included default, and a tax-included vendor list over a net default")
+  void theVendorListBeatsTheDefault() throws Exception {
+    PriceList taxIncludedDefault = mock(PriceList.class);
+    when(taxIncludedDefault.isPriceIncludesTax()).thenReturn(true);
+    vendorPriceList(false);
+    stubDefaultCriteria(taxIncludedDefault);
+    assertNull(preflight(document(LINKED, PLAIN_LINE)));
+
+    PriceList netDefault = mock(PriceList.class);
+    when(netDefault.isPriceIncludesTax()).thenReturn(false);
+    vendorPriceList(true);
+    stubDefaultCriteria(netDefault);
+    assertRefusal(preflight(document(LINKED, PLAIN_LINE)), 422, "price_list_tax_included");
   }
 
   // ------------------------------------------------------------------ duplicates and address

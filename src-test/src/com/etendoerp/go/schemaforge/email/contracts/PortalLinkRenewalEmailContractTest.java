@@ -58,6 +58,7 @@ import com.etendoerp.go.schemaforge.email.EmailProviderRequest;
 import com.etendoerp.go.schemaforge.email.EmailRecipientResolution;
 import com.etendoerp.go.schemaforge.email.EmailRecipientSet;
 import com.etendoerp.go.schemaforge.email.EmailSendContext;
+import com.etendoerp.go.schemaforge.email.render.EmailFooter;
 
 /**
  * Unit tests for {@link PortalLinkRenewalEmailContract}, the email that carries a renewed customer
@@ -199,7 +200,8 @@ public class PortalLinkRenewalEmailContractTest {
       assertTrue(body, body.contains("Tu nuevo enlace al portal de cliente</h1>"));
       assertFalse(body, body.contains("Equipo de Etendo"));
       assertTrue("the renewal closes with the etendo.ai footer: " + body,
-          body.contains("Creado con&nbsp;<a ") && body.contains("utm_content=mail_reenvio_enlace"));
+          body.contains("Creado con&nbsp;<img src=\"" + EmailFooter.LOGO_URL + "\"")
+              && body.contains("utm_content=mail_reenvio_enlace"));
       assertEquals("onDelivered confirms the new link, not the expired one", NEW_ID,
           request.getSendCorrelationId());
     }
