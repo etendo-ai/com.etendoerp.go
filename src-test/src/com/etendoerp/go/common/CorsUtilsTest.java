@@ -16,6 +16,7 @@
  */
 package com.etendoerp.go.common;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.never;
@@ -40,12 +41,38 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 /**
  * Unit tests for {@link CorsUtils}.
+ *
+ * @covers com.etendoerp.go.common.CorsUtils
  */
 @ExtendWith(MockitoExtension.class)
 class CorsUtilsTest {
 
   @Mock private HttpServletRequest request;
   @Mock private HttpServletResponse response;
+
+  @Nested
+  @DisplayName("withCorrelationHeaders")
+  class CorrelationHeaders {
+
+    @Test
+    void nullOrEmptyBecomeTheCorrelationHeadersOnly() {
+      assertEquals("X-Etendo-Feature, X-Request-Id", CorsUtils.withCorrelationHeaders(null));
+      assertEquals("X-Etendo-Feature, X-Request-Id", CorsUtils.withCorrelationHeaders(""));
+    }
+
+    @Test
+    void headersAlreadyPresentInAnyCaseAreNotDuplicated() {
+      assertEquals("content-type, x-etendo-feature, X-REQUEST-ID",
+          CorsUtils.withCorrelationHeaders("content-type, x-etendo-feature, X-REQUEST-ID"));
+    }
+
+    @Test
+    void onlyTheMissingOneIsAppendedAndTheResultIsStable() {
+      String once = CorsUtils.withCorrelationHeaders("Authorization, X-Request-Id");
+      assertEquals("Authorization, X-Request-Id, X-Etendo-Feature", once);
+      assertEquals(once, CorsUtils.withCorrelationHeaders(once));
+    }
+  }
 
   @Nested
   @DisplayName("apply")
@@ -78,7 +105,8 @@ class CorsUtilsTest {
 
       verify(response).setHeader("Access-Control-Allow-Origin", "http://localhost:3000");
       verify(response).setHeader("Access-Control-Allow-Methods", "GET,POST");
-      verify(response).setHeader("Access-Control-Allow-Headers", "Content-Type,Authorization");
+      verify(response).setHeader("Access-Control-Allow-Headers",
+          "Content-Type,Authorization, X-Etendo-Feature, X-Request-Id");
       verify(response).setHeader("Access-Control-Max-Age", "86400");
       verify(response).setHeader("Vary", "Origin");
     }
