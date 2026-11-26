@@ -302,35 +302,31 @@ final class RemittanceHeaderWrites {
   }
 
   /**
-   * ETP-6247 — the direct debit options of a collection ({@value RemittanceHeaderHandler#FIELD_SCHEME}
-   * {@code CORE | B2B}, {@value RemittanceHeaderHandler#FIELD_FINANCED} boolean). Normalized in
-   * place; a blank scheme is dropped ({@link #proposeAccountValues} then sets CORE on the create of a collection). 422
-   * {@value RemittanceHeaderHandler#MSG_SCHEME_INVALID} for any other scheme. On a PAYMENT remittance
-   * they do not apply: {@code B2B} or {@code financed: true} is refused (422
-   * {@value RemittanceHeaderHandler#MSG_OPTIONS_COLLECTION_ONLY}); {@code CORE} / {@code false} is
-   * dropped from the body. Processed remittances never get here.
+   * ETP-6247 — the direct debit scheme of a collection
+   * ({@value RemittanceHeaderHandler#FIELD_SCHEME} {@code CORE | B2B}). Normalized in place; a blank scheme is dropped
+   * ({@link #proposeAccountValues} then sets CORE on the create of a collection). 422
+   * {@value RemittanceHeaderHandler#MSG_SCHEME_INVALID} for any other scheme. On a PAYMENT
+   * remittance it does not apply: {@code B2B} is refused (422
+   * {@value RemittanceHeaderHandler#MSG_OPTIONS_COLLECTION_ONLY}); {@code CORE} is dropped from
+   * the body. Processed remittances never get here.
    */
   private static NeoResponse validateOptions(RemittanceHeaderHandler handler, JSONObject body,
       Remittance stored) throws JSONException {
-    boolean hasScheme = body.has(RemittanceHeaderHandler.FIELD_SCHEME);
-    boolean hasFinanced = body.has(RemittanceHeaderHandler.FIELD_FINANCED);
-    if (!hasScheme && !hasFinanced) {
+    if (!body.has(RemittanceHeaderHandler.FIELD_SCHEME)) {
       return null;
     }
-    if (hasScheme && !normalizeSchemeField(body)) {
+    if (!normalizeSchemeField(body)) {
       return NeoMessageText.error(SC_UNPROCESSABLE, RemittanceHeaderHandler.MSG_SCHEME_INVALID);
     }
     String scheme = body.optString(RemittanceHeaderHandler.FIELD_SCHEME, null);
-    boolean financed = hasFinanced && normalizeFinancedField(body);
     if (!isPaymentType(handler, effectiveTypeId(body, stored))) {
       return null;
     }
-    if (RemittanceSepaOptions.SCHEME_B2B.equals(scheme) || financed) {
+    if (RemittanceSepaOptions.SCHEME_B2B.equals(scheme)) {
       return NeoMessageText.error(SC_UNPROCESSABLE,
           RemittanceHeaderHandler.MSG_OPTIONS_COLLECTION_ONLY);
     }
     body.remove(RemittanceHeaderHandler.FIELD_SCHEME);
-    body.remove(RemittanceHeaderHandler.FIELD_FINANCED);
     return null;
   }
 
@@ -352,15 +348,6 @@ final class RemittanceHeaderWrites {
     }
     body.put(RemittanceHeaderHandler.FIELD_SCHEME, scheme);
     return true;
-  }
-
-  /** Normalizes the body's financed flag in place to a boolean ({@code true} / {@code Y}). */
-  private static boolean normalizeFinancedField(JSONObject body) throws JSONException {
-    Object raw = body.opt(RemittanceHeaderHandler.FIELD_FINANCED);
-    String text = raw == null ? "" : raw.toString().trim();
-    boolean financed = "true".equalsIgnoreCase(text) || "Y".equalsIgnoreCase(text);
-    body.put(RemittanceHeaderHandler.FIELD_FINANCED, financed);
-    return financed;
   }
 
   /** The account the write leaves: the body's, else the stored one's; may be null. */

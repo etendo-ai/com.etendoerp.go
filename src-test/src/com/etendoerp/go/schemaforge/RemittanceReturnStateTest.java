@@ -333,6 +333,14 @@ class RemittanceReturnStateTest {
   void aNullCountIsNoReturns() {
     returnCount = null;
     assertFalse(RemittanceReturnState.hasReturns(remittance));
+    assertEquals(0, RemittanceReturnState.returnedCount(remittance));
+  }
+
+  /** ETP-6247: the returned receipts a download of the SEPA file still lists. */
+  @Test
+  void theReturnedReceiptsAreCounted() {
+    returnCount = 3L;
+    assertEquals(3, RemittanceReturnState.returnedCount(remittance));
   }
 
   // ---------------------------------------------------------------- returnDate

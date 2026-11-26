@@ -21,6 +21,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.mockStatic;
 
@@ -34,7 +35,11 @@ import org.openbravo.erpCommon.utility.OBMessageUtils;
 import com.etendoerp.go.schemaforge.util.NeoMessageTranslator;
 
 /**
- * Unit tests for {@link NeoResponse}.
+ * Unit tests for {@link NeoResponse}, including how a {@link NeoRefusalException} (a keyed refusal
+ * carrying its own response) reads to a caller that only knows {@link MessageKeyedException}.
+ *
+ * @covers com.etendoerp.go.schemaforge.NeoResponse
+ * @covers com.etendoerp.go.schemaforge.NeoRefusalException
  */
 public class NeoResponseTest {
 
@@ -207,6 +212,42 @@ public class NeoResponseTest {
       assertEquals("El Periodo no existe o no está abierto", error.getString("message"));
       assertEquals("PeriodNotAvailable", error.getJSONArray("messageKeys").getString(0));
     }
+  }
+
+  /**
+   * ETP-6247: a caller unaware of {@link NeoRefusalException} answers it through the generic
+   * keyed path — the carried text and key, with its own status and without the extra keys.
+   */
+  @Test
+  public void testRefusalSeenAsKeyedExceptionKeepsTextAndKey() throws JSONException {
+    NeoResponse carried = NeoResponse.error(422, "In remittance REM-0042");
+    carried.getBody().getJSONObject("error").put("remittanceDocumentNo", "REM-0042");
+    NeoRefusalException refusal = new NeoRefusalException(carried, "ETGO_InvoiceInRemittance");
+
+    assertSame(carried, refusal.getResponse());
+    assertEquals("In remittance REM-0042", refusal.getMessage());
+    assertEquals("ETGO_InvoiceInRemittance", refusal.getMessageKey());
+
+    NeoResponse generic = NeoResponse.error(400, refusal);
+    JSONObject error = generic.getBody().getJSONObject("error");
+    assertEquals(400, generic.getHttpStatus());
+    assertEquals("In remittance REM-0042", error.getString("message"));
+    assertEquals("ETGO_InvoiceInRemittance", error.getJSONArray("messageKeys").getString(0));
+    assertFalse(error.has("remittanceDocumentNo"));
+  }
+
+  /** A refusal built from a response without an error message still carries its key. */
+  @Test
+  public void testRefusalWithoutErrorMessageHasNoTextButKeepsKey() {
+    NeoRefusalException noResponse = new NeoRefusalException(null, "ETGO_InvoiceInRemittance");
+    NeoRefusalException noError =
+        new NeoRefusalException(NeoResponse.ok(new JSONObject()), "ETGO_InvoiceInRemittance");
+
+    assertNull(noResponse.getResponse());
+    assertNull(noResponse.getMessage());
+    assertEquals("ETGO_InvoiceInRemittance", noResponse.getMessageKey());
+    assertNull(noError.getMessage());
+    assertEquals("ETGO_InvoiceInRemittance", noError.getMessageKey());
   }
 
   /** A plain business exception keeps the plain error body. */

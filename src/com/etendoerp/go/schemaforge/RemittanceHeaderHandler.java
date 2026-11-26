@@ -136,9 +136,8 @@ public class RemittanceHeaderHandler implements NeoHandler {
   static final String FIELD_NAME = "name";
   /** ETP-6247: the remittance's own IBAN ({@code REM_REMITTANCE.IBAN}, DAL {@code iBAN}). */
   static final String FIELD_IBAN = RemittanceIban.PROPERTY;
-  /** ETP-6247: the direct debit scheme and financed flag of a collection remittance. */
+  /** ETP-6247: the direct debit scheme of a collection remittance. */
   static final String FIELD_SCHEME = RemittanceSepaOptions.PROPERTY_SCHEME;
-  static final String FIELD_FINANCED = RemittanceSepaOptions.PROPERTY_FINANCED;
   /** ETP-6247: the remittance's own SEPA creditor identifier (DAL {@code creditorIdentifier}). */
   static final String FIELD_CREDITOR_ID = RemittanceCreditorId.REMITTANCE_PROPERTY;
   static final String MSG_SCHEME_INVALID = "ETGO_RemittanceSchemeInvalid";

@@ -1,0 +1,55 @@
+<?xml version="1.0"?>
+  <database name="FUNCTION ETGO_GET_REMITTED_AMT">
+    <function name="ETGO_GET_REMITTED_AMT" type="NUMERIC" volatility="STABLE">
+      <parameter name="p_c_invoice_id" type="VARCHAR" mode="in">
+        <default/>
+      </parameter>
+      <body><![CDATA[v_amt NUMBER;
+BEGIN
+  -- ETP-6247. Amount of the invoice that sits in a CONFIRMED remittance: the
+  -- installment details (FIN_PAYMENT_SCHEDULEDETAIL) linked to a payment that
+  -- Classic REM created with status REM_SENT ("Remitted"). That part is still owed
+  -- (the invoice outstanding does not move until the remittance is collected), but it
+  -- can no longer be registered as a payment from the invoice.
+  --
+  -- A draft remittance creates no payment, so it never counts. Collecting the
+  -- remittance moves the payment to RPR/PPM/RDNC/PWNC and a return voids it: both
+  -- leave REM_SENT, so the amount drops back to 0.
+  --
+  -- TOTAL FUNCTION. Refresh_Mode = 'S' runs this inside the business transaction,
+  -- so ANY exception raised here rolls back the save that changed the payment or
+  -- the installment detail. Every edge case below resolves to a value.
+
+  -- Edge case 1 - null target id: nothing remitted.
+  IF p_c_invoice_id IS NULL THEN
+    RETURN 0;
+  END IF;
+
+  -- Edge cases 2 and 3 - no installment, no remitted detail, or the invoice was
+  -- deleted between enqueue and recompute: SUM over zero rows is NULL, folded to 0
+  -- below. Plain SELECT INTO (never INTO STRICT), so zero rows assign NULL.
+  -- A NULL detail amount is skipped by SUM; a sum is deterministic, so a recompute
+  -- never reports phantom drift in ad_scd_check.
+  SELECT SUM(psd.amount)
+    INTO v_amt
+    FROM fin_payment_schedule ps
+    JOIN fin_payment_scheduledetail psd
+      ON psd.fin_payment_schedule_invoice = ps.fin_payment_schedule_id
+    JOIN fin_payment_detail pd
+      ON pd.fin_payment_detail_id = psd.fin_payment_detail_id
+    JOIN fin_payment p
+      ON p.fin_payment_id = pd.fin_payment_id
+   WHERE ps.c_invoice_id = p_c_invoice_id
+     AND p.status = 'REM_SENT';
+
+  RETURN COALESCE(v_amt, 0);
+
+-- Belt and braces: nothing above should raise, but an unforeseen runtime error
+-- must not block the payment or remittance save that enqueued this invoice.
+EXCEPTION
+  WHEN OTHERS THEN
+    RETURN 0;
+END ETGO_GET_REMITTED_AMT
+]]></body>
+    </function>
+  </database>
