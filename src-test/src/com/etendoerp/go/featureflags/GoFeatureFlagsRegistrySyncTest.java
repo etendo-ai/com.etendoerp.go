@@ -65,6 +65,7 @@ import org.junit.jupiter.api.Test;
  */
 class GoFeatureFlagsRegistrySyncTest {
 
+  private static final String FLAG_KEY = "flagKey";
   private static final String REGISTRY = "flags-registry.json";
   private static final String MODULE_DIR = "modules/com.etendoerp.go";
   // Built from the provider's own constants so a changed prefix breaks the match loudly instead of
@@ -100,7 +101,7 @@ class GoFeatureFlagsRegistrySyncTest {
       JSONObject feature = features.getJSONObject(i);
       String id = feature.getString("id");
       assertTrue(ids.add(id), "duplicate contribution id " + id);
-      assertTrue(feature.has("flagKey") || feature.optBoolean("contribution", false),
+      assertTrue(feature.has(FLAG_KEY) || feature.optBoolean("contribution", false),
           id + " is a header: headers live in etendo_schema_forge, this registry holds contributions");
       for (String forbidden : new String[] {"ttl", "ttlNote", "defaultValue", "flag"}) {
         assertFalse(feature.has(forbidden),
@@ -185,9 +186,9 @@ class GoFeatureFlagsRegistrySyncTest {
     Set<String> keys = new TreeSet<>();
     for (int i = 0; i < features.length(); i++) {
       JSONObject feature = features.getJSONObject(i);
-      if (feature.has("flagKey")) {
-        assertTrue(keys.add(feature.getString("flagKey")),
-            "flagKey declared twice: " + feature.getString("flagKey"));
+      if (feature.has(FLAG_KEY)) {
+        assertTrue(keys.add(feature.getString(FLAG_KEY)),
+            "flagKey declared twice: " + feature.getString(FLAG_KEY));
       }
     }
     return keys;
