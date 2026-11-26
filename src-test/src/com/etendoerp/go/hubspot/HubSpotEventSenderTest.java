@@ -28,7 +28,9 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.time.Instant;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.Deque;
 import java.util.List;
 import java.util.Optional;
 import java.util.function.Function;
@@ -1158,8 +1160,10 @@ class HubSpotEventSenderTest {
 
   private final List<FormCall> formCalls = new ArrayList<>();
   private Response formAnswer = new Response(200, "{\"inlineMessage\":\"Thanks\"}");
+  /** Answers given before {@link #formAnswer}, one per submission. */
+  private final Deque<Response> formAnswers = new ArrayDeque<>();
 
-  private final HubSpotEventSender formSender = new HubSpotEventSender(new HubSpotClient() {
+  private final HubSpotClient formClient = new HubSpotClient() {
     @Override
     public Response send(String method, String path, JSONObject body) {
       Call call = new Call(method, path, body);
@@ -1169,10 +1173,22 @@ class HubSpotEventSenderTest {
 
     @Override
     public Response send(String baseUrl, String method, String path, JSONObject body) {
-      formCalls.add(new FormCall(baseUrl, path, body));
-      return formAnswer;
+      // A copy: the sender may change the body after sending it.
+      formCalls.add(new FormCall(baseUrl, path, copyOf(body)));
+      return formAnswers.isEmpty() ? formAnswer : formAnswers.poll();
     }
-  }, CONFIG, store, trials, FORM);
+  };
+
+  private final HubSpotEventSender formSender = new HubSpotEventSender(formClient, CONFIG, store,
+      trials, FORM);
+
+  private static JSONObject copyOf(JSONObject body) {
+    try {
+      return new JSONObject(body.toString());
+    } catch (Exception e) {
+      throw new IllegalStateException(e);
+    }
+  }
 
   private static PendingEvent signUp(String type, String payload, int attempts) {
     return new PendingEvent("row-6", ACCOUNT, type, CLIENT, payload, attempts, null,
@@ -1245,6 +1261,100 @@ class HubSpotEventSenderTest {
     formAnswer = new Response(503, "");
     assertEquals(Outcome.Kind.RETRY,
         formSender.send(signUp(HubSpotOutboxStore.SIGNUP_FORM, null, 0), NOW).kind());
+  }
+
+  // ETP-6363 — the consent of the sign-up (marketing's request): the notice and the
+  // promotional-mail checkbox, with the texts the visitor was shown.
+
+  private static final long MARKETING_SUBSCRIPTION = 123456789L;
+  private static final String NOTICE = "Al crear tu cuenta, aceptas los Términos y Condiciones y "
+      + "confirmas que has leído la Política de Privacidad.";
+  private static final String CHECKBOX = "Acepto recibir comunicaciones comerciales y material "
+      + "promocional de Etendo por correo electrónico.";
+
+  private HubSpotEventSender consentSender(Long subscription) {
+    return new HubSpotEventSender(formClient, CONFIG, store, trials,
+        new HubSpotSignupForm("https://forms.test", "123", "form-1", subscription));
+  }
+
+  private static String consented(Boolean marketing) throws Exception {
+    JSONObject context = new JSONObject().put("hutk", HUTK).put("consentText", NOTICE)
+        .put("communicationsText", CHECKBOX);
+    return (marketing == null ? context : context.put("marketingConsent", marketing.booleanValue()))
+        .toString();
+  }
+
+  @Test
+  void theSignUpCarriesTheConsentAndTheCheckboxAsTheVisitorLeftIt() throws Exception {
+    HubSpotEventSender consenting = consentSender(MARKETING_SUBSCRIPTION);
+    consenting.send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(true), 0), NOW);
+    consenting.send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(false), 0), NOW);
+
+    JSONObject consent = formCalls.get(0).body().getJSONObject("legalConsentOptions")
+        .getJSONObject("consent");
+    assertTrue(consent.getBoolean("consentToProcess"));
+    assertEquals(NOTICE, consent.getString("text"));
+    JSONObject communication = consent.getJSONArray("communications").getJSONObject(0);
+    assertTrue(communication.getBoolean("value"));
+    assertEquals(MARKETING_SUBSCRIPTION, communication.getLong("subscriptionTypeId"));
+    assertEquals(CHECKBOX, communication.getString("text"));
+    // Unticked is sent too, never left out.
+    assertFalse(formCalls.get(1).body().getJSONObject("legalConsentOptions")
+        .getJSONObject("consent").getJSONArray("communications").getJSONObject(0)
+        .getBoolean("value"));
+    // The texts are not part of the page context.
+    assertFalse(formCalls.get(0).body().getJSONObject("context").has("consentText"));
+  }
+
+  @Test
+  void withoutTheSubscriptionTypeOnlyTheConsentToProcessIsSent() throws Exception {
+    consentSender(null).send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(true), 0), NOW);
+
+    JSONObject consent = formCalls.get(0).body().getJSONObject("legalConsentOptions")
+        .getJSONObject("consent");
+    assertEquals(NOTICE, consent.getString("text"));
+    assertFalse(consent.has("communications"));
+  }
+
+  @Test
+  void aSignUpThatKeptNoNoticeClaimsNoConsent() throws Exception {
+    consentSender(MARKETING_SUBSCRIPTION).send(signUp(HubSpotOutboxStore.SIGNUP_FORM,
+        new JSONObject().put("hutk", HUTK).put("communicationsText", CHECKBOX).toString(), 0), NOW);
+
+    assertFalse(formCalls.get(0).body().has("legalConsentOptions"));
+  }
+
+  @Test
+  void aRefusedConsentDoesNotCostTheContactItsSource() throws Exception {
+    formAnswers.add(new Response(400, "{\"errors\":[{\"errorType\":\"INVALID_SUBSCRIPTION\"}]}"));
+
+    Outcome outcome = consentSender(MARKETING_SUBSCRIPTION)
+        .send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(true), 0), NOW);
+
+    assertEquals(Outcome.Kind.SENT, outcome.kind());
+    assertEquals(2, formCalls.size());
+    assertTrue(formCalls.get(0).body().has("legalConsentOptions"));
+    assertFalse(formCalls.get(1).body().has("legalConsentOptions"));
+    assertEquals(HUTK, formCalls.get(1).body().getJSONObject("context").getString("hutk"));
+  }
+
+  @Test
+  void aBusyHubSpotRetriesTheSignUpWithItsConsent() throws Exception {
+    formAnswer = new Response(503, "");
+
+    Outcome outcome = consentSender(MARKETING_SUBSCRIPTION)
+        .send(signUp(HubSpotOutboxStore.SIGNUP_FORM, consented(true), 0), NOW);
+
+    assertEquals(Outcome.Kind.RETRY, outcome.kind());
+    assertEquals(1, formCalls.size(), "a retry keeps the consent for the next attempt");
+  }
+
+  @Test
+  void aSubscriptionTypeIsANumber() {
+    assertEquals(Long.valueOf(MARKETING_SUBSCRIPTION),
+        HubSpotSignupForm.subscriptionTypeIdOf("123456789"));
+    assertNull(HubSpotSignupForm.subscriptionTypeIdOf(null));
+    assertNull(HubSpotSignupForm.subscriptionTypeIdOf("Marketing Information"));
   }
 
   @Test
