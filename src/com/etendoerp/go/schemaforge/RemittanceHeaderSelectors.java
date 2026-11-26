@@ -170,7 +170,7 @@ final class RemittanceHeaderSelectors {
     JSONArray items = new JSONArray();
     for (RemittanceType type : types) {
       JSONObject item = item(type.getId(), type.getIdentifier());
-      // ETP-6247: lets the SPA show the scheme / financed options of a collection before the
+      // ETP-6247: lets the SPA show the scheme option of a collection before the
       // first save. A collection is a type whose payment method allows pay-in, as REM decides.
       boolean collection = type.getPaymentMethod() != null
           && Boolean.TRUE.equals(type.getPaymentMethod().isPayinAllow());

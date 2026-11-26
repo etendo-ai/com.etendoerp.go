@@ -423,7 +423,7 @@ exercise already existing answers `409` (shared ETP-5272 guard).
 ### Live test against the AEAT test environment
 
 Never run against production while developing. With the user's test certificate stored for the
-organization (Fiscal configuration → certificate) and the client preference `ETSG_ForceTestMode =
+organization (Fiscal Configuration → Digital certificate) and the client preference `ETSG_ForceTestMode =
 Y`, a production filing goes to `prewww1.aeat.es`. "Validar sin presentar" uses ServValiDos
 (`prewww2.aeat.es`, no certificate). Unit tests mock `AEAT303SubmissionService`
 (`Fiscal390SubmissionSupportTest`); nothing in the suite reaches the network.

@@ -76,9 +76,10 @@ import com.etendoerp.payment.removal.util.TransactionRemovalUtil;
  * the outcome is verified, because the module swallows some of its own errors. Any failure rolls
  * back everything: 422 with a translated key.
  *
- * <p>The payment is the returnable unit: with grouping {@code GGPD} one payment covers several
- * lines, and a return must name all of them ({@code paymentLineIds} of {@code returnState}).
- * Reconciled or posted settlements are refused; so is a payment (not collection) remittance.
+ * <p>The payment is the returnable unit: with a grouping ({@code GGPD}, or {@code GGP} across due
+ * dates) one payment covers several lines, and a return must name all of them
+ * ({@code paymentLineIds} of {@code returnState}). Reconciled or posted settlements are refused;
+ * so is a payment (not collection) remittance.
  */
 final class RemittanceReturnAction {
 

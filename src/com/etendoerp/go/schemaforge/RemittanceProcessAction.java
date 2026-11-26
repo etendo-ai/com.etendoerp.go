@@ -46,7 +46,9 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract.Param;
  * does. A declared action of the remittance header ({@link RemittanceHeaderHandler}).
  *
  * <p>The grouping is the button's action code: {@value #GROUPING_NONE} (one payment per line, the
- * default) or {@value #GROUPING_BP_DUE_DATE} (one per business partner and due date). REM checks
+ * default), {@value #GROUPING_BP_DUE_DATE} (one per business partner and due date) or
+ * {@value #GROUPING_BP} (one per business partner, all due dates; ETP-6247). All three are REM's
+ * own codes, run natively by {@code REMRemittanceProcess}. REM checks
  * the rest itself — no repeated payments, at least one line, amounts in range and the
  * account ↔ method link setup ({@code checkPMSetup}, which the links {@link
  * RemittanceSepaProvisioning} creates satisfy) — creates the payments, marks the remittance
@@ -70,6 +72,13 @@ final class RemittanceProcessAction {
   static final String P_GROUPING = "grouping";
   static final String GROUPING_NONE = "P";
   static final String GROUPING_BP_DUE_DATE = "GGPD";
+  /**
+   * ETP-6247: REM's «Group by business partner» — one payment per business partner (and
+   * currency) whatever the due dates of its lines; the payment's date is the latest of them.
+   */
+  static final String GROUPING_BP = "GGP";
+  /** The groupings GO offers, in the order the UI lists them; anything else is refused (422). */
+  static final List<String> GROUPINGS = List.of(GROUPING_NONE, GROUPING_BP_DUE_DATE, GROUPING_BP);
   static final String PROCESS_ID = "FF8080812E77C0AF012E77C585600014";
 
   static final String MSG_ALREADY_PROCESSED = "ETGO_RemittanceAlreadyProcessed";
@@ -89,9 +98,7 @@ final class RemittanceProcessAction {
             + "Remittance» button): creates the payments of its lines (status Remitted, nothing "
             + "settled) and marks it processed; its status becomes PR. Refused when it is already processed or has no lines. Returns "
             + "status (the remittance status code) and message.",
-        Param.options(P_GROUPING, "'" + GROUPING_NONE + "' one payment per line (default), '"
-            + GROUPING_BP_DUE_DATE + "' one payment per business partner and due date.",
-            List.of(GROUPING_NONE, GROUPING_BP_DUE_DATE)))
+        groupingParam())
         .withIdDescription("the id of the remittance")
         .withFieldValuesBody());
     contracts.put(ACTION_REACTIVATE, NeoActionContract.write(ACTION_REACTIVATE,
@@ -103,6 +110,16 @@ final class RemittanceProcessAction {
             + "(the remittance status code) and message.")
         .withIdDescription("the id of the remittance")
         .withFieldValuesBody());
+  }
+
+  /**
+   * The {@value #P_GROUPING} parameter of {@code process} and of the file action's {@code confirm}:
+   * one declaration, so both offer and validate the same {@link #GROUPINGS}.
+   */
+  static Param groupingParam() {
+    return Param.options(P_GROUPING, "'" + GROUPING_NONE + "' one payment per line (default), '"
+        + GROUPING_BP_DUE_DATE + "' one payment per business partner and due date, '"
+        + GROUPING_BP + "' one payment per business partner (all due dates).", GROUPINGS);
   }
 
   /** @return whether {@code action} is one of this class's actions */
@@ -237,8 +254,8 @@ final class RemittanceProcessAction {
    * Seam: runs {@code REMRemittanceProcess} with the button's parameters.
    *
    * @param remittanceId the remittance
-   * @param grouping     REM's action code: a grouping ({@code P}, {@code GGPD}) to process, or
-   *                     {@value #REACTIVATE_CODE} to reactivate
+   * @param grouping     REM's action code: a grouping ({@code P}, {@code GGPD}, {@code GGP}) to
+   *                     process, or {@value #REACTIVATE_CODE} to reactivate
    * @return REM's result, or an error result when the run throws
    */
   static OBError run(String remittanceId, String grouping) {

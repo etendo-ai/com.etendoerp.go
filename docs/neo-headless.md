@@ -2931,8 +2931,9 @@ not recorded by `CopilotToolUsageRecorder` (the client calls the service directl
 Classic's «Remittance» window (`org.openbravo.module.remittance`, window
 `FF8080812E71F7C7012E71FD0499001B`) served as the spec `remittance`: header `remittance`
 (`REM_Remittance`) and `lines` (`REM_RemittanceLine`, only «A remesar» editable). Behind the per-account flag
-`sepa-remittances` (`SepaRemittancesFlag`, off by default). `com.etendoerp.go` adds no column:
-everything is Classic's model.
+`sepa-remittances` (`SepaRemittancesFlag`, off by default). `com.etendoerp.go` adds no column to
+the remittance tables: everything is Classic's model. The one remittance column it adds is on the
+invoice, `C_Invoice.EM_ETGO_Remitted_Amt` (see *The invoice side of a confirmed remittance* below).
 
 - **No per-account switch.** Every **Bank** (`B`) financial account created while the flag is on for
   the acting user gets the two remittance payment methods; Cash and Card accounts never do. Accounts
@@ -2993,7 +2994,7 @@ everything is Classic's model.
   the items. `remittanceType` offers only the provisioned types linked to the request's
   `FIN_Financial_Account_ID`; each item is `{id, label, direction}` (ETP-6247), `direction` being
   `collection` | `payment` from the type's payment method pay-in flag, so the SPA can show the scheme
-  and financed options before the first save. Through the MCP, `etendo_selectors` takes the account
+  option before the first save. Through the MCP, `etendo_selectors` takes the account
   as `recordContext.financialAccount` (or `FIN_Financial_Account_ID`) and passes it on (ETP-5850;
   before, the key was dropped and the selector answered no types). Writes stay strict: saving with
   an account without a valid IBAN is
@@ -3046,11 +3047,12 @@ everything is Classic's model.
     changes the account or switches between collection and payment (a payment, or an account without
     a valid one, clears it); an identifier the body carries is respected. The Classic form gets the
     same from the callout `RemittanceSepaDefaultsCallout` (module `org.openbravo.module.remittance`).
-    `confirm` and `generateFile` snapshot the account's
-    valid identifier into a remittance that has none, in their own transaction before the file is
+    `confirm` snapshots the account's
+    valid identifier into a remittance that has none, in its own transaction before the file is
     generated (`RemittanceCreditorId.forFile`), so remittances created before this change behave
-    as before and keep that file's identifier afterwards. They lock the remittance row first
-    (`lockRemittance`), as the write below does.
+    as before and keep that identifier afterwards; `downloadFile` takes the same copy but rolls it
+    back (it writes nothing). Both lock the remittance row first (`lockRemittance`), as the write
+    below does.
   - **Read** — `sepaFileData` (`{accountId, organizationId?, remittanceId?}`; the record id of a
     saved remittance counts as `remittanceId`, `new` as none). Besides the earlier fields:
     `remittanceCreditorId` (the remittance's copy; `null` when none, invalid, or the remittance is on
@@ -3073,7 +3075,7 @@ everything is Classic's model.
     `ETGO_RemittanceAccountNotBank` / `ETGO_RemittanceAccountNotAllowed`). **With a saved
     remittance** (`remittanceId` or the record id) it is saved on THAT remittance only; the account's
     default changes only when `saveToAccount` is `true`. The remittance must exist (404), not be
-    processed (422 `ETGO_RemittanceProcessedNotEditable`: its file and regenerations use the copy),
+    processed (422 `ETGO_RemittanceProcessedNotEditable`: every download of its file uses the copy),
     be a collection on that same account (422 `ETGO_RemittanceCreditorIdNotApplicable`). **Without a
     remittance** (record id `new`, the financial-account form) the only write is the account's
     default and `saveToAccount: true` is required (422 `ETGO_RemittanceCreditorIdNeedsAccount`).
@@ -3094,10 +3096,10 @@ everything is Classic's model.
     a collection create, and on an update that changes the account or the kind of type); only a collection takes one (422
     `ETGO_RemittanceOptionsCollectionOnly` on a payment); never written to the account.
     `saveCreditorId` stays for the financial-account modal (`saveToAccount`).
-  - **fileReadiness / confirm / generateFile**: for a **collection** (`CORE`), a remittance with an own
+  - **fileReadiness / confirm / downloadFile**: for a **collection** (`CORE`), a remittance with an own
     copy or an account default that is valid needs nothing. With NONE at all but the identifier
-    computed from the organization can be formed, it is NOT a problem: confirm / generateFile keep
-    that computed one as the remittance's COPY (never the account's), in their own transaction,
+    computed from the organization can be formed, it is NOT a problem: confirm keeps
+    that computed one as the remittance's COPY (never the account's), in its own transaction,
     before generating. It is an `account` problem only when none is valid and none can be computed
     (organization without tax ID or country): `ETGO_RemittanceFileAccountNoCreditorId` with
     `suggestedCreditorId: null`; and for an own value that is present but invalid,
@@ -3116,14 +3118,15 @@ everything is Classic's model.
     `RemittanceCreditorIdRewriter` replaces `GrpHdr/InitgPty/.../Othr/Id` and every
     `PmtInf/CdtrSchmeId/.../Othr/Id` with the REMITTANCE's identifier, by structure (debtor
     identifiers are never touched), reading the XML without DOCTYPE or external entities; the result
-    is then validated against the XSD like any file. Editing the account afterwards changes neither
-    a generated file nor a regeneration. A file with no `CdtrSchmeId` to replace is a
+    is then validated against the XSD like any file. Editing the account afterwards does not change
+    the remittance's file: every download uses the remittance's own copy. A file with no `CdtrSchmeId` to replace is a
     `ETGO_RemittanceFileGenerationFailed`, never a silent computed identifier; and a collection with
     no valid identifier is refused (`ETGO_RemittanceFileAccountNoCreditorId`) even if readiness was
     skipped.
   - **Existing remittances.** There is no backfill. An old remittance takes its account's default
-    when it is confirmed or its file regenerated and keeps it; with none anywhere, the next
-    `confirm` or `generateFile` of a collection reports the problem until the user saves one.
+    when it is confirmed and keeps it (a download uses it without keeping it); with none anywhere,
+    the next `confirm` or `downloadFile` of a collection reports the problem until the user saves
+    one.
 - **The remittance's own IBAN (ETP-6247).** The IBAN typed in the «Datos para el fichero SEPA»
   block is NOT saved on the account any more: the remittance keeps its own COPY of the account's
   IBAN in `REM_REMITTANCE.IBAN` (a column of `org.openbravo.module.remittance`, `NVARCHAR(34)`,
@@ -3136,8 +3139,8 @@ everything is Classic's model.
     the account or switches between collection and payment (any other type change keeps a typed IBAN);
     an IBAN the body carries is kept. The SPA sends a blank IBAN on an account change, and the server
     resolves it. The Classic form gets the same from the callout `RemittanceSepaDefaultsCallout`.
-    `confirm` / `generateFile` snapshot the account's valid IBAN into a
-    remittance without a copy (`RemittanceIban.forFile`), as for the creditor identifier.
+    `confirm` snapshots the account's valid IBAN into a remittance without a copy
+    (`RemittanceIban.forFile`), as for the creditor identifier; `downloadFile` rolls it back.
   - **Write: the header's CRUD, field `iBAN`** (decisions `entities.remittance.fields.iBAN`,
     editable, not in the generic form; needs `make regen ONLY=remittance PUSH_TO_NEO=1` and
     `export.database`). Chosen over an action because it is the only way to give the IBAN BEFORE
@@ -3171,39 +3174,37 @@ everything is Classic's model.
     is rolled back by the caller). No stand-in IBAN can be committed on the account.
   - **fileReadiness** `ETGO_RemittanceFileAccountNoIban` now judges the remittance's IBAN (its copy,
     else its account's).
-- **Direct debit scheme and financed flag (ETP-6247).** A COLLECTION remittance carries two options
-  of its own, columns of `org.openbravo.module.remittance`: `REM_REMITTANCE.DD_SCHEME` (`CORE` |
-  `B2B`, `VARCHAR(4)`, DAL `directDebitScheme`) and `REM_REMITTANCE.ISFINANCED` (`Y`/`N`, default
-  `N`, DAL `financed`); both `AD_FIELD`s on the remittance header, read-only once processed, and
-  frozen by `REM_REMITTANCE_TRG` after processing. `RemittanceHeaderWrites` sets `DD_SCHEME` to `CORE` on the create of a collection when the body
-  has none (none for a payment; the Classic callout does the same on a type change, and an empty value is read as `CORE`). The database does not default it. They are a per-remittance replacement of Classic's TYPE
-  parameters `CORE_B2B` and `SEPA_DD_Financed_58`, so the type does not change.
-  - **Write: the header's CRUD**, fields `directDebitScheme` and `financed` (decisions
+- **Direct debit scheme (ETP-6247).** A COLLECTION remittance carries its own scheme, a column of
+  `org.openbravo.module.remittance`: `REM_REMITTANCE.DD_SCHEME` (`CORE` | `B2B`, `VARCHAR(4)`, DAL
+  `directDebitScheme`); an `AD_FIELD` on the remittance header, read-only once processed, and
+  frozen by `REM_REMITTANCE_TRG` after processing. `RemittanceHeaderWrites` sets it to `CORE` on
+  the create of a collection when the body has none (none for a payment; the Classic callout does
+  the same on a type change, and an empty value is read as `CORE`). The database does not default
+  it. It is a per-remittance replacement of Classic's TYPE parameter `CORE_B2B`, so the type does
+  not change.
+  - **Write: the header's CRUD**, field `directDebitScheme` (decisions
     `entities.remittance.fields`, editable, not in the generic form; the SPA block «Opciones
-    avanzadas» owns them; needs the NEO push). `RemittanceHeaderWrites` normalizes them (scheme
-    upper-cased, `financed` to a boolean from `true`/`Y`), 422 `ETGO_RemittanceSchemeInvalid` for a
-    scheme other than CORE/B2B. On a **payment** remittance they do not apply: `B2B` or
-    `financed: true` is refused, 422 `ETGO_RemittanceOptionsCollectionOnly`; `CORE` / `false` are
-    dropped from the body. Processed remittances are not editable.
-  - **Read.** The fields travel with the header record; `sepaFileData` (with a saved remittance)
-    also answers `directDebitScheme` (`null` for a payment) and `financed`.
-  - **File.** `CoreDirectDebit` reads both from the type and has no per-remittance hook, so, as for the
-    IBAN and the creditor identifier, the output is rewritten by structure
+    avanzadas» owns it; needs the NEO push). `RemittanceHeaderWrites` upper-cases it, 422
+    `ETGO_RemittanceSchemeInvalid` for a scheme other than CORE/B2B. On a **payment** remittance it
+    does not apply: `B2B` is refused, 422 `ETGO_RemittanceOptionsCollectionOnly`; `CORE` is dropped
+    from the body. Processed remittances are not editable.
+  - **Read.** The field travels with the header record; `sepaFileData` (with a saved remittance)
+    also answers `collection` (boolean) and `directDebitScheme` (`null` for a payment). Cobro or
+    pago for the UI: the `remittanceType` selector's `direction` (`collection` | `payment`) before
+    saving, and `sepaFileData.collection` for a saved remittance; the header record itself carries
+    no derived direction.
+  - **File.** `CoreDirectDebit` reads the scheme from the type and has no per-remittance hook, so,
+    as for the IBAN and the creditor identifier, the output is rewritten by structure
     (`RemittanceCreditorIdRewriter.applyOptions`) and then validated against the XSD: `B2B` sets
-    `PmtInf/PmtTpInf/LclInstrm/Cd` of every block; financed gives `GrpHdr/MsgId` the prefix within
-    35 characters: when it does not fit, the ORIGINAL id is cut from its start
-    (`RemittanceCreditorIdRewriter.prefixedMsgId`), so its unique end (the document number) is kept
-    (untouched when it already starts with the prefix). A plain CORE, non-financed remittance is
-    not rewritten (the type already writes CORE); a file without `LclInstrm/Cd` or `MsgId` to change
-    is a `ETGO_RemittanceFileGenerationFailed`. The prefix is the type's own
-    `SEPA_DD_Financed_58` value when it has one, else `RemittanceSepaOptions.FINANCED_PREFIX`
-    (`FSDD`, PROVISIONAL: the real text is not decided; the one place to change).
-  - **Known cost / debt.** Classic's own «Create File» button ignores these columns and writes what
-    the type says, so a file made there can differ from GO's. B2B is not validated beyond what CORE
-    needs (a mandate and its date): the debtor must be a company and the mandate a B2B one, but GO has
-    no field for the mandate type; that validation is tracked debt, not implemented. «Financed»
-    changes only the message identifier: no accounting, settlement or return effect (nothing in REM or
-    automated.remittance reads it).
+    `PmtInf/PmtTpInf/LclInstrm/Cd` of every block. Only a CORE (collection) type is rewritten; a
+    plain CORE remittance is not (the type already writes CORE); a file without `LclInstrm/Cd` to
+    change is a `ETGO_RemittanceFileGenerationFailed`. The message identifier is always the
+    generator's own.
+  - **Known cost / debt.** Classic's own «Create File» button ignores the column and writes what the
+    type says, so a file made there can differ from GO's. B2B is not validated beyond what CORE
+    needs (a mandate and its date): the debtor must be a company and the mandate a B2B one, but GO
+    has no field for the mandate type; that validation is tracked debt, not implemented.
+- Financed remittances (Classic Remit for Discount) are not supported in GO.
 - **Customer bank account IBAN** (ETP-6247; contacts `bankAccount`, `ContactBankAccountHandler`,
   `@NeoExtension(spec = "contacts", entity = "bankAccount")`, every write channel: REST single,
   `/batch`, MCP). On `POST`/`PUT`/`PATCH` the IBAN the body sends — under `iBAN` or any casing of
@@ -3270,8 +3271,12 @@ everything is Classic's model.
   settlement the invoice shows paid 20.00, outstanding 33.24, and the 33.24 is a candidate for
   another remittance (verified in a rolled-back DAL run, ETP-6148 round 3).
 - **«Procesar»** — declared action `process` of the header (`RemittanceProcessAction`), POST, body
-  `{"fieldValues": {grouping?: "P" | "GGPD"}}` (default `P`, one payment per line; `GGPD` per
-  business partner and due date). Both remittance actions are declared `withFieldValuesBody()`:
+  `{"fieldValues": {grouping?: "P" | "GGPD" | "GGP"}}` (default `P`, one payment per line; `GGPD`
+  per business partner and due date; `GGP`, ETP-6247 «Agrupar solo por cliente», per business
+  partner whatever the due dates — REM's own «Group by business partner», whose payment and bank
+  instruction take the latest due date of the group). Any other value, REM's other groupings
+  included (by invoice, by order), is a 422 from the declared contract
+  (`RemittanceProcessAction.GROUPINGS`, shared by `process` and `confirm`). Both remittance actions are declared `withFieldValuesBody()`:
   the SPA presses them through its generic process dialog, which posts `fieldValues`, and
   `etendo_action` wraps the agent's flat parameters the same way; a flat body is still accepted.
   Runs Classic's `REMRemittanceProcess` (the «Process Remittance» button) directly, so window
@@ -3334,8 +3339,7 @@ everything is Classic's model.
     SCT | null), problems: [{scope: org | account | line, code, message (request language), params
     (positional), organizationId | accountId | lineId + lineIds + businessPartnerId +
     businessPartnerName + invoiceId + documentNo}], summary: {invoiceCount (distinct invoices),
-    lineCount, totalAmount, currency (ISO), dueDate (yyyy-MM-dd)}, latestFile: {attachmentId,
-    fileName} | null}`. Writes nothing. The checks mirror what Classic's generators refuse, with the
+    lineCount, totalAmount, currency (ISO), dueDate (yyyy-MM-dd)}, returnedCount}`. Writes nothing. The checks mirror what Classic's generators refuse, with the
     parameters the provisioned types carry: **organization** — its own `AD_OrgInfo` (no parent
     fallback, as `SEPA_RemittanceCreateFile` reads it): an address with locality and country and
     the structured street name and building number (`OBSEPA_StreetName`/`BuildingNumber`, required
@@ -3356,25 +3360,61 @@ everything is Classic's model.
     (`SEPAUtil.getBusinessPartnerAddressError`); and, while not processed, `0 < amount ≤` the due's
     outstanding per line and, for a due split over several lines, their sum ≤ the outstanding
     (reported once per due, `lineIds` = its lines). A partner problem is reported once per partner and code (`lineIds` = every line it
-    affects). `latestFile` is the record's main `.xml` attachment.
-  - `confirm` («Confirmar»; POST `{fieldValues: {grouping?: P | GGPD}}`) — all or nothing: 422
+    affects). `returnedCount`: the receipts the bank returned (distinct payments with a processed
+    return row, `RemittanceReturnState.returnedCount`), which a download still lists, so the SPA
+    can warn before downloading.
+  - `confirm` («Confirmar»; POST `{fieldValues: {grouping?: P | GGPD | GGP}}`) — all or nothing: 422
     `ETGO_RemittanceAlreadyProcessed` / `ETGO_RemittanceNoLines`; readiness, else 422
     `ETGO_RemittanceFileNotReady` with `error.problems`; then, in one transaction,
     `RemittanceSepaFileSetup.ensure` on the type (backfill), `EM_Etar_Automaticprocess` reset to
     `'N'` when an earlier version created the remittance automatic (`RemittanceProcessAction
     .disableAutomaticSettlement`), then `REMRemittanceProcess`, **without** the automatic
     settlement: the payments are created in status `REM_SENT` (Remitted), the invoices stay unpaid
-    and the remittance ends `PR` («Pendiente de envío»); the file is generated (`RemittanceFileGenerator`) and
-    stored as the record's main attachment. Any refusal rolls back everything: 422
+    and the remittance ends `PR` («Pendiente de envío»); the file is generated in memory
+    (`RemittanceFileGenerator`) only to prove it can be (schema and EPC rules) and is **not
+    stored**. Any refusal rolls back everything: 422
     `ETGO_RemittanceProcessFailed` (REM's text), `ETGO_RemittanceFileGenerationFailed` (the
     generator's `getMyError()` / `getLineErrorDetail()`), `ETGO_RemittanceFileInvalid` (schema),
-    `ETGO_RemittanceFileNoGenerator`, `ETGO_RemittanceFileSchemaMissing`. → `{status, attachmentId, fileName, downloadUrl}`
-    (`downloadUrl`: the signed short-lived `/sws/neo/document-download/` link the MCP hands out, or
-    `null` without a signing secret; the SPA downloads through `/sws/neo/attachments/file/{id}`).
-  - `generateFile` («Regenerar fichero»; POST `{}`) — processed remittances only, so `PR` and `SB`
-    (and later states; 422 `ETGO_RemittanceFileNotProcessed`), readiness without the amount check, then a **new** main
-    attachment; the earlier files are kept and lose the main flag
-    (`NeoAttachmentsHelper.markAsMain(attachment, keepPrevious = true)`). Same answer and refusals as `confirm`.
+    `ETGO_RemittanceFileNoGenerator`, `ETGO_RemittanceFileSchemaMissing`. → `{status, fileName}`;
+    the file is then taken with `downloadFile`.
+  - `downloadFile` («Descargar fichero»; read: GET or POST `{}`) — ETP-6247: the file is generated
+    **now, from the current data, on every download**, and answered in the response, as Classic's
+    «Create File» button (`CreateFile`) does: nothing is attached or stored (XML files earlier
+    versions attached stay as ordinary attachments, no migration). Any processed remittance is
+    served, `AN` included, as Classic's button (`@Processed@='Y'`); the SPA offers it on
+    `PR`/`SB`/`CT`/`PT`/`CP`/`PP`. Not processed: 422 `ETGO_RemittanceFileNotProcessed`; readiness
+    (without the amount check), else 422 `ETGO_RemittanceFileNotReady` with `error.problems`;
+    `RemittanceSepaFileSetup.ensure`, then the generator, the XSD and the EPC rules, with the same
+    422s as `confirm`. Every instruction is written, **returned receipts included** (Classic's
+    generator does), never refused for them. → `{fileName, contentType: "application/xml", content
+    (the XML document, UTF-8 text), returnedCount}`. `fileName` is Classic's:
+    `CreateFile.replaceStrangeCharacters(documentNo + "_" + name)` + `.` + the type's
+    `FILE_EXTENSION` parameter in lower case (`xml` without one; every provisioned type sets
+    `xml`). Read only: the transaction is rolled back before answering, so neither the type
+    backfill, the creditor identifier / IBAN copy the generation takes nor a line message Classic's
+    generator writes on a refusal is kept. **Invariant: a download never runs inside a transaction
+    its caller owns** — that rollback (`rollbackUnlessBatchOwned`) is skipped while a batch owns the
+    transaction (`BatchService.callerOwnsTransaction()`), and the batch would commit those writes,
+    so there `downloadFile` is refused up front with 422 `ETGO_RemittanceFileDownloadInBatch`,
+    before the remittance is loaded, locked or generated. No channel reaches that today (a batch
+    carries CRUD operations only); the guard keeps the download fail safe if one ever does. The remittance row is
+    locked first (`lockRemittance`, `SELECT … FOR UPDATE` + refresh), which serialises a download
+    with `confirm` (same lock) and `reactivate` (REM updates the row), and the lock is held until
+    the rollback, so two simultaneous downloads of the same remittance wait for each other. The MCP gets the XML in the action's
+    answer (no download link). **`MsgId` is stable** — the remittance's document number — so every
+    download of one remittance carries the same message identifier (a bank that rejects a repeated
+    `MsgId` refuses a second upload instead of collecting twice); only `CreDtTm` (now) changes, and
+    `PmtInfId` / `InstrId` / `EndToEndId` derive from the document number, line number and payment.
+    Partner data (IBAN, mandate, address) is read live, as in Classic. Telemetry:
+    `backend_remittance_file_generated` once per download (`docs/backend-observability.md`).
+  - **Grouped payments in the file (ETP-6247).** The generators write one `DrctDbtTxInf` /
+    `CdtTrfTxInf` per REM bank instruction, and REM makes one instruction per payment: with `GGP`
+    (or `GGPD`) a customer's dues are ONE transaction whose amount is their sum, and `NbOfTxs` /
+    `CtrlSum` count it once. Its `RmtInf/Ustrd` is REM's instruction description, which lists the
+    invoice numbers of the group; the generator cuts it at 140 characters (`substring`), so the
+    file stays valid but a long list loses its tail. Verified against the pain.008.001.08 XSD in
+    `RemittanceFileGeneratorIntegrationTest`. The SCT parameter `GroupBy_Duedate` is unrelated: it
+    lays out `PmtInf` blocks by execution date and groups no payments.
   - **The generator** is the remittance type's `Classname`, run as Classic's «Create File» button
     (`CreateFile.getFilePrintPage`): `init`, `generate`, `getMyError()`. The provisioned types get
     pain.008.001.08 `CoreDirectDebit` (CORE) and pain.001.001.09 `CreditTransfer` (SCT) with the
@@ -3394,10 +3434,9 @@ everything is Classic's model.
     on its own and skipped when unknown, and external access is closed by parser-independent means —
     the document is read through an `XMLReader` with `disallow-doctype-decl` and no external
     entities/DTD (a DOCTYPE makes the file invalid), and the schema factory and validator get a
-    resource resolver that refuses every lookup (the two XSDs import nothing). File name: Classic's `<documentNo>_<name>.xml` restricted to
-    `[A-Za-z0-9._-]`, `_2`, `_3`… when the record already has one (the attachment manager
-    overwrites a same-named attachment). The bytes reach the attachment store before the commit: a
-    later rollback leaves an orphan file, never a row.
+    resource resolver that refuses every lookup (the two XSDs import nothing). File name: Classic's (`downloadFile`,
+    `CreateFile.replaceStrangeCharacters`). The file is never attached or stored: `confirm` builds
+    it in memory only to check it, and `downloadFile` generates it again on every call.
   - **CORE collections in `pain.008.001.08`.** Before XSD validation, GO trims the leading and
     trailing whitespace from XML field values. The default profile (`BIC_SWIFT_MANDATORY = N`)
     writes `Othr/Id = NOTPROVIDED` for the creditor and debtor agents, including when their
@@ -3436,7 +3475,8 @@ everything is Classic's model.
     contain `//` (EPC130-08 2025 v1.0, 1.4; `ETGO_RemittanceFileRuleSlash`). Readiness reports the
     same rule early for the mandate reference of each line, as the generator writes it (backslash
     turned into `/`, cut to 35 characters; `ETGO_RemittanceFileLineMandateSlash`). A failure
-    returns HTTP 422 with the XML element path before the attachment is saved.
+    returns HTTP 422 with the XML element path (a `confirm` is rolled back; a download answers no
+    file).
   - **Not automatic on create (ETP-6247, step-by-step flow).** A remittance created through GO keeps
     `EM_Etar_Automaticprocess = 'N'` (the column default): confirming it does NOT settle. It
     becomes `'Y'` only when it is collected (`markCollected`, below), which is what Classic and the
@@ -3446,7 +3486,7 @@ everything is Classic's model.
   - **Step-by-step flow: `PE` → `PR` → `SB` → `CT`/`PT`** (`RemittanceStatusAction`, ETP-6247).
     Both actions are POST, no parameters, flag-gated (403), 405 otherwise, 404 unknown remittance.
     Both lock the remittance row (`lockRemittance`, `SELECT … FOR UPDATE` + refresh) BEFORE checking
-    its status, as `confirm` / `generateFile` / `saveCreditorId` do: two concurrent «Cobrada» (or
+    its status, as `confirm` / `downloadFile` / `saveCreditorId` do: two concurrent «Cobrada» (or
     «Enviada» racing «Cobrada») cannot both pass the check and settle twice; the second waits and
     then sees the status the first one left:
     - `markSent` («Enviada al banco») — `PR → SB`, purely informational: only the status changes
@@ -3488,7 +3528,7 @@ everything is Classic's model.
     payment). `reasonCode` when not returnable: `NOT_PROCESSED`, `NOT_SETTLED`, `ALREADY_RETURNED`,
     `NOT_A_COLLECTION`, `POSTED` (settlement or its bank transaction posted; accounting is out of
     scope), `RECONCILED` (bank transaction reconciled). `paymentLineIds`: the lines sharing the
-    payment (grouping `GGPD`); the payment is the returnable unit.
+    payment (grouping `GGPD`, or `GGP` across due dates); the payment is the returnable unit.
   - `returnLines` (POST `{fieldValues: {lineIds: [...], returnDate?: yyyy-MM-dd}}`; date default
     today, not in the future) — all or nothing, one transaction. The remittance row is locked
     (`lockRemittance`) before any line state is read, so two concurrent returns of the same line
@@ -3517,9 +3557,9 @@ everything is Classic's model.
     ships it only as reference data, which a GO tenant never loads. `RemittanceSepaProvisioning
     .ensureReturnPaymentMethod` creates the client's own (idempotent; called by `ensureClient` and
     before every return as a backfill), and `RemittanceReturnProcess` hands the module that one.
-  - **Interactions.** `generateFile` on a remittance with returns is refused, 422
-    `ETGO_RemittanceFileHasReturns` (the Classic generator writes every line, returned ones too).
-    `fileReadiness.latestFile` is unchanged. «Reactivar» stays hidden (automatic = Y, set by
+  - **Interactions.** `downloadFile` on a remittance with returns still generates the whole file
+    (Classic's generator writes every line, returned ones too); `returnedCount` says how many
+    returned receipts it lists. «Reactivar» stays hidden (automatic = Y, set by
     `markCollected`) and the module refuses it anyway with settled or returned lines. No telemetry event.
 - **Status.** `REM_REMITTANCE.REMITTANCE_STATUS` (field `remittanceStatus`, list
   `REM_RemittanceStatus`: `PE`, `PR`, `SB`, `CT`/`PT`, `CP`/`PP`, `AN`) belongs to the remittance module
@@ -3529,6 +3569,70 @@ everything is Classic's model.
   before the column keeps the default `'PE'` until one of those transitions refreshes it.
   `com.etendoerp.go` only reads it (list, filter). `RemittanceMethodLinkObserver` refuses an active
   remittance-method link on a non-Bank account, on every channel, Classic included.
+- **The invoice side of a confirmed remittance (ETP-6247).** Confirming creates one `REM_SENT`
+  payment per due and links the due's `FIN_PAYMENT_SCHEDULEDETAIL` to it (a partial remittance
+  splits the detail: the remitted part is linked, the remainder stays free), but the invoice's
+  amounts do not move until the remittance is collected. A draft (`PE`) remittance creates no
+  payment and never counts; «Enviada al banco» (`SB`) touches no payment; reactivating deletes the
+  payments and a return voids them, both of which drop the due back to free. The remitted part is
+  **still owed**: totals, KPIs, aging, the portal and the "pending" named filters are deliberately
+  unchanged. What changes is that it can no longer be registered as a payment from the invoice — it
+  would be collected twice. One shared utility, `InvoiceRemittance`, defines it for every path:
+  - **Invoice header:** `C_Invoice.EM_ETGO_Remitted_Amt` (DAL/NEO property `etgoRemittedAmt`) —
+    stored computed column (`S`/`S`), function `ETGO_GET_REMITTED_AMT` = sum of the invoice's
+    detail amounts linked to a `REM_SENT` payment, `0` otherwise (DB default `0` for a new
+    invoice). Dependencies: `FIN_PAYMENT` (update of `Status`) and `FIN_PAYMENT_SCHEDULEDETAIL`
+    (insert/delete, update of `FIN_Payment_Detail_ID`, `Amount`, `FIN_Payment_Schedule_Invoice`),
+    both resolving the invoice through `fin_payment_schedule`. Filterable and sortable like any
+    column; a window shows it once its `decisions.json` declares the field (read-only).
+  - **Payment plan** (`sales-invoice`/`purchase-invoice` `paymentPlan`, `InvoicePaymentPlanHandler`
+    bound by `@NeoExtension` per spec): each installment row gains `remittedAmount` (linked to a
+    `REM_SENT` payment) and `payableAmount` (the free details: what a payment registered from the
+    invoice may still take). `outstandingAmount` is unchanged. A per-invoice sub-list nobody
+    filters, so a read decoration (one batched query), not a column.
+  - **`registerPayment`** (simple and advanced, REST and MCP) — when the installment has a remitted
+    part, funds (cash plus consumed credit) over `payableAmount` are refused with
+    `422 ETGO_InvoiceInRemittance` (`error.remittanceId`, `remittanceDocumentNo`, `payableAmount`,
+    `remittedAmount`, `currency` — the invoice's ISO code, so the SPA formats both amounts with
+    `formatCurrency` — and `fullyRemitted`), before anything is written. The text an API or MCP
+    caller reads names the remittance and the payable amount as money (currency precision, the
+    instance separators of `/sws/neo/currency-format`, the symbol on its `IsSymbolRightSide` side:
+    `InvoiceRemittance.formatMoney`); when nothing is left to register it is the
+    `ETGO_InvoiceFullyInRemittance` wording instead, which names no amount, and `messageKeys` is
+    `[ETGO_InvoiceInRemittance, ETGO_InvoiceFullyInRemittance]` (the first key is always there) (a PIS transfer included); a fully remitted
+    installment gets the same refusal instead of the generic "no pending payment schedule details".
+    Without a remitted part nothing changes: a genuine overpayment still becomes credit or a refund.
+    Editing a draft counts the draft's own link as payable. The MCP runs the same check before its
+    `overpaymentAction` question (`PaymentAgentSupport.checkRemittance`), and its write answer's
+    `invoice` block carries `remittedAmount`.
+  - **Financial-account «Add payment»** (`AddPaymentService.linkInvoices`) refuses a detail that is
+    already linked to a payment: the same `422 ETGO_InvoiceInRemittance` answer as `registerPayment`
+    when that payment is `REM_SENT` (thrown as a `NeoRefusalException`, which
+    `FinancialAccountTransactionsSupport.runMutation` answers verbatim after the rollback), and
+    `400 ETGO_InstallmentAlreadyPaid` (`{0}` = the payment's document number) when it is any other
+    payment.
+  - **Bank reconciliation** (`ReconciliationFlowSupport.settleInvoice`) sizes the payment from the
+    free details — the ones `registerReconciliationPayment` links — instead of the schedule's
+    outstanding, and refuses a fully remitted installment. Known gap: the explicit-conversion and
+    write-off checks (`ReconciliationConversionSupport.outstandingOf`,
+    `ReconciliationWriteoffSupport`) still read the outstanding.
+  - **Payment Reactivate / Eliminar** (`ReactivatePaymentHandler`) refuse a `REM_SENT` payment with
+    `422 ETGO_PaymentInRemittance`: the remittance owns it until it is collected, reactivated or
+    returned.
+  - **Payment Reactivate** (`ReactivatePaymentHandler.reactivationRefusal`) also refuses a voided
+    (`RPVOID`) payment — e.g. one a remittance return undid — with `422 ETGO_PaymentVoidNotReactivable`
+    (catalog-only key), on every channel: Classic offers no action on a void payment and the payment
+    windows no longer show Reactivar on it.
+  - **`invoicePayments`** rows carry `remittanceId` / `remittanceDocumentNo` for every payment a
+    remittance created (remitted, collected or returned; through `REM_RemittanceLine.FIN_Payment_ID`),
+    plus `remittanceStatus` (`REM_REMITTANCE.REMITTANCE_STATUS`) and `remittanceStatusLabel`, its
+    name in the request language worded as the remittance window words it (catalog keys
+    `ETGO_RemittanceStatus_<code>`; REM's own `REM_RemittanceStatus` names exist in English only).
+  - **No flag gate, on purpose.** None of this reads `sepa-remittances`: a `REM_SENT` payment exists
+    only where a remittance was confirmed, i.e. where the flag was on (or in Classic, which shares
+    the double-collection risk). Gating the guards would only re-open the double collection for a
+    tenant whose flag was switched off after remitting. The column and messages ship
+    unconditionally, like the rest of the remittance schema.
 
 Flag, debt and retirement: `docs/feature-flags-and-tenant-upgrade.md` → `sepa-remittances`.
 
@@ -5587,7 +5691,7 @@ Answer: `{system, territory, created:[{system, spec, entity, id}], certificate:{
 `system` is the resulting SIF — `SII+TBAI` after "Añadir SII", whose `created` holds only the
 SII record — and `territory` the one the records were built for. When
 the organization has no active signing certificate, a `warning` message
-(`ETGO_FiscalSifNoCertificate`) says it must be uploaded from Configuración fiscal (agents cannot
+(`ETGO_FiscalSifNoCertificate`) says it must be uploaded from Configuración Fiscal (agents cannot
 write the certificate, see §4.12.9, *Fiscal Configuration*). The records are then read and edited
 on `sii-config/siiConfiguration`, `tbai-config/header` and
 `verifactu-config/cabeceraDeConfiguraciónVerifactu` — the window's detail step, or
@@ -8886,7 +8990,7 @@ leaves NEO as:
 
 ```json
 {"error":{"status":400,
-          "message":"El contacto no está marcado como Factura Simplificada, así que su NIF/CIF es obligatorio. Complétalo en Contactos.",
+          "message":"El contacto no está marcado como Factura Simplificada, así que su NIF es obligatorio. Complétalo en Contactos.",
           "messageKeys":["TBAI_EmptyNifCode"]}}
 ```
 
@@ -10433,6 +10537,14 @@ so a rate is never left without its inverse.
 server's current minute (`HH:mm:59` of the current minute is still accepted;
 `ETGO_ConvRateFutureStart`). The `serverClock` action gives the SPA that minute as its default.
 
+**Datetimes are wall clock of the server's zone, on every channel.** Stored values, action
+parameters and answers (`validFromDate`, `validFrom`, `validTo`, `newValidTo`, `lastDownloadAt`)
+carry no offset and are read in the JVM default zone. `serverClock` also answers that zone's id
+(`timeZone`, additive since the ETP-6365 QA), so a client can convert: the SPA shows and takes
+every datetime of the window in the browser's zone (converting with `Intl`, DST-correct) and sends
+the server's wall clock back. The MCP is unchanged — its values stay server wall clock, and the
+action descriptions point to `serverClock` for the zone.
+
 **Every manual range is editable and deletable, postings or not** — changing a rate only affects
 documents that look a rate up afterwards; a posted invoice keeps the rate it was posted with
 (`C_Conversion_Rate_Document` / the header rate). Only a downloaded row stays locked. Core's
@@ -10523,7 +10635,7 @@ follow. The function is total (every edge case answers `HISTORIC`).
 |---|---|---|
 | `manualCurrencyOptions` | optional `withoutRates` (boolean, default `false`; `"true"`/`"false"` accepted on the query string) | `[{id, isoCode, name, symbol}]`: active currencies minus the organization currency and the automatic ones; with `withoutRates: true` also minus every currency that already has an active `C_Conversion_Rate` row of the client (or of System) with the organization currency, in either direction and on any date — the list of the "Nueva divisa" popup (a currency that already has rates gets a new range from its own "Nueva tasa · ISO" entry). `name`/`symbol` in the request language |
 | `previewManualRate` | `toCurrency`, `multipleRateBy`, optional `validFromDate` (default now), optional `mode` (`newCurrency` = the checks of `createManualCurrency`, `newRate` = those of `createManualRate`; absent = no check on existing rates) | `{creates:[{fromIso, toIso, rate, validFrom}], closes:[{id, fromIso, toIso, validFrom, newValidTo}]}` — or `{creates:[], closes:[], error, errorKey, errorField}` with the refusal a create would get (same text as the create; `errorField` as `error.field` above, absent for refusals bound to no field). Writes nothing |
-| `serverClock` | — | `{now: "yyyy-MM-dd'T'HH:mm:00"}` — the server's current minute, server-local wall clock (the zone `validFromDate` is read in); the default start of a new rate |
+| `serverClock` | — | `{now: "yyyy-MM-dd'T'HH:mm:00", timeZone: "<zone id>"}` — the server's current minute, server-local wall clock, and the id of that zone (JVM default, e.g. `UTC`; the zone `validFromDate` and every range datetime are read in); the default start of a new rate |
 | `currentRates` | — | `[{currencyId, isoCode, name, symbol, origin: AUTO\|MANUAL, rate, validFrom, lastDownloadAt}]` — one per currency with a range in force now, of the client or of System (the downloader's rows): the client's row wins over the System one, as in `ConversionRateLookup`, then the latest start; `rate` is always "1 organization currency = rate"; `lastDownloadAt` (AUTO only) is the latest `SUCCESS` run in `SMFCR_SYNC_LOG` of the client or of System, or the row's `updated` when that is newer or there is no run (the log is per run, not per pair) |
 
 A generic create or update on `conversion-rates` (REST `POST`/`PUT`/`PATCH`, MCP `etendo_create` /
