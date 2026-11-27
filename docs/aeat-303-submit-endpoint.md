@@ -121,12 +121,16 @@ shape minus `declarationData`/`csv`/etc:
 | `NO_CERTIFICATE` | `409` | Production and `AEAT303SubmissionService.hasOrgCertificate(org)` is false | Checked **before** constructing `AEAT303SubmissionService` for the actual submission — session-cert upload is NOT supported by this endpoint (see below). The `errors` text is `ETGO_FiscalSubmitNoCertificate` in the request language (`NeoMessageText`, ETP-6158; was a hardcoded English sentence) — see neo-headless.md §4.17 |
 | `ALREADY_SUBMITTED` | `409` | Production and the declaration's `DeclarationStatus` is already in the submitted family (`submitted`, `submitted_ext`, `submitted_ack`) | The idempotency guard (BUG-1 fix, widened in ETP-5438) — see dedicated section below |
 | `SNAPSHOT_FAILED` | `500` | Production, file generated, but the submission snapshot (the `GET /fiscal303/boxes` figures) could not be computed or would not fit the column | Checked **before** the AEAT call — the declaration is never sent to Hacienda without its frozen figures (ETP-5438). See "Submission snapshot" below |
+| `NOT_VALIDATED` | `200` | Test mode (`testMode=true`) and the validator answered "model not available" (`EV0` … "No existe información del modelo", ETP-5716) — see "Validation before a real presentation" below | Body `{ "status": "ERROR", "testMode": true, "errorCode": "NOT_VALIDATED", "errors": [<the AEAT text>] }`; no AEAT incident is stored (the previous ones are kept). The one `errorCode` that reached the AEAT: it says the file could not be validated, not that it is wrong |
+| `VALIDATION_UNAVAILABLE` | `502` | Production, the pre-presentation validation got no answer and `PRESENT_WHEN_VALIDATOR_UNANSWERED` is `false` (it ships `true`, so this does not fire) | `stage: "validation"`; see "Validation before a real presentation" below |
 | `SUBMISSION_FAILED` | `500` (file-generation failure) or `502` (AEAT call itself threw `OBException`) | File regeneration threw, or `AEAT303SubmissionService.submitProduction`/`submitValidation` threw `OBException` (e.g. connection error, unsupported-charset gate, non-JSON response) | The one case where a raised exception maps to this code; a non-`OBException` runtime exception is a known, accepted gap (see "Known gaps") |
 
 An AEAT-side rejection that the service parses successfully (e.g. the E0100803 "double space in
 razón social" case from real hands-on testing) is **not** an `errorCode` — it's a normal `200`
 response with `status: "ERROR"` and the AEAT's own messages in `errors[]`. `errorCode` is reserved
-for pre-flight failures that never reached the AEAT.
+for pre-flight failures that never reached the AEAT, plus the two validator outcomes above
+(`NOT_VALIDATED`, `VALIDATION_UNAVAILABLE`), which say the file could not be validated, not that the
+AEAT rejected it.
 
 ## Reuse pattern: direct import, not reflection
 
@@ -426,9 +430,14 @@ service's default timeouts are restored for the presentation):
 | no errors (warnings allowed) | the presentation goes ahead, as before |
 | errors (at least one) | **not presented**: `200` with the usual result shape, `status: "ERROR"`, `testMode: false`, `stage: "validation"`, the AEAT `errors`; they replace the declaration's AEAT incidents; nothing else changes (draft) |
 | no answer, or an answer with neither a PDF nor an error | `FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED` (`true`): present anyway. When `false`: `502`, `errorCode: "VALIDATION_UNAVAILABLE"`, `stage: "validation"` |
+| "model not available": only `EV0` errors with the text "No existe información del modelo" (`FiscalAeatValidationOutcome.isModelNotAvailable`, ETP-5716) | `NOT_VALIDATED` — treated as **no answer**, not as a rejection: with `PRESENT_WHEN_VALIDATOR_UNANSWERED = true` the presentation **goes ahead**, and PresBasicaDos still validates the file when it files it. No AEAT incident is stored (the previous ones are kept); the attempt row records outcome `not_validated`, error code `EV0`. Any other error — another `EV0` text, or a real error next to it — is a rejection (row above) |
 
 It writes its own attempt row (path `pre_submission_validation`); the presentation that follows
 writes its `direct_submission` row. No PDF is attached for this validation. `testMode = true` is
-unchanged.
+unchanged, except for the "model not available" answer: a test-mode submit that gets it returns
+`200 { status: "ERROR", testMode: true, errorCode: "NOT_VALIDATED", errors: [<the AEAT text>] }` and
+stores no incident. An `EV0` returned by the filing service itself (PresBasicaDos) is not matched:
+it stays an error. Same rule as `/fiscal390/submit` — see `aeat-390-endpoints.md` ("Model not
+available" is not a rejection).
 
 Shared with `/fiscal390/submit`; attempt rows: `aeat-attempt-log.md`.

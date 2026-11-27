@@ -87,15 +87,6 @@ final class FiscalAeatValidationOutcome {
    * error stays countable, and its text (which can carry fiscal data) is never stored.
    */
   static final String UNCODED = "UNCODED";
-  /**
-   * The code of a RAW AEAT entry ({@code "<code> - <text>"}): two to seven digits, or one to four
-   * capital letters followed by one to seven digits, then the spaced hyphen — {@code 35068},
-   * {@code 7113}, {@code EV0}, {@code E00}, {@code A001}, {@code AV001}, {@code PAR016},
-   * {@code E010124}, {@code E0100803}. The shape is
-   * deliberately too narrow for an identity number (a CIF is a letter and 8 characters, a DNI 8
-   * digits and a letter, a NIE ends in a letter) or a word ("Garcia-Lopez"): anything else is
-   * logged as {@link #UNCODED}.
-   */
   /** AEAT code of the validator's "could not build an answer" error ({@link #isModelNotAvailable}). */
   static final String MODEL_NOT_AVAILABLE_CODE = "EV0";
   /**
@@ -105,6 +96,15 @@ final class FiscalAeatValidationOutcome {
    */
   private static final Pattern MODEL_NOT_AVAILABLE_TEXT = Pattern.compile(
       "no\\s+existe\\s+informaci\\S{0,2}n\\s+del\\s+modelo", Pattern.CASE_INSENSITIVE);
+  /**
+   * The code of a RAW AEAT entry ({@code "<code> - <text>"}): two to seven digits, or one to four
+   * capital letters followed by one to seven digits, then the spaced hyphen — {@code 35068},
+   * {@code 7113}, {@code EV0}, {@code E00}, {@code A001}, {@code AV001}, {@code PAR016},
+   * {@code E010124}, {@code E0100803}. The shape is
+   * deliberately too narrow for an identity number (a CIF is a letter and 8 characters, a DNI 8
+   * digits and a letter, a NIE ends in a letter) or a word ("Garcia-Lopez"): anything else is
+   * logged as {@link #UNCODED}.
+   */
   private static final Pattern LOGGABLE_CODE = Pattern.compile("^([A-Z]{1,4}\\d{1,7}|\\d{2,7})\\s+-\\s");
 
   private final String model;
