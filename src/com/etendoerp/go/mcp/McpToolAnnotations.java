@@ -67,7 +67,8 @@ final class McpToolAnnotations {
       // reading the same document again gives the same review; see OPEN_WORLD for what it reaches.
       McpConstants.TOOL_NEO_EXTRACT_INVOICE_DOCUMENT,
       McpConstants.TOOL_NEO_JOB_STATUS,
-      McpConstants.TOOL_NEO_WHOAMI);
+      McpConstants.TOOL_NEO_WHOAMI,
+      McpConstants.TOOL_NEO_HOW_TO);
 
   /** Tools that add something new and never change or remove what exists. */
   static final Set<String> ADDITIVE = Set.of(

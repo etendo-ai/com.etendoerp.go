@@ -94,7 +94,10 @@ public class ToolRegistry {
 
     // Always add etendo_discover if user can read
     if (permissions.canRead) {
-      // etendo-ai#53: first, because it is the call an agent should make first.
+      // ETP-6421: which Etendo this is. First, and named to be found by clients that show the
+      // model only tool names; see McpHowToTool.
+      tools.add(McpHowToTool.definition());
+      // etendo-ai#53: the call an agent should make first about the session.
       tools.add(McpWhoamiToolDefinition.definition());
       tools.add(buildDiscoverTool());
       tools.add(buildDocsTool());
@@ -349,6 +352,7 @@ public class ToolRegistry {
     if ("docs".equals(toolName) || McpConstants.TOOL_NEO_VECTOR_SEARCH.equals(toolName)
         || McpConstants.TOOL_NEO_FEEDBACK.equals(toolName)
         || McpConstants.TOOL_NEO_WHOAMI.equals(toolName)
+        || McpConstants.TOOL_NEO_HOW_TO.equals(toolName)
         || McpConstants.TOOL_NEO_ROUTINE.equals(toolName)) {
       return null;
     }
@@ -780,6 +784,8 @@ public class ToolRegistry {
         definition = McpOcrToolDefinitions.extract(List.of()); break;
       // etendo-ai#53: only includePermissions; anything else is refused.
       case McpConstants.TOOL_NEO_WHOAMI: definition = McpWhoamiToolDefinition.definition(); break;
+      // ETP-6421: no arguments; anything passed is refused.
+      case McpConstants.TOOL_NEO_HOW_TO: definition = McpHowToTool.definition(); break;
       case McpConstants.TOOL_NEO_ROUTINE: definition = McpRoutineTool.definition(); break;
       default: return Optional.empty();
     }

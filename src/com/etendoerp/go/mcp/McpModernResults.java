@@ -55,6 +55,8 @@ final class McpModernResults {
   static final String META = "_meta";
   /** {@code _meta} key under which a modern result names the server. */
   static final String META_SERVER_INFO = "io.modelcontextprotocol/serverInfo";
+  /** Key of the server instructions in {@code initialize} and {@code server/discover} (ETP-6421). */
+  static final String KEY_INSTRUCTIONS = "instructions";
   /** {@code Result.resultType} of every final modern result (MCP 2026-07-28). */
   private static final String RESULT_TYPE_COMPLETE = "complete";
   private static final String TTL_MS = "ttlMs";
@@ -87,6 +89,8 @@ final class McpModernResults {
     result.put("supportedVersions", new JSONArray(McpProtocolVersion.ALL_SUPPORTED));
     result.put("capabilities", capabilities());
     result.put(META, new JSONObject().put(META_SERVER_INFO, serverInfo()));
+    // ETP-6421: same instructions as initialize; see McpHowToTool.
+    result.put(KEY_INSTRUCTIONS, McpHowToTool.INSTRUCTIONS);
     result.put(TTL_MS, DISCOVER_TTL_MS);
     result.put(CACHE_SCOPE, CACHE_SCOPE_PUBLIC);
     return result;

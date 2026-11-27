@@ -13611,7 +13611,7 @@ hand links to the user and reach nobody else, so they stay closed-world.
 
 | Tools | `readOnlyHint` | `destructiveHint` | `idempotentHint` |
 |---|---|---|---|
-| `etendo_list`, `etendo_get`, `etendo_schema`, `etendo_discover`, `etendo_selectors`, `etendo_defaults`, `docs`, `etendo_widget`, `etendo_vector_search`, `etendo_get_image_upload`, `etendo_list_attachments`, `etendo_get_document_pdf`, `etendo_extract_invoice_document`, `etendo_job_status`, `etendo_whoami`, every `generate_*` report | true | false | true |
+| `etendo_list`, `etendo_get`, `etendo_schema`, `etendo_discover`, `etendo_selectors`, `etendo_defaults`, `docs`, `etendo_widget`, `etendo_vector_search`, `etendo_get_image_upload`, `etendo_list_attachments`, `etendo_get_document_pdf`, `etendo_extract_invoice_document`, `etendo_job_status`, `etendo_whoami`, `etendo_how_to`, every `generate_*` report | true | false | true |
 | `etendo_create`, `etendo_request_image_upload`, `etendo_upload_image`, `etendo_feedback`, `etendo_request_document_extraction_upload` | false | false | false |
 | `etendo_delete`, `etendo_delete_attachment` | false | true | true |
 | `etendo_update`, `etendo_batch`, `etendo_job_cancel`, `etendo_action`, `etendo_action_batch`, `etendo_routine` (its steps may update and complete documents), `etendo_request_attachment_upload` (`main:true` replaces the previous main file), `etendo_send_document_email` (two calls are two emails), `etendo_generate_amortization_plan`, every process tool (`complete_order` …) | false | true (conservative) | false |
@@ -16715,3 +16715,29 @@ version), `ETGO_MCP_ROUTINE_VERSION` (parameters and steps per version, cascade-
 no DAL entity — so saving a routine or recording an execution never joins or rolls back with the steps' business
 transaction. A failure to record an execution is logged and the answer carries no `executionId`; the steps' outcome
 is unchanged. Executions are kept indefinitely for now.
+
+#### 4.12.45 Which Etendo this is: server `instructions` and `etendo_how_to` (ETP-6421)
+
+Asked "where do I manage price lists in Etendo?", models answered with Etendo Classic menu paths (the
+SmartClient ERP, which their training knows), not the web app this server belongs to. Two channels now
+say which Etendo this is, with the same text (`McpHowToTool.INSTRUCTIONS`): it is the web app, not Etendo
+Classic; never guide with Classic or Openbravo menu paths; to say where something is done, call
+`etendo_discover` and give the user `windowName` and `windowUrl` (§4.12.2); say so when the tools do not
+show it.
+
+- **Server `instructions`**, in the `initialize` result and at the top level of `server/discover`. Claude
+  Code, ChatGPT and Cursor put it in the model's context at connection. The essentials are in the first
+  512 characters (OpenAI's guidance) and the whole text stays under Claude Code's 2 KB cut.
+- **Tool `etendo_how_to`**, for clients that ignore `instructions`. Claude desktop and claude.ai drop
+  them (anthropics/claude-ai-mcp#93, open in 2026-11) and show the model only deferred tool names until it
+  searches, so the name is the only signal. In a name test (simulated deferred list, two Claude models,
+  "how/where do I … in Etendo" questions), the model looked up `etendo_how_to` first in 41 of 42 runs;
+  `etendo_start_here` in 14, `etendo_help` in 27, and with no such tool it answered from memory in 39.
+  - No arguments (any is refused), read scope, read-only/idempotent hints, first in `tools/list`.
+  - Returns `{guide, appUrl}`: `guide` is the instructions text, `appUrl` the instance's app base URL when
+    configured.
+  - Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code loads it with
+    the session instead of deferring it. claude.ai ignores the flag today (anthropics/claude-ai-mcp#1105).
+  - Telemetry verb `how_to`.
+- Nothing reaches a claude.ai/desktop model that answers without searching any tool; the connector's
+  display name, chosen by the user, is the only text it sees up front.

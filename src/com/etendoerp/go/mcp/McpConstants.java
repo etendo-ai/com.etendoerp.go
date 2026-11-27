@@ -396,6 +396,8 @@ final class McpConstants {
   static final String TOOL_NEO_FEEDBACK = "etendo_feedback";
   /** Tool that tells the agent the user, role, client and organization of its connection (G17). */
   static final String TOOL_NEO_WHOAMI = "etendo_whoami";
+  /** Tool that tells the agent which Etendo this is, not Etendo Classic, and how to guide (ETP-6421). */
+  static final String TOOL_NEO_HOW_TO = "etendo_how_to";
   /** Tool that runs several calls of the other tools in one call, in order (ETP-6236). */
   static final String TOOL_NEO_ROUTINE = "etendo_routine";
   /**
