@@ -582,6 +582,143 @@ public class Fiscal390SubmissionSupportTest {
     assertEquals(Outcome.NOT_VALIDATED, rows.get(0).outcome());
   }
 
+  private static final String MODEL_NOT_LOADED_ERROR =
+      "EV0 - Error al cargar el modelo: No existe información del modelo: 390, 2026.";
+  private static final String OTHER_VALIDATOR_ERROR = "PAR016 - Error en el parametro PERIODO.";
+
+  /** EV0 AND a real error, as the validator (test mode) answers them. */
+  private static AEAT303SubmissionResult modelNotLoadedAndAnotherError() {
+    AEAT303SubmissionResult r = new AEAT303SubmissionResult();
+    r.setStatus(AEAT303SubmissionResult.Status.ERROR);
+    r.setTestMode(true);
+    r.addError(MODEL_NOT_LOADED_ERROR);
+    r.addError(OTHER_VALIDATOR_ERROR);
+    return r;
+  }
+
+  /**
+   * "Validar sin presentar" answered with EV0 AND another real error: a rejection, not
+   * NOT_VALIDATED — the AEAT incidents are replaced with both errors and the row is REJECTED.
+   */
+  @Test
+  public void testTestModeWithTheModelNotLoadedAndAnotherErrorIsRejected() throws Exception {
+    when(service.submitValidation("390", FILE, "2026", "0A", "ES"))
+        .thenReturn(modelNotLoadedAndAnotherError());
+    StringWriter out = new StringWriter();
+
+    JSONObject json = submit("{\"testMode\":true}", response(out), out);
+
+    assertEquals("ERROR", json.getString("status"));
+    assertTrue(json.getBoolean("testMode"));
+    assertFalse("a rejection is not NOT_VALIDATED", json.has("errorCode"));
+    verify(declHandler).replaceAeatIncidentsNoCommit(decl,
+        List.of(MODEL_NOT_LOADED_ERROR, OTHER_VALIDATOR_ERROR), List.of());
+    verify(service, never()).submitProduction(any());
+    List<FiscalAeatValidationOutcome> rows = attemptRows(1, VALIDATION_ENDPOINT);
+    assertEquals(Path.MANUAL_VALIDATION, rows.get(0).path());
+    assertEquals(Outcome.REJECTED, rows.get(0).outcome());
+  }
+
+  /**
+   * EV0 AND another real error before a real presentation: a rejection, so nothing is presented
+   * and the answer has no {@code preValidation} field.
+   */
+  @Test
+  public void testProductionWithTheModelNotLoadedAndAnotherErrorNeverPresents()
+      throws Exception {
+    validatorAnswers(modelNotLoadedAndAnotherError());
+    when(service.submitProduction(any())).thenReturn(success(false));
+    StringWriter out = new StringWriter();
+    HttpServletResponse resp = response(out);
+
+    JSONObject json = submit(PRODUCTION_BODY, resp, out);
+
+    verify(service, never()).submitProduction(any());
+    verify(decl, never()).setDeclarationStatus(anyString());
+    verify(declHandler).replaceAeatIncidentsNoCommit(decl,
+        List.of(MODEL_NOT_LOADED_ERROR, OTHER_VALIDATOR_ERROR), List.of());
+    verify(resp).setStatus(HttpServletResponse.SC_OK);
+    assertEquals("ERROR", json.getString("status"));
+    assertEquals(FiscalAeatSubmissionSupport.STAGE_VALIDATION, json.getString("stage"));
+    assertFalse(json.has(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+    List<FiscalAeatValidationOutcome> rows = attemptRows(1, VALIDATION_ENDPOINT);
+    assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());
+    assertEquals(Outcome.REJECTED, rows.get(0).outcome());
+  }
+
+  // ── not-validated helpers of FiscalAeatSubmissionSupport (ETP-5716) ─
+
+  /**
+   * Only a failed TEST-mode answer made of EV0 alone is "not validated": production, no result,
+   * a successful answer and an EV0 next to another error never match.
+   */
+  @Test
+  public void testIsNotValidatedTestAnswerMatchesOnlyATestModeEv0() {
+    AEAT303SubmissionResult ev0 = new AEAT303SubmissionResult();
+    ev0.setStatus(AEAT303SubmissionResult.Status.ERROR);
+    ev0.setTestMode(true);
+    ev0.addError(MODEL_NOT_LOADED_ERROR);
+
+    assertTrue(FiscalAeatSubmissionSupport.isNotValidatedTestAnswer(true, ev0));
+    assertFalse("production is the filing service speaking",
+        FiscalAeatSubmissionSupport.isNotValidatedTestAnswer(false, ev0));
+    assertFalse(FiscalAeatSubmissionSupport.isNotValidatedTestAnswer(true, null));
+    assertFalse(FiscalAeatSubmissionSupport.isNotValidatedTestAnswer(true, success(true)));
+    assertFalse(FiscalAeatSubmissionSupport.isNotValidatedTestAnswer(true,
+        modelNotLoadedAndAnotherError()));
+  }
+
+  /** The not-validated answer: ERROR, test mode, NOT_VALIDATED and the AEAT text in errors. */
+  @Test
+  public void testNotValidatedJsonCarriesTheAeatText() throws Exception {
+    AEAT303SubmissionResult ev0 = new AEAT303SubmissionResult();
+    ev0.setStatus(AEAT303SubmissionResult.Status.ERROR);
+    ev0.setTestMode(true);
+    ev0.addError(MODEL_NOT_LOADED_ERROR);
+
+    JSONObject json = FiscalAeatSubmissionSupport.notValidatedJson(ev0);
+
+    assertEquals("ERROR", json.getString("status"));
+    assertTrue(json.getBoolean("testMode"));
+    assertEquals(FiscalAeatSubmissionSupport.ERR_NOT_VALIDATED, json.getString("errorCode"));
+    assertEquals(1, json.getJSONArray("errors").length());
+    assertEquals(MODEL_NOT_LOADED_ERROR, json.getJSONArray("errors").getString(0));
+    assertEquals(0, json.getJSONArray("warnings").length());
+  }
+
+  /**
+   * {@code withPreValidation} marks the answer only when the validation got no verdict; no
+   * validation (test mode) and an accepted one leave it unchanged. It returns the same object.
+   */
+  @Test
+  public void testWithPreValidationAddsTheFieldOnlyWhenNotValidated() throws Exception {
+    validatorAnswers(acceptedByTheValidator());
+    FiscalAeatSubmissionSupport.PreSubmissionValidation accepted = validateBeforeSubmission();
+    AEAT303SubmissionResult ev0 = new AEAT303SubmissionResult();
+    ev0.setStatus(AEAT303SubmissionResult.Status.ERROR);
+    ev0.setTestMode(true);
+    ev0.addError(MODEL_NOT_LOADED_ERROR);
+    validatorAnswers(ev0);
+    FiscalAeatSubmissionSupport.PreSubmissionValidation notValidated = validateBeforeSubmission();
+    assertFalse(accepted.notValidated);
+    assertTrue(notValidated.notValidated);
+
+    JSONObject none = new JSONObject().put("status", "SUCCESS");
+    assertSame(none, FiscalAeatSubmissionSupport.withPreValidation(none, null));
+    assertFalse(none.has(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+
+    JSONObject validated = new JSONObject().put("status", "SUCCESS");
+    assertSame(validated, FiscalAeatSubmissionSupport.withPreValidation(validated, accepted));
+    assertFalse(validated.has(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+
+    JSONObject unvalidated = new JSONObject().put("status", "SUCCESS");
+    assertSame(unvalidated,
+        FiscalAeatSubmissionSupport.withPreValidation(unvalidated, notValidated));
+    assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+        unvalidated.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+    assertEquals("SUCCESS", unvalidated.getString("status"));
+  }
+
   /**
    * The blocking guard is evaluated fresh from the STORED inputs (the ones the file is built
    * from), never from the stored incident rows — so a stored AEAT answer cannot block the retry.
