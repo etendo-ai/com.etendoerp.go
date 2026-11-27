@@ -67,6 +67,7 @@ final class McpDeclaredActions {
   private static final Logger log = LogManager.getLogger(McpDeclaredActions.class);
 
   private static final String SPEC_TYPE_REPORT = "R";
+  private static final String LOG_BUTTON_LOOKUP_FAILED = "Button lookup failed for {} on {}: {}";
 
   private McpDeclaredActions() {
   }
@@ -285,7 +286,7 @@ final class McpDeclaredActions {
       String property = fired == null ? null : NeoButtonActionHelper.propertyNameOf(fired);
       return property == null ? action : property;
     } catch (RuntimeException e) {
-      log.debug("Button lookup failed for {} on {}: {}", action, entity.getName(), e.getMessage());
+      log.debug(LOG_BUTTON_LOOKUP_FAILED, action, entity.getName(), e.getMessage());
       return action;
     }
   }
@@ -411,7 +412,7 @@ final class McpDeclaredActions {
     try {
       return NeoButtonActionHelper.findButtonField(entity.getId(), action);
     } catch (RuntimeException e) {
-      log.debug("Button lookup failed for {} on {}: {}", action, entity.getName(), e.getMessage());
+      log.debug(LOG_BUTTON_LOOKUP_FAILED, action, entity.getName(), e.getMessage());
       return null;
     }
   }
@@ -434,7 +435,7 @@ final class McpDeclaredActions {
     try {
       return tableButton(entity, action);
     } catch (RuntimeException e) {
-      log.debug("Button lookup failed for {} on {}: {}", action, entity.getName(), e.getMessage());
+      log.debug(LOG_BUTTON_LOOKUP_FAILED, action, entity.getName(), e.getMessage());
       return null;
     }
   }
