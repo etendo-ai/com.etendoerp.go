@@ -130,6 +130,23 @@ class HostedCheckoutServiceTest {
   }
 
   @Test
+  void letsStripeChargeTheVatFromTheBuyersBillingAddress() throws UnsupportedEncodingException {
+    // ETP-6322: the prices are net of VAT and Stripe Tax adds it. The tax depends on where the
+    // buyer is, which only a full billing address tells (without it Stripe asks for a country
+    // alone), and the tax id box is what lets a business be invoiced in its own name. In payment
+    // mode too: an annual one-time price is taxed the same.
+    for (String mode : new String[] { "subscription", "payment" }) {
+      String body = HostedCheckoutService.buildSessionForm(REQUEST_ID, ACCOUNT_EMAIL,
+          CLIENT_NAME, ORIGIN, PRICE_ID, PLAN_KEY, mode);
+
+      assertTrue(body.contains("automatic_tax%5Benabled%5D=true"), body);
+      assertTrue(body.contains("billing_address_collection=required"), body);
+      assertTrue(body.contains("tax_id_collection%5Benabled%5D=true"), body);
+      assertTrue(body.contains("tax_id_collection%5Brequired%5D=if_supported"), body);
+    }
+  }
+
+  @Test
   void bindsTheSessionToTheAuthenticatedAccount() throws UnsupportedEncodingException {
     assertTrue(form().contains("customer_email=buyer%40example.test"));
   }

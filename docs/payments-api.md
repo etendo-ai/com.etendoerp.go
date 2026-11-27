@@ -18,9 +18,21 @@ shared with the signup API. Tables: `ETGO_PAYMENT`, `ETGO_PAYMENT_EVENT`.
 
 ## Decisions (2026-11-17)
 
-- **Plan prices are without VAT.** The base of the invoice is `amountPaid`. `taxAmount` is only
-  what Stripe reports (empty while Stripe computes no tax); computing VAT is the ERP's job, and is
-  deliberately not done here yet.
+- **Plan prices are without VAT, and Stripe Tax charges it** (2026-11-24). The checkout session
+  sends `automatic_tax[enabled]=true`, `billing_address_collection=required`,
+  `tax_id_collection[enabled]=true` and `tax_id_collection[required]=if_supported`: the buyer
+  types a full billing address and, in every country where Stripe collects one (Spain among
+  them), a name and tax id, and Stripe adds the VAT that address calls for (21 % in Spain, a
+  reverse charge for an EU business with a VAT number, none outside the EU). A subscription keeps
+  it for its renewals. So `amountPaid` includes the VAT: the base of the invoice is `taxBase`,
+  the tax `taxAmount`, and `taxes` says which tax and why.
+- **Stripe Tax must be configured before the code that asks for it is deployed**: Stripe Tax
+  active with Spain as head office, `exclusive` as the default tax behavior and a default tax code
+  (`txcd_10103001`, SaaS for business use), and a standard VAT registration in Spain. A price with
+  `tax_behavior: unspecified` takes the default; a product with its own tax code uses that one
+  instead, so check it is the SaaS one. Without Stripe Tax, or with no tax behavior at all, the
+  session is refused and nobody can buy; without the registration Stripe charges 0 % and says
+  nothing. Test and live are configured separately: nothing is copied between them.
 - **Billing email = the account's email**, else the address Stripe billed.
 - **The ERP decides** whether an invoice may be simplified (no customer data, up to 400 € VAT
   included for Spanish customers) or must be complete. Fiscal data are **not** required at
@@ -29,9 +41,21 @@ shared with the signup API. Tables: `ETGO_PAYMENT`, `ETGO_PAYMENT_EVENT`.
 - **The fiscal snapshot** (`fiscalData`) is one per payment, so a renewal carries the data of its
   own date. It is taken when the payment is recorded, **refreshed on every read while the payment
   has no invoice number**, and **frozen by the `PATCH` that reports the invoice number**: from then
-  on it is the snapshot that invoice was issued with. The first payment of an annual plan usually
-  arrives before the environment exists; its snapshot is empty until the company is created and
-  the ERP reads it again.
+  on it is the snapshot that invoice was issued with.
+- **The snapshot is the checkout's data, and only those** (2026-11-24). The checkout is what
+  Stripe computed the VAT from, the only source with an address, and it exists from the first
+  webhook, before the environment does. The signup's company data are optional and often left
+  for later, so they never complete or replace it. The tax id is required at the checkout wherever
+  Stripe can collect one: the buyer is a company or a self-employed person, both with one (a
+  person types their own name as the company and their DNI/NIE as "ES NIF"). Where Stripe
+  collects none (Argentina, the United States…) the invoice goes to the cardholder's name with no
+  tax id. Stripe checks a Spanish tax id's shape only, so the snapshot checks its check digit too
+  (`SpanishTaxIdValidator`, `es_vat` without its `ES` prefix) and leaves out one that fails. The
+  tenant's company is used only for a payment whose checkout told nothing (recorded before
+  2026-11-24).
+- **Stripe's default tax id type in Spain is `es_vat`**, which needs the `ES` prefix; a bare CIF
+  is refused until the buyer picks "España (ES NIF)" (`es_cif`). Stripe offers no way to change
+  the default.
 
 ## Authentication: API keys
 
@@ -74,19 +98,25 @@ The cursor is keyset (created, id): a payment that changes state while the ERP p
   "id": "…", "status": "pending_invoice", "paymentType": "renewal",
   "billingReason": "subscription_cycle", "accountId": "…", "billingEmail": "owner@example.com",
   "environmentClientId": "…", "currency": "EUR",
-  "amountPaid": "45.00", "subtotal": "45.00", "taxAmount": "0.00", "totalAmount": "45.00",
+  "amountPaid": "54.45", "subtotal": "45.00", "taxBase": "45.00", "taxAmount": "9.45",
+  "totalAmount": "54.45",
+  "taxes": [ { "taxableAmount": "45.00", "amount": "9.45", "rate": "21.00",
+               "reason": "standard_rated" } ],
   "paidAt": "2026-11-17T10:00:00Z", "periodStart": "…", "periodEnd": "…",
   "lines": [ { "description": "1 × Pro", "quantity": 1, "amount": "45.00",
                "priceId": "price_…", "periodStart": "…", "periodEnd": "…" } ],
-  "fiscalData": { "name": "…", "legalName": "…", "taxId": "B12345678", "address1": "…",
-                  "address2": null, "postalCode": "…", "city": "…", "region": "…",
-                  "countryCode": "ES", "country": "Spain" },
+  "fiscalData": { "name": "…", "legalName": "…", "taxIdType": "es_cif", "taxId": "B12345678",
+                  "address1": "…", "address2": null, "postalCode": "…", "city": "…",
+                  "region": "…", "countryCode": "ES", "country": "Spain" },
   "fiscalDataAt": "…",
   "paymentMethod": { "type": "card", "brand": "visa", "last4": "4242", "wallet": "apple_pay",
                      "receiptUrl": "https://pay.stripe.com/…", "chargeId": "ch_…" },
   "invoiceNumber": null, "invoicedAt": null,
   "stripe": { "invoiceId": "in_…", "invoiceNumber": "…", "subscriptionId": "sub_…",
-              "customerId": "cus_…" },
+              "customerId": "cus_…",
+              "billingDetails": { "name": "…", "taxIdType": "es_cif", "taxId": "B12345678",
+                                  "address1": "…", "address2": null, "postalCode": "…",
+                                  "city": "…", "region": "…", "countryCode": "ES" } },
   "created": "…", "updated": "…"
 }
 ```
@@ -94,10 +124,29 @@ The cursor is keyset (created, id): a payment that changes state while the ERP p
 - Amounts are decimal strings with the currency's decimals, never floats.
 - `paymentType`: `new` (`subscription_create`), `renewal` (`subscription_cycle`), `plan_change`
   (`subscription_update`) or `other`.
-- `fiscalData` is `null` while the account has no company; each field is `null` when blank. The
-  company is the tenant's legal entity, else its first organization (the one with a tax id first).
-- `paymentMethod` is asked to Stripe while recording. A failing or slow Stripe never fails the
-  webhook: the payment is then recorded with `paymentMethod: null`.
+- `amountPaid` is what was collected, VAT included. `taxBase` is the base of the invoice: Stripe's
+  total excluding tax, **after discounts** (`subtotal` is before them, so with a promotion code it
+  overstates the base). Both `taxBase` and `taxes` are `null`/empty for payments recorded before
+  2026-11-24, and `taxes` is empty when Stripe computed no tax.
+- `taxes[].rate` is the percentage, worked out from `amount` and `taxableAmount` (the event names
+  the tax rate only by id). `taxes[].reason` is Stripe's `taxability_reason`: `standard_rated`,
+  `reverse_charge` (an EU business with a VAT number: no VAT, the invoice carries the reverse
+  charge mention), `not_collecting` (outside the EU, or a country without a registration),
+  `not_supported`, and others. A 0 % tax can mean any of them: decide by `reason`, never by the
+  amount alone.
+- `fiscalData` is `null` only when neither the checkout nor the tenant tells anything; each field
+  is `null` when blank. `name` and `legalName` are the same: the company name typed at the
+  checkout, or the cardholder's name where no tax id was asked. `taxIdType` is Stripe's tax id
+  type (`es_cif`, `es_vat`, `eu_vat`…); `taxId` and `taxIdType` are `null` when none was given or
+  a Spanish one fails its check digit. `stripe.billingDetails` is the checkout's data exactly as
+  Stripe copied them onto its invoice, the rejected tax id included. For payments recorded before
+  2026-11-24, `fiscalData` is the tenant's company: its legal entity, else its first organization
+  (the one with a tax id first), with no `taxIdType`.
+- `paymentMethod` is asked to Stripe while recording: the invoice with its payment intent
+  expanded (`payments.data.payment.payment_intent`), then the intent's latest charge by id.
+  Stripe expands at most 4 levels and answers 400 to a deeper path, which until 2026-11-24 left
+  every payment without its method. A failing or slow Stripe never fails the webhook: the payment
+  is then recorded with `paymentMethod: null`.
 - `GET /payments/{id}` adds `events`: `[{ "event", "step", "reason", "channel", "at" }]`, oldest
   first, starting with `recorded`.
 

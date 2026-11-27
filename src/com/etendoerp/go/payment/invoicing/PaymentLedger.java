@@ -48,9 +48,10 @@ import com.etendoerp.go.payment.invoicing.PaymentLedgerStore.PaymentRow;
  * payment is never acknowledged without being kept. A redelivery finds the invoice already there
  * and adds nothing.
  *
- * <p><b>The company's fiscal data</b> (name, tax id, address) are a snapshot, one per payment, so a
- * renewal carries the data of its own date. They are taken when the payment is recorded, which for
- * a first payment is often before the environment exists, and then refreshed every time the ERP
+ * <p><b>The fiscal data</b> (name, tax id, address) are a snapshot, one per payment, so a renewal
+ * carries the data of its own date. They are what the buyer typed at the Stripe checkout
+ * ({@link FiscalSnapshot}), so a first payment has them even though it is often recorded before
+ * the environment exists. They are refreshed every time the ERP
  * reads the payment, until the ERP reports its invoice number: from then on the snapshot is the one
  * that invoice was issued with and never changes. Whether an invoice may go without them (a
  * simplified invoice) is the ERP's decision; the API only says what there is.
@@ -178,7 +179,7 @@ public class PaymentLedger {
       String environment = store.environmentClientFor(c, payment.subscriptionId(),
           payment.requestId());
       String recorded = store.insert(c, payment, accountId, email, environment,
-          store.fiscalData(c, environment), method);
+          snapshot(c, environment, payment.billingDetails()), method);
       if (recorded != null) {
         store.addEvent(c, recorded, PaymentStatus.EVENT_RECORDED, null, null, null);
       }
@@ -323,7 +324,7 @@ public class PaymentLedger {
     }
     String environment = row.environmentClientId() != null ? row.environmentClientId()
         : store.environmentClientFor(c, row.subscriptionId(), null);
-    JSONObject fiscal = store.fiscalData(c, environment);
+    JSONObject fiscal = snapshot(c, environment, jsonOrNull(row.billingDetails()));
     boolean environmentChanged = !Objects.equals(environment, row.environmentClientId());
     boolean fiscalChanged = fiscal != null && !fiscal.toString().equals(row.fiscalData());
     if (!environmentChanged && !fiscalChanged) {
@@ -333,6 +334,18 @@ public class PaymentLedger {
         : jsonOrNull(row.fiscalData()));
     PaymentRow updated = store.find(c, row.id());
     return updated == null ? row : updated;
+  }
+
+  /**
+   * The fiscal snapshot of a payment: what the buyer typed at the checkout, or the tenant's
+   * company for a payment whose checkout told nothing. See {@link FiscalSnapshot}.
+   */
+  private JSONObject snapshot(Connection c, String environment, JSONObject checkout)
+      throws SQLException, JSONException {
+    String countryCode = checkout == null || checkout.isNull("countryCode") ? null
+        : checkout.optString("countryCode", null);
+    return FiscalSnapshot.merge(checkout, store.fiscalData(c, environment),
+        store.countryName(c, countryCode));
   }
 
   private JSONObject withEvents(Connection c, PaymentRow row) throws SQLException, JSONException {

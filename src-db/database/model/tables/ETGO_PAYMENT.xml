@@ -133,6 +133,18 @@
         <default/>
         <onCreateDefault/>
       </column>
+      <column name="TAX_BASE" primaryKey="false" required="false" type="DECIMAL" size="20,4" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="TAXES" primaryKey="false" required="false" type="CLOB" size="4000" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="BILLING_DETAILS" primaryKey="false" required="false" type="CLOB" size="4000" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
       <foreign-key foreignTable="ETGO_ACCOUNT" name="ETGO_PAYMENT_ACCOUNT_FK">
         <reference local="ETGO_ACCOUNT_ID" foreign="ETGO_ACCOUNT_ID"/>
       </foreign-key>

@@ -20,6 +20,7 @@ package com.etendoerp.go.payment.invoicing;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -40,12 +41,14 @@ import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 import com.etendoerp.go.payment.invoicing.PaymentLedgerStore.PaymentRow;
 
 /**
  * How payments are recorded from the webhook and handed to the ERP (ETP-6322): one row per paid
- * invoice, the fiscal snapshot refreshed until the invoice number freezes it, and the state checks
+ * invoice, the fiscal snapshot (the checkout's data completed with the tenant's company) refreshed
+ * until the invoice number freezes it, and the state checks
  * of the events the ERP reports.
  *
  * @covers com.etendoerp.go.payment.invoicing.PaymentLedger
@@ -88,8 +91,25 @@ class PaymentLedgerTest {
 
   private static PaymentRow row(String status, String invoiceNumber, String environment,
       String fiscalData) throws JSONException {
+    return row(status, invoiceNumber, environment, fiscalData, null);
+  }
+
+  private static PaymentRow row(String status, String invoiceNumber, String environment,
+      String fiscalData, String billingDetails) throws JSONException {
     return new PaymentRow(ID, status, invoiceNumber, "sub_1", environment, fiscalData,
-        new JSONObject().put("id", ID).put("status", PaymentStatus.toApi(status)));
+        billingDetails, new JSONObject().put("id", ID).put("status",
+            PaymentStatus.toApi(status)));
+  }
+
+  /** A taxed first payment of a business that typed its data at the checkout. */
+  private static JSONObject checkoutPaidEvent() throws Exception {
+    JSONObject invoice = StripeInvoicePaymentTest.currentInvoice("subscription_create", 3_025)
+        .put("customer_name", "Fiscal Uno SL")
+        .put("customer_tax_ids", new JSONArray("[{\"type\":\"es_cif\","
+            + "\"value\":\"B81639718\"}]"))
+        .put("customer_address", new JSONObject("{\"line1\":\"Calle Mayor 1\","
+            + "\"postal_code\":\"28013\",\"city\":\"Madrid\",\"country\":\"ES\"}"));
+    return StripeInvoicePaymentTest.event("invoice.paid", invoice);
   }
 
   private static JSONObject paidEvent(long amount) throws Exception {
@@ -117,6 +137,25 @@ class PaymentLedgerTest {
 
     verify(store).addEvent(c, ID, PaymentStatus.EVENT_RECORDED, null, null, null);
     assertEquals(0, database.commits, "the webhook owns the transaction");
+  }
+
+  /**
+   * The first payment arrives before its environment exists: the data typed at the checkout are
+   * its snapshot from the start, so the ERP never reads it without a party or an address.
+   */
+  @Test
+  void aFirstPaymentHasTheCheckoutDataBeforeItsEnvironmentExists() throws Exception {
+    Connection c = database.connection;
+    when(store.countryName(c, "ES")).thenReturn("Spain");
+    ArgumentCaptor<JSONObject> fiscal = ArgumentCaptor.forClass(JSONObject.class);
+
+    ledger.recordPayment("invoice.paid", checkoutPaidEvent());
+
+    verify(store).insert(eq(c), any(), any(), any(), isNull(), fiscal.capture(), any());
+    assertEquals("Fiscal Uno SL", fiscal.getValue().getString("name"));
+    assertEquals("B81639718", fiscal.getValue().getString("taxId"));
+    assertEquals("Calle Mayor 1", fiscal.getValue().getString("address1"));
+    assertEquals("Spain", fiscal.getValue().getString("country"));
   }
 
   @Test
@@ -186,9 +225,9 @@ class PaymentLedgerTest {
   void aFullPageNamesTheCursorOfTheNext() throws Exception {
     Connection c = database.connection;
     PaymentRow first = new PaymentRow("A", PaymentStatus.INVOICED, "F-1", null, ENVIRONMENT,
-        null, new JSONObject().put("id", "A"));
+        null, null, new JSONObject().put("id", "A"));
     PaymentRow second = new PaymentRow("B", PaymentStatus.INVOICED, "F-2", null, ENVIRONMENT,
-        null, new JSONObject().put("id", "B"));
+        null, null, new JSONObject().put("id", "B"));
     when(store.list(c, PaymentStatus.INVOICED, "Z", 2)).thenReturn(List.of(first, second));
 
     PaymentLedger.Page page = ledger.list("invoiced", "Z", "1");
@@ -223,6 +262,33 @@ class PaymentLedgerTest {
 
     verify(store).updateFiscalData(c, ID, ENVIRONMENT, fiscal);
     assertEquals(refreshed.json(), page.payments().get(0));
+  }
+
+  /**
+   * The checkout is the only source: a checkout without a tax id (a country where Stripe asks
+   * for none) is never completed with the tenant's company, whose signup data are optional.
+   */
+  @Test
+  void aRefreshNeverCompletesTheCheckoutDataWithTheTenantsCompany() throws Exception {
+    Connection c = database.connection;
+    String checkout = new JSONObject().put("name", "Fiscal Tester").put("taxId", JSONObject.NULL)
+        .put("address1", "Calle Mayor 1").put("city", "Madrid").put("countryCode", "ES")
+        .toString();
+    PaymentRow pending = row(PaymentStatus.PENDING_INVOICE, null, null, null, checkout);
+    when(store.list(eq(c), any(), any(), anyInt())).thenReturn(List.of(pending));
+    when(store.environmentClientFor(c, "sub_1", null)).thenReturn(ENVIRONMENT);
+    when(store.fiscalData(c, ENVIRONMENT)).thenReturn(new JSONObject()
+        .put("name", "Fiscal Uno Prod").put("legalName", "Fiscal Uno SL")
+        .put("taxId", "B81639718").put("countryCode", "ES").put("country", "Spain"));
+    when(store.countryName(c, "ES")).thenReturn("Spain");
+    ArgumentCaptor<JSONObject> fiscal = ArgumentCaptor.forClass(JSONObject.class);
+
+    ledger.list(null, null, null);
+
+    verify(store).updateFiscalData(eq(c), eq(ID), eq(ENVIRONMENT), fiscal.capture());
+    assertEquals("Fiscal Tester", fiscal.getValue().getString("legalName"));
+    assertTrue(fiscal.getValue().isNull("taxId"));
+    assertEquals("Calle Mayor 1", fiscal.getValue().getString("address1"));
   }
 
   @Test
