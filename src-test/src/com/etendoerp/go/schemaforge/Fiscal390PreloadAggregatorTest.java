@@ -127,6 +127,24 @@ public class Fiscal390PreloadAggregatorTest {
     assertSame(onlyDraftNew, winners.get(1));
   }
 
+  /**
+   * ETP-5716 QA repro (ModelosFiscales 2026): the last period has its submitted ordinary 303
+   * (seq 0) and a LATER draft rectificativa (seq 1). The submitted one is the period's figure —
+   * a higher sequence never beats a submission — and the draft only counts as superseded.
+   */
+  @Test
+  public void testSubmittedBeatsALaterDraftOfTheSamePeriod() {
+    Decl303 submitted = new Decl303("t4-0", "T4", "submitted", true, 0);
+    Decl303 laterDraft = new Decl303("t4-1", "T4", "draft", false, 1);
+
+    List<Decl303> winners = Fiscal390PreloadAggregator.selectWinners(
+        Arrays.asList(laterDraft, submitted));
+
+    assertEquals(1, winners.size());
+    assertSame(submitted, winners.get(0));
+    assertEquals(1, submitted.superseded);
+  }
+
   // ── aggregation ─────────────────────────────────────────────────────
 
   /** Quarterly year: payments to the quarter's closing month, last-period credit to [97]. */
