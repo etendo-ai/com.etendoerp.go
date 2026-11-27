@@ -91,8 +91,10 @@ final class McpDiscoverTool {
       String primaryEntity = "W".equals(specType)
           ? McpToolRouterSupport.resolvePrimaryEntityName(includedEntities)
           : null;
-      specsArray.put(McpToolRouterSupport.buildDiscoverSpec(
-          spec, specType, entities, primaryEntity, includedEntities));
+      JSONObject specJson = McpToolRouterSupport.buildDiscoverSpec(
+          spec, specType, entities, primaryEntity, includedEntities);
+      addWindowLinks(specJson, spec, specType);
+      specsArray.put(specJson);
     }
 
     JSONObject result = new JSONObject();
@@ -106,6 +108,26 @@ final class McpDiscoverTool {
       result.put(McpRecordUrls.KEY_APP, app);
     }
     return McpToolRouter.wrapAsTextContent(result);
+  }
+
+  /**
+   * ETP-6421: adds where the user finds a window spec — its name in the user's language and its app
+   * link — so the agent does not guess a menu path. Each key is omitted when it cannot be resolved,
+   * and process and report specs ({@code specType} other than {@code W}) are left untouched.
+   */
+  static void addWindowLinks(JSONObject specJson, SFSpec spec, String specType)
+      throws JSONException {
+    if (!"W".equals(specType)) {
+      return;
+    }
+    String windowName = McpToolTitles.windowNameForSpec(spec);
+    if (windowName != null) {
+      specJson.put(McpToolTitles.KEY_WINDOW_NAME, windowName);
+    }
+    String windowUrl = McpRecordUrls.buildWindowUrl(spec.getName());
+    if (windowUrl != null) {
+      specJson.put(McpRecordUrls.KEY_WINDOW_URL, windowUrl);
+    }
   }
 
   /**

@@ -140,4 +140,25 @@ class McpToolTitlesTest {
     when(spec.getProcess()).thenReturn(process);
     assertNull(McpToolTitles.fromSpec(spec, null));
   }
+
+  @Test
+  @DisplayName("windowNameForSpec returns the window name, never the process, and is total")
+  void windowNameForSpecReturnsTheWindowName() {
+    Window window = mock(Window.class);
+    when(window.getId()).thenReturn("W1");
+    when(window.get(Window.PROPERTY_NAME, null, "W1")).thenReturn(" Price List ");
+    Process process = mock(Process.class);
+    when(process.getId()).thenReturn("P1");
+    when(process.get(Process.PROPERTY_NAME, null, "P1")).thenReturn("Process name");
+    SFSpec spec = mock(SFSpec.class);
+    when(spec.getADWindow()).thenReturn(window);
+    when(spec.getProcess()).thenReturn(process);
+    assertEquals("Price List", McpToolTitles.windowNameForSpec(spec));
+
+    assertNull(McpToolTitles.windowNameForSpec(mock(SFSpec.class)));
+
+    SFSpec failing = mock(SFSpec.class);
+    when(failing.getADWindow()).thenThrow(new IllegalStateException("boom"));
+    assertNull(McpToolTitles.windowNameForSpec(failing));
+  }
 }

@@ -55,6 +55,8 @@ final class McpToolTitles {
   private static final Logger log = LogManager.getLogger(McpToolTitles.class);
   private static final String BUNDLE = "com.etendoerp.go.mcp.messages.mcp_titles";
   private static final String KEY_PREFIX = "title.";
+  /** Key holding a window spec's translated window name in the {@code etendo_discover} result. */
+  static final String KEY_WINDOW_NAME = "windowName";
   /** The MCP surface is English (descriptions, errors), so an unknown language falls back to it. */
   private static final Locale FALLBACK_LOCALE = Locale.ENGLISH;
   /**
@@ -134,6 +136,29 @@ final class McpToolTitles {
     }
     Window window = spec.getADWindow();
     return window != null ? translatedName(window, Window.PROPERTY_NAME, language) : null;
+  }
+
+  /**
+   * Name of the spec's AD_Window in the current user's language, as the user sees it in the app.
+   * Unlike {@link #forSpec} it never prefers the process. Total by design: a lookup failure or a
+   * spec without window returns {@code null}.
+   *
+   * @param spec the spec
+   * @return the window name, or {@code null}
+   */
+  static String windowNameForSpec(SFSpec spec) {
+    try {
+      Window window = spec.getADWindow();
+      if (window == null) {
+        return null;
+      }
+      OBContext context = OBContext.getOBContext();
+      return translatedName(window, Window.PROPERTY_NAME,
+          context != null ? context.getLanguage() : null);
+    } catch (RuntimeException e) {
+      log.debug("Could not resolve the AD window name for spec '{}'", spec.getName(), e);
+      return null;
+    }
   }
 
   private static String translatedName(BaseOBObject object, String property, Language language) {
