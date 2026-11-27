@@ -84,8 +84,8 @@ public class ProductStockWarehouseHandlerTest {
     assertNull(handler.handle(ctx));
   }
 
-  @Test
-  public void successfulStockQueryReturnsResponse() {
+  /** Runs the handler over one stock row; `policyOn` is the Movements flag, `symbol` the UOM symbol column. */
+  private String runWithRow(boolean policyOn, Object symbol) {
     Map<String, String> params = new HashMap<>();
     params.put("parentId", "product-1");
     NeoContext ctx = buildContext(NeoEndpointType.CRUD, "GET", null, params);
@@ -93,7 +93,8 @@ public class ProductStockWarehouseHandlerTest {
     List<Object[]> rows = new ArrayList<>();
     rows.add(new Object[]{
         "sd-1", "loc-1", "BIN-A", "wh-1", "Main Warehouse",
-        new BigDecimal("10.00"), new BigDecimal("2.00"), new BigDecimal("1.00"), "0", java.sql.Timestamp.valueOf("2026-01-02 03:04:05")
+        new BigDecimal("10.00"), new BigDecimal("2.00"), new BigDecimal("1.00"), "0",
+        java.sql.Timestamp.valueOf("2026-01-02 03:04:05"), symbol
     });
 
     NativeQuery<Object[]> query = mock(NativeQuery.class);
@@ -107,16 +108,42 @@ public class ProductStockWarehouseHandlerTest {
 
     try (MockedStatic<OBContext> ctxMock = mockStatic(OBContext.class);
          MockedStatic<OBDal> dalMock = mockStatic(OBDal.class);
+         MockedStatic<ProductMovementsPolicy> policyMock = mockStatic(ProductMovementsPolicy.class);
          MockedStatic<TenantOwnership> tenantMock = mockStatic(TenantOwnership.class)) {
       tenantMock.when(() -> TenantOwnership.loadOwned(org.mockito.ArgumentMatchers.any(), anyString()))
           .thenReturn(mock(org.openbravo.model.common.plm.Product.class));
+      policyMock.when(ProductMovementsPolicy::isEnabled).thenReturn(policyOn);
       dalMock.when(OBDal::getInstance).thenReturn(obDal);
 
       NeoResponse resp = handler.handle(ctx);
       assertEquals(200, resp.getHttpStatus());
-      String body = resp.getBody().toString();
-      org.junit.Assert.assertTrue("row must carry updated: " + body, body.contains("\"updated\":\"2026-01-02T03:04:05"));
+      return resp.getBody().toString();
     }
+  }
+
+  @Test
+  public void successfulStockQueryReturnsResponse() {
+    String body = runWithRow(true, "kg");
+    org.junit.Assert.assertTrue("row must carry updated: " + body, body.contains("\"updated\":\"2026-01-02T03:04:05"));
+  }
+
+  @Test
+  public void rowCarriesTheUnitSymbolOfTheProductUom() {
+    String body = runWithRow(true, "kg");
+    org.junit.Assert.assertTrue("row must carry the UOM symbol: " + body, body.contains("\"etgoUomSymbol\":\"kg\""));
+  }
+
+  @Test
+  public void uomWithoutSymbolLeavesTheFieldOut() {
+    org.junit.Assert.assertFalse(runWithRow(true, null).contains("etgoUomSymbol"));
+    org.junit.Assert.assertFalse(runWithRow(true, "  ").contains("etgoUomSymbol"));
+  }
+
+  @Test
+  public void symbolIsOmittedWhenMovementsPolicyIsOff() {
+    String body = runWithRow(false, "kg");
+    org.junit.Assert.assertFalse("rows stay as before the policy: " + body, body.contains("etgoUomSymbol"));
+    org.junit.Assert.assertTrue(body.contains("\"quantityOnHand\""));
   }
 
   @Test
