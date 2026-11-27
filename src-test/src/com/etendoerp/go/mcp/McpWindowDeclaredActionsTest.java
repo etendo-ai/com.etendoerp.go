@@ -74,6 +74,7 @@ import com.etendoerp.go.schemaforge.ReturnToVendorShipmentHeaderHandler;
 import com.etendoerp.go.schemaforge.SalesInvoiceHeaderHandler;
 import com.etendoerp.go.schemaforge.util.NeoButtonActionHelper;
 import com.etendoerp.go.schemaforge.data.SFEntity;
+import com.etendoerp.go.schemaforge.data.SFField;
 import com.etendoerp.go.schemaforge.data.SFSpec;
 import com.etendoerp.go.schemaforge.util.NeoActionContract;
 import com.etendoerp.go.schemaforge.util.NeoExtensionIndex;
@@ -1879,6 +1880,200 @@ class McpWindowDeclaredActionsTest {
       JSONObject valid = new JSONObject("{\"hidden\":[\"a\"],\"redirect\":{\"c\":\"d\"},"
           + "\"reason\":\"r\",\"reasons\":{\"a\":\"x\",\"c\":\"y\"}}");
       assertTrue(McpActionsSection.validate(valid).isEmpty(), McpActionsSection.validate(valid).toString());
+    }
+  }
+
+  // ── ETP-5812: a button the catalogue reports not invokable is refused ──────
+
+  /**
+   * ETP-5812 follow-up: {@code etendo_schema(view:"actions")} reported a button
+   * {@code invokable:false} — Classic hides it in the tab, it is curated {@code discarded}, or no
+   * process is behind it — and {@code etendo_action} still fired it by name. The review found two
+   * such leaks (the reconciliation's {@code aPRMProcessReconciliation}, the purchase order's
+   * {@code RM_CreateInvoice}); each was patched with an {@code MCP_CONFIG} entry. The precheck now
+   * applies the catalogue's own verdict to every button nobody configured.
+   */
+  @Nested
+  @DisplayName("ETP-5812 — the catalogue's invokable:false is enforced by etendo_action")
+  class CatalogueVerdict {
+
+    private static final String DISPLAYED = "Y";
+    private static final String NOT_DISPLAYED = "N";
+
+    /**
+     * The included field etendo_action fires {@code db} / {@code property} through, curated
+     * {@code visibility}, with or without a Classic process, on {@code entity}'s tab, displayed
+     * or not ({@code null}: the tab has no field for it).
+     */
+    private Column fire(SFEntity entity, String db, String property, String visibility,
+        boolean withProcess, String displayed) {
+      Column column = buttonColumn(db);
+      if (withProcess) {
+        org.openbravo.model.ad.ui.Process process = mock(org.openbravo.model.ad.ui.Process.class);
+        when(process.getName()).thenReturn(db + " process");
+        when(column.getProcess()).thenReturn(process);
+      }
+      Property prop = mock(Property.class);
+      when(prop.getName()).thenReturn(property);
+      when(ModelProvider.getInstance().getEntityByTableName("C_Invoice")
+          .getPropertyByColumnName(db)).thenReturn(prop);
+      SFField field = mock(SFField.class);
+      when(field.getADColumn()).thenReturn(column);
+      when(field.getVisibility()).thenReturn(visibility);
+      when(field.isIncluded()).thenReturn(true);
+      for (String name : List.of(db, property)) {
+        buttonMock.when(() -> NeoButtonActionHelper.findButtonField(anyString(), eq(name)))
+            .thenReturn(field);
+        buttonMock.when(() -> NeoButtonActionHelper.findButtonColumn(anyString(), eq(name)))
+            .thenReturn(column);
+      }
+      if (displayed != null) {
+        org.openbravo.model.ad.ui.Field adField = mock(org.openbravo.model.ad.ui.Field.class);
+        when(adField.isActive()).thenReturn(true);
+        when(adField.getColumn()).thenReturn(column);
+        when(adField.isDisplayed()).thenReturn(DISPLAYED.equals(displayed));
+        List<org.openbravo.model.ad.ui.Field> fields =
+            new java.util.ArrayList<>(entity.getADTab().getADFieldList());
+        fields.add(adField);
+        when(entity.getADTab().getADFieldList()).thenReturn(fields);
+      }
+      return column;
+    }
+
+    private JSONObject refusal(SFEntity entity, String action) throws Exception {
+      return assertThrows(McpRoutingException.class,
+          () -> McpDeclaredActions.precheck(entity, action, new JSONObject()), action)
+          .toEnvelope();
+    }
+
+    @Test
+    @DisplayName("a button Classic hides in the tab is refused 405 under both names, with the catalogue's reason")
+    void hiddenInTheTabIsRefused() throws Exception {
+      SFEntity e = entity("W", null);
+      fire(e, "Processing", "processNow", "system", true, NOT_DISPLAYED);
+      for (String typed : List.of("processNow", "Processing")) {
+        JSONObject env = refusal(e, typed);
+        assertEquals(405, env.getInt(McpConstants.KEY_STATUS), typed);
+        assertEquals("method_not_allowed", env.getString(McpConstants.KEY_ERROR), typed);
+        String detail = env.getString(McpConstants.KEY_DETAIL);
+        assertTrue(detail.contains("hidden: AD does not display this button in the tab"), detail);
+        assertTrue(detail.contains("Nothing was run"), detail);
+        assertTrue(env.getString(McpConstants.KEY_HINT).contains("view:'actions'"), env.toString());
+      }
+    }
+
+    @Test
+    @DisplayName("a button curated discarded is refused even with a process and a displayed field")
+    void discardedIsRefused() throws Exception {
+      SFEntity e = entity("W", null);
+      fire(e, "Calculate_Promotions", "calculatePromotions", "discarded", true, DISPLAYED);
+      String detail = refusal(e, "calculatePromotions").getString(McpConstants.KEY_DETAIL);
+      assertTrue(detail.contains("discarded: this action is not part of the curated agent surface"),
+          detail);
+    }
+
+    @Test
+    @DisplayName("a button with no process behind it is refused")
+    void noProcessIsRefused() throws Exception {
+      SFEntity e = entity("W", null);
+      fire(e, "CreateFrom", "createLinesFrom", "system", false, DISPLAYED);
+      String detail = refusal(e, "CreateFrom").getString(McpConstants.KEY_DETAIL);
+      assertTrue(detail.contains("no process: the AD button column has no process"), detail);
+    }
+
+    @Test
+    @DisplayName("an MCP_CONFIG fields override is the curation judged, as in the catalogue")
+    void effectiveCurationIsJudged() throws Exception {
+      SFEntity e = entity("W", null);
+      fire(e, "Calculate_Promotions", "calculatePromotions", "system", true, DISPLAYED);
+      SFField field = NeoButtonActionHelper.findButtonField("any", "calculatePromotions");
+      when(field.get(McpEntityConfig.PROPERTY_MCP_CONFIG)).thenReturn(
+          "{\"fields\":{\"visibility\":\"discarded\",\"reason\":\"not for agents\"}}");
+      assertTrue(refusal(e, "calculatePromotions").getString(McpConstants.KEY_DETAIL)
+          .contains("discarded:"));
+    }
+
+    @Test
+    @DisplayName("a displayed button with a process still passes")
+    void invokableButtonPasses() throws Exception {
+      SFEntity e = entity("W", null);
+      fire(e, "DocAction", "documentAction", "system", true, DISPLAYED);
+      assertNull(McpDeclaredActions.precheck(e, "documentAction", new JSONObject()));
+      assertNull(McpDeclaredActions.precheck(e, "DocAction", new JSONObject()));
+    }
+
+    @Test
+    @DisplayName("an uncurated button the tab has no field for is not hidden: it passes")
+    void buttonWithoutTabFieldPasses() throws Exception {
+      SFEntity e = entity("W", null);
+      fire(e, "EM_Mod_Do_It", "modDoIt", null, true, null);
+      assertNull(McpDeclaredActions.precheck(e, "modDoIt", new JSONObject()));
+    }
+
+    /**
+     * The goods receipt and shipment case: Classic hides {@code DocAction} there, yet the
+     * customization declares {@code documentAction} — the declared contract describes the button,
+     * so the call is judged by the contract and never refused as not invokable.
+     */
+    @Test
+    @DisplayName("a button a declared contract describes is judged by the contract, never refused")
+    void declaredNameIsNotRefused() throws Exception {
+      SFEntity e = entity("W", null);
+      fire(e, "EM_Currency_Options", "currencyOptions", "system", false, NOT_DISPLAYED);
+      for (String typed : List.of("currencyOptions", "EM_Currency_Options")) {
+        NeoActionContract contract = McpDeclaredActions.precheck(e, typed, new JSONObject());
+        assertNotNull(contract, typed);
+        assertEquals("currencyOptions", contract.getName(), typed);
+      }
+    }
+
+    @Test
+    @DisplayName("MCP_CONFIG hidden and redirect keep their own, better answer")
+    void configuredEntriesWin() throws Exception {
+      SFEntity e = entity("W", HIDE_PIS);
+      fire(e, "EM_APRM_Addpayment", "aPRMAddpayment", "system", false, NOT_DISPLAYED);
+      JSONObject redirected = refusal(e, "aPRMAddpayment");
+      assertTrue(redirected.getString(McpConstants.KEY_HINT).contains("registerPayment"),
+          redirected.toString());
+      assertFalse(redirected.getString(McpConstants.KEY_DETAIL).contains("not invokable"),
+          redirected.toString());
+      fire(e, "EM_Psd2_Generate_Bank_Payment", "psd2GenerateBankPayment", "system", false,
+          NOT_DISPLAYED);
+      String hidden = refusal(e, "psd2GenerateBankPayment").getString(McpConstants.KEY_DETAIL);
+      assertTrue(hidden.contains("authorize at the bank"), hidden);
+      assertFalse(hidden.contains("not invokable"), hidden);
+    }
+
+    /**
+     * One verdict: for every combination of the three inputs, the catalogue entry
+     * ({@code addButtonInfo}, fed exactly as {@code buildSchemaField} feeds it) is invokable iff the
+     * precheck lets the call through, and a refusal carries the catalogue's reason verbatim.
+     */
+    @ParameterizedTest(name = "visibility={0}, process={1}, displayed={2}")
+    @CsvSource(nullValues = "null", value = {
+        "null,true,Y", "null,true,N", "null,false,Y", "null,false,N",
+        "system,true,Y", "system,true,N", "system,false,Y", "system,false,N",
+        "discarded,true,Y", "discarded,true,N", "discarded,false,Y", "discarded,false,N" })
+    void catalogueAndPrecheckAgree(String visibility, boolean withProcess, String displayed)
+        throws Exception {
+      SFEntity e = entity("W", null);
+      Column column = fire(e, "EM_Mod_Act", "modAct", visibility, withProcess, displayed);
+      JSONObject entry = new JSONObject().put("name", "modAct");
+      java.lang.reflect.Method addButtonInfo = McpSchemaFieldBuilder.class.getDeclaredMethod(
+          "addButtonInfo", JSONObject.class, Column.class, String.class, boolean.class);
+      addButtonInfo.setAccessible(true);
+      addButtonInfo.invoke(null, entry, column, visibility,
+          McpSchemaFieldBuilder.isHiddenButtonField(e.getADTab(), column));
+
+      boolean invokable = entry.optBoolean(McpSchemaFieldBuilder.KEY_INVOKABLE, true);
+      assertEquals(invokable, entry.has(McpSchemaFieldBuilder.KEY_INVOKE_VIA), entry.toString());
+      if (invokable) {
+        assertNull(McpDeclaredActions.precheck(e, "modAct", new JSONObject()));
+      } else {
+        String detail = refusal(e, "modAct").getString(McpConstants.KEY_DETAIL);
+        assertTrue(detail.contains(entry.getString(McpSchemaFieldBuilder.KEY_NOT_INVOKABLE_REASON)),
+            detail + " vs " + entry);
+      }
     }
   }
 }

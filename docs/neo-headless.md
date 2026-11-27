@@ -5138,12 +5138,21 @@ payments by hand through the route BUG-1 corrupted data with (FR-1 of the ETP-55
   call, aliases included. Both invoice headers return the five PIS actions and the
   `psd2GenerateBankPayment` button (`PaymentActionHandlerSupport.AGENT_EXCLUDED_ACTIONS`); the
   `MCP_CONFIG.actions` row is a second guard. Any other undeclared action stays callable, as the UI
-  offers it.
+  offers it — except an AD button the catalogue reports `invokable:false` (next item).
 - **Validation before dispatch.** `McpToolRouter.handleAction` calls `McpDeclaredActions.precheck`
   before `NeoExtensionDispatcher`: hidden/redirected → 405; a declared action whose parameters do
   not match its contract → **422 `validation_error`** with the contract's correction keys
   (`unknownParameters` + `acceptedParameters` + `idDescription` when declared, `missingParameters`, `field` + `expectedType` /
-  `allowedValues`). An AD button is not judged there. Each contract also names its HTTP method
+  `allowedValues`). An AD button that no declared contract describes is refused **405 `method_not_allowed`** when
+  `etendo_schema(view:"actions")` reports it `invokable:false` (ETP-5812): the field `etendo_action` fires it through
+  (`NeoButtonActionHelper#findButtonField`) is curated `discarded`, the entity's AD tab does not display it, or no
+  process is wired behind it. The verdict is the catalogue's own — `McpSchemaActionFields#notInvokableReason`, over the
+  same process resolution (`processOf`) and display flag (`McpSchemaFieldBuilder#isHiddenButtonField`) and the field's
+  effective curation (`McpFieldView`) — so the two cannot drift; the refusal carries its `notInvokableReason`, says
+  "Nothing was run" and points at `etendo_schema(view:"actions")`. It runs after the customization's exclusions and
+  `MCP_CONFIG.actions` `hidden`/`redirect` (which keep their own, better reasons) and never for a name a declared
+  contract describes (`documentAction` on the goods receipt and shipment headers is judged by its contract although
+  Classic hides `DocAction` there). MCP-only: REST and the SPA do not run the precheck. Each contract also names its HTTP method
   (`NeoActionContract#withHttpMethod`, default `POST`), and the handler context is built with it:
   `currencyOptions` answers only `GET`.
 - **`number`** is a new parameter type: a JSON number or a numeric string, because the SPA sends
@@ -17506,12 +17515,16 @@ is unchanged. Executions are kept indefinitely for now.
 
 #### Classic process buttons with a scheduling bundle — verdict per button (ETP-5812)
 
-With the scheduling-bundle connection (ETP-5809) these five Classic buttons can run. `etendo_action` refuses a button
-only when it is not included, the role lacks access to its process, or `MCP_CONFIG.actions` hides or redirects it: a
-button the catalogue lists as `invokable:false` because Classic does not display its field is still callable by name.
-So every button below that has an agent route of its own is hidden or redirected in `MCP_CONFIG.actions` (405 with
-the reason; a hidden one is listed under `withheldActions`, a redirected one keeps `useInstead`). The domain owners
-(returns, finance) still have to validate the behaviour.
+With the scheduling-bundle connection (ETP-5809) these five Classic buttons can run. Each button below that has an agent
+route of its own is hidden or redirected in `MCP_CONFIG.actions` (405 with the reason; a hidden one is listed under
+`withheldActions`, a redirected one keeps `useInstead`). Those per-entity entries stay because their reasons name the
+route; the generic safety net is the precheck rule above (§ "Validation before dispatch"): since the ETP-5812 follow-up,
+`etendo_action` refuses (405) every AD button the catalogue lists as `invokable:false` — not displayed by Classic,
+curated `discarded` or with no process — unless a declared contract describes it, so a button nobody configured can no
+longer be fired by name. A sweep of the sourcedata found 34 such buttons that were callable before (all
+`Processing`/`Posted`-style internal flags or undisplayed Classic buttons such as `GenerateTo`, `CopyFrom`,
+`Generatetemplate`, `RM_ReceiveMaterials`, the SII monitor's `CreateFrom`/`EM_Aeatsii_Unsubscribe`); none was named by
+an agent prompt. The domain owners (returns, finance) still have to validate the behaviour.
 
 | Button (AD process) | Where (entity, button) | Verdict | Reason |
 |---|---|---|---|

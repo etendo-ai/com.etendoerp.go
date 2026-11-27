@@ -26,11 +26,14 @@ import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
+import org.openbravo.base.structure.BaseOBObject;
 import org.openbravo.model.ad.datamodel.Column;
 import org.openbravo.model.ad.ui.Process;
 import org.openbravo.model.ad.ui.ProcessParameter;
+import org.openbravo.model.ad.ui.Tab;
 
 import com.etendoerp.go.schemaforge.NeoSelectorService;
+import com.etendoerp.go.schemaforge.util.NeoAccessHelper;
 
 /**
  * What {@code etendo_schema} says about a button column: whether it is one, whether the current
@@ -75,21 +78,76 @@ final class McpSchemaActionFields {
    */
   static void addInvokability(JSONObject fieldObj, String visibility, boolean hasProcess,
       boolean hiddenInTab) throws JSONException {
-    String blocker = null;
-    if (McpSchemaFieldBuilder.VISIBILITY_DISCARDED.equals(visibility)) {
-      blocker = "discarded: this action is not part of the curated agent surface for this window";
-    } else if (hiddenInTab) {
-      blocker = "hidden: AD does not display this button in the tab, so it is an internal flag "
-          + "rather than a user-facing action";
-    } else if (!hasProcess) {
-      blocker = "no process: the AD button column has no process wired behind it";
-    }
+    String blocker = notInvokableReason(visibility, hasProcess, hiddenInTab);
     if (blocker == null) {
       fieldObj.put(McpSchemaFieldBuilder.KEY_INVOKE_VIA, "etendo_action");
       return;
     }
     fieldObj.put(McpSchemaFieldBuilder.KEY_INVOKABLE, false);
     fieldObj.put(McpSchemaFieldBuilder.KEY_NOT_INVOKABLE_REASON, blocker);
+  }
+
+  /**
+   * Why the catalogue reports an AD button {@code invokable:false}, or {@code null} when it is
+   * invokable — the one rule {@link #addInvokability} publishes and {@code etendo_action}'s precheck
+   * enforces ({@link McpDeclaredActions#precheck}), so the two cannot disagree. The curated decision
+   * wins the reason over AD's display flag: it tells the agent a person decided this.
+   *
+   * @param visibility  the curated visibility, {@code null} when uncurated
+   * @param hasProcess  whether a process is wired behind the column ({@link #processOf})
+   * @param hiddenInTab whether AD hides the button in the tab
+   *                    ({@link McpSchemaFieldBuilder#isHiddenButtonField})
+   * @return the machine-readable reason, starting with {@code discarded}, {@code hidden} or
+   *         {@code no process}; {@code null} when nothing blocks the button
+   */
+  static String notInvokableReason(String visibility, boolean hasProcess, boolean hiddenInTab) {
+    if (McpSchemaFieldBuilder.VISIBILITY_DISCARDED.equals(visibility)) {
+      return "discarded: this action is not part of the curated agent surface for this window";
+    }
+    if (hiddenInTab) {
+      return "hidden: AD does not display this button in the tab, so it is an internal flag "
+          + "rather than a user-facing action";
+    }
+    if (!hasProcess) {
+      return "no process: the AD button column has no process wired behind it";
+    }
+    return null;
+  }
+
+  /**
+   * The same verdict for a button column of a tab, with its inputs resolved the way
+   * {@code etendo_schema} resolves them for the catalogue: the process through {@link #processOf}
+   * and the tab's display flag through {@link McpSchemaFieldBuilder#isHiddenButtonField}.
+   *
+   * @param col        the button column
+   * @param adTab      the tab the entity is built on; {@code null} hides nothing
+   * @param visibility the curated visibility, {@code null} when uncurated
+   * @return the reason, or {@code null} when the catalogue reports the button invokable
+   */
+  static String notInvokableReason(Column col, Tab adTab, String visibility) {
+    return notInvokableReason(visibility, processOf(col) != null,
+        McpSchemaFieldBuilder.isHiddenButtonField(adTab, col));
+  }
+
+  /**
+   * The process a button fires, resolved as {@code NeoButtonActionHelper} / {@code
+   * NeoProcessService} do: the column's OBUIAPP process (or the shared fallback for {@code Posted})
+   * over its Classic one.
+   *
+   * @param col the button column
+   * @return an {@code org.openbravo.client.application.Process}, a Classic {@link Process}, or
+   *         {@code null} when nothing is wired behind the column
+   */
+  static BaseOBObject processOf(Column col) {
+    org.openbravo.client.application.Process obuiapp = col.getOBUIAPPProcess();
+    if (obuiapp != null) {
+      return obuiapp;
+    }
+    Process classic = col.getProcess();
+    if (classic != null) {
+      return classic;
+    }
+    return NeoAccessHelper.resolveFallbackObuiappProcess(col);
   }
 
   /**
