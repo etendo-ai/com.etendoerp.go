@@ -45,6 +45,14 @@ final class BankBounceErrors {
   static final String CODE_DISCARD_NOT_ALLOWED = "DISCARD_NOT_ALLOWED";
   /** The {@code bank-bounce-suggestions} flag is off for the account (403). */
   static final String CODE_SUGGESTIONS_OFF = "BOUNCE_SUGGESTIONS_OFF";
+  /**
+   * ETP-6359: {@code discardPair} came with {@code choiceSource: "ai"} but the AI recommendation
+   * is no longer current (the pair is not detected anymore, or the assessment that recommended the
+   * outflow is gone or changed). 409. A {@code bouncePair} group of {@code applySuggestions} can
+   * carry the same {@code choiceSource} and gets the same refusal as a per-group entry of
+   * {@code results[]}; the other groups of the call proceed.
+   */
+  static final String CODE_AI_SUGGESTION_STALE = "BOUNCE_AI_SUGGESTION_STALE";
 
   /** {@code AD_MESSAGE} of every code. */
   private static final Map<String, String> MESSAGE_KEYS = Map.of(
@@ -53,7 +61,8 @@ final class BankBounceErrors {
       CODE_HAS_PAYMENT, "ETGO_BounceHasPayment",
       CODE_LINE_NOT_PENDING, "ETGO_BounceLineNotPending",
       CODE_DISCARD_NOT_ALLOWED, "ETGO_BounceDiscardNotAllowed",
-      CODE_SUGGESTIONS_OFF, "ETGO_BounceSuggestionsOff");
+      CODE_SUGGESTIONS_OFF, "ETGO_BounceSuggestionsOff",
+      CODE_AI_SUGGESTION_STALE, "ETGO_BounceAiSuggestionStale");
 
   /** Utility class: static members only, never instantiated. */
   private BankBounceErrors() {

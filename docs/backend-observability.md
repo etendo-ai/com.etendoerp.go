@@ -556,9 +556,21 @@ of whose candidates, is the other.
 | `preselected` | the pair came checked (proposed `high`) |
 | `decision` | `discarded`, `unchecked`, `sent_to_panel`, `failed` |
 | `surface` | `modal` (`applySuggestions`, also when an agent calls it) / `panel` (`discardPair`, `dismissPair`) |
-| `chosen_among_alternatives` | the user discarded one candidate of an ambiguous pair (`discardPair`, or `dismissPair` naming the candidate) |
+| `chosen_among_alternatives` | the user discarded one candidate of an ambiguous pair (`discardPair`, an `applySuggestions` `bouncePair` group naming a candidate — the modal's *Excluir*, ETP-6359 — or `dismissPair` naming the candidate) |
 | `channel` | `mcp` for an MCP tool call or MCP batch, else `ui` (the server cannot tell the SPA from another REST client) |
 | `flag_enabled` | always `true` |
+| `ai_assessed` | ETP-6359: the AI second layer had assessed the rejection (an assessment was in the cache). Only when the AI assessed this rejection (a valid assessment is in the cache), always `true` then |
+| `ai_probability` | ETP-6359: 0-100, the percentage the AI gave the outflow the user chose; absent when no outflow was chosen or it was not assessed |
+| `ai_recommended` | ETP-6359: the AI recommended an outflow for the rejection |
+| `ai_recommendation_accepted` | ETP-6359: only when `ai_recommended`: the decision is `discarded` and the outflow discarded is the recommended one |
+
+The `ai_*` properties are added only with `bank-bounce-suggestions` on (every event here is), on the
+`ui` channel, and only for a rejection the AI actually assessed. With no assessment (no key, backed
+off, over the cap, never asked, invalid answer, expired) the event is identical to ETP-5581's, as is
+every MCP event. They are computed from the detection and the
+AI cache (`BankBounceAi.facts`), never by calling the model, and carry no id, amount or text (the
+allowlist drops anything else; `ai_probability` is bounded 0..100). `preselected` and `confidence`
+keep their meaning: they describe what the deterministic detection proposed.
 
 When it is emitted:
 
@@ -583,8 +595,11 @@ When it is emitted:
   detection sees the pair, and only `account_id`, `channel`, `flag_enabled`, `decision`, `surface`
   when it does not (e.g. a line reconciled meanwhile). A malformed request (400 / 404) emits
   nothing. `failed` never counts in the KPI.
-- **`dismissPair` (surface `panel`, UI only)**: `unchecked` — the panel's *No es un rebote*. Nothing
-  is written, so the pair is proposed again next time and each dismissal counts.
+- **`dismissPair` (surface `panel`, UI only)**: `unchecked` — the panel's *No es un rechazo*. The
+  rejection line is marked as not a rejection (`EM_ETGO_Bounce_Dismissed`), so the pair is not
+  proposed again; a repeated call on a pair already dismissed sends nothing, so each dismissal counts
+  once. Its undo (`restoreBounceSuggestion`) sends no event. Before the DAL maps the column the
+  call only records the decision, as it did before the mark existed.
 
 A pair discarded that detection did not propose (sent through the API or the MCP) still emits
 `discarded`, with the signals of its two lines, `review`, `preselected: false` and

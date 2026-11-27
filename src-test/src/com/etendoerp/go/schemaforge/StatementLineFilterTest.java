@@ -69,9 +69,11 @@ import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
  * and {@link BankBounceSuggestionsFlag}, on unless a case says otherwise. With no hook every method
  * must answer "nothing is excluded" without touching the database; with a hook its condition must
  * reach the query and decide the excluded ids; with the flag off nothing is honoured, hook or not,
- * and the answers are the ones from before ETP-5581.
+ * and the answers are the ones from before ETP-5581. {@code counts.discardedPairs} counts the
+ * excluded rows by pair ({@link BankBounceDiscardedPairs}), reading their links in one query.
  *
  * @covers com.etendoerp.go.schemaforge.StatementLineFilter
+ * @covers com.etendoerp.go.schemaforge.BankBounceDiscardedPairs
  */
 class StatementLineFilterTest {
 
@@ -437,6 +439,109 @@ class StatementLineFilterTest {
     }
   }
 
+  // ── counts.discardedPairs ────────────────────────────────────────────────────────────────────
+
+  @Nested
+  @DisplayName("putPairCount: counts.discardedPairs over the excluded rows")
+  class PairCount {
+
+    /**
+     * Honoured: a mutual pair and a lone line are two entries, read in ONE query over the row ids,
+     * inactive lines included, selecting only the id and the link.
+     */
+    @Test
+    @DisplayName("flag on: a mutual pair plus a lone line is 2, from one query over the row ids")
+    @SuppressWarnings("unchecked")
+    void honouredCountsPairsInOneQuery() throws Exception {
+      deployNoHook();
+      OBQuery<FIN_BankStatementLine> query = mock(OBQuery.class);
+      Query<Object[]> links = mock(Query.class);
+      ArgumentCaptor<String> where = ArgumentCaptor.forClass(String.class);
+      when(obDal.createQuery(eq(FIN_BankStatementLine.class), where.capture())).thenReturn(query);
+      when(query.createQuery(Object[].class)).thenReturn(links);
+      when(links.list()).thenReturn(List.of(new Object[] { "L1", "L2" },
+          new Object[] { "L2", "L1" }));
+      StatementLineFilter.Discards discards =
+          StatementLineFilter.discards(true, account(), Usage.MATCH_STATEMENT_GRID);
+      JSONObject counts = new JSONObject();
+
+      try (MockedStatic<ModelProvider> model = mockModel()) {
+        discards.putPairCount(counts, rows("L1", "L2", "L3"));
+      }
+
+      assertEquals(2, counts.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+      assertEquals(1, counts.length(), "only the pair count is written here");
+      verify(obDal, times(1)).createQuery(eq(FIN_BankStatementLine.class), anyString());
+      assertTrue(where.getValue().contains("bsl.id in (:etgoLineIds)"), where.getValue());
+      assertTrue(where.getValue().contains("bsl.etgoBouncePairLine is not null"),
+          where.getValue());
+      verify(query).setNamedParameter("etgoLineIds", List.of("L1", "L2", "L3"));
+      verify(query).setFilterOnActive(false);
+      verify(query).setSelectClause("bsl.id, bsl.etgoBouncePairLine.id");
+    }
+
+    /** Not honoured: no key and nothing read. */
+    @Test
+    @DisplayName("flag off: no discardedPairs key and nothing read")
+    void notHonouredWritesAndReadsNothing() throws Exception {
+      StatementLineFilter.Discards discards =
+          StatementLineFilter.discards(false, account(), Usage.MATCH_STATEMENT_GRID);
+      JSONObject counts = new JSONObject();
+
+      try (MockedStatic<ModelProvider> model = mockStatic(ModelProvider.class)) {
+        discards.putPairCount(counts, rows("L1", "L2"));
+        model.verifyNoInteractions();
+      }
+
+      assertFalse(counts.has(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+      verify(obDal, never()).createQuery(eq(FIN_BankStatementLine.class), anyString());
+    }
+
+    /** Fewer than two lines cannot hold a pair: their count, with no query and no model read. */
+    @Test
+    @DisplayName("fewer than two lines: their own count, no query")
+    void fewerThanTwoLinesRunNoQuery() throws Exception {
+      deployNoHook();
+      StatementLineFilter.Discards discards =
+          StatementLineFilter.discards(true, account(), Usage.MATCH_STATEMENT_GRID);
+      JSONObject none = new JSONObject();
+      JSONObject one = new JSONObject();
+      JSONArray oneWithABlankRow = rows("L1");
+      oneWithABlankRow.put(new JSONObject().put(ReconciliationHandler.KEY_ID, ""));
+
+      try (MockedStatic<ModelProvider> model = mockStatic(ModelProvider.class)) {
+        discards.putPairCount(none, new JSONArray());
+        discards.putPairCount(one, oneWithABlankRow);
+        model.verifyNoInteractions();
+      }
+
+      assertEquals(0, none.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+      assertEquals(1, one.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS),
+          "a row with a blank id is not a line");
+      verify(obDal, never()).createQuery(eq(FIN_BankStatementLine.class), anyString());
+    }
+
+    /** The link column not mapped yet: every line alone, with no query. */
+    @Test
+    @DisplayName("link column not mapped: every line counts alone, no query")
+    void unmappedLinkColumnCountsEachLineAlone() throws Exception {
+      deployNoHook();
+      StatementLineFilter.Discards discards =
+          StatementLineFilter.discards(true, account(), Usage.MATCH_STATEMENT_GRID);
+      ModelProvider provider = mock(ModelProvider.class);
+      when(provider.getEntity(FIN_BankStatementLine.ENTITY_NAME)).thenReturn(mock(Entity.class));
+      JSONObject counts = new JSONObject();
+
+      try (MockedStatic<ModelProvider> model = mockStatic(ModelProvider.class)) {
+        model.when(ModelProvider::getInstance).thenReturn(provider);
+        discards.putPairCount(counts, rows("L1", "L2", "L3"));
+      }
+
+      assertEquals(3, counts.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+      verify(obDal, never()).createQuery(eq(FIN_BankStatementLine.class), anyString());
+    }
+  }
+
   // ── the flag is handed in, never read ────────────────────────────────────────────────────────
 
   @Nested
@@ -571,8 +676,11 @@ class StatementLineFilterTest {
           .compareTo(new BigDecimal(data.get(ReconciliationHandler.KEY_TOTAL).toString())));
       assertEquals(2, data.getJSONObject(ReconciliationHandler.KEY_COUNTS)
           .getInt(StatementLineFilter.STATUS_DISCARDED));
-      assertEquals(1, data.getJSONObject(ReconciliationHandler.KEY_COUNTS).length(),
-          "only the discarded count: this filter does not run the matching engine");
+      assertEquals(2, data.getJSONObject(ReconciliationHandler.KEY_COUNTS)
+          .getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS),
+          "L1 links to a line that is not listed: L1 and L2 are one entry each");
+      assertEquals(2, data.getJSONObject(ReconciliationHandler.KEY_COUNTS).length(),
+          "only the discarded counts: this filter does not run the matching engine");
       JSONArray lines = data.getJSONArray("lines");
       for (int i = 0; i < lines.length(); i++) {
         JSONObject row = lines.getJSONObject(i);
@@ -593,6 +701,38 @@ class StatementLineFilterTest {
       assertTrue(where.getValue().contains("bsl.id in (:etgoLineIds)"), where.getValue());
       verify(query).setNamedParameter("etgoLineIds", Set.of("L1", "L2"));
       verify(obDal, never()).get(eq(FIN_BankStatementLine.class), anyString());
+    }
+
+    /**
+     * The {@code status=discarded} pair count comes from the lines already read, with no second
+     * query: a mutual pair is one entry, a lone line another.
+     */
+    @Test
+    @DisplayName("discardedLinesData: a mutual pair plus a lone line is discardedPairs 2, no second query")
+    @SuppressWarnings("unchecked")
+    void discardedLinesDataCountsAMutualPairOnce() throws Exception {
+      FIN_BankStatementLine out = mock(FIN_BankStatementLine.class);
+      when(out.getId()).thenReturn("L1");
+      FIN_BankStatementLine in = mock(FIN_BankStatementLine.class);
+      when(in.getId()).thenReturn("L2");
+      when(out.get("etgoBouncePairLine")).thenReturn(in);
+      when(in.get("etgoBouncePairLine")).thenReturn(out);
+      FIN_BankStatementLine alone = mock(FIN_BankStatementLine.class);
+      when(alone.getId()).thenReturn("L3");
+      OBQuery<FIN_BankStatementLine> query = mock(OBQuery.class);
+      when(obDal.createQuery(eq(FIN_BankStatementLine.class), anyString())).thenReturn(query);
+      when(query.list()).thenReturn(List.of(alone, in, out));
+
+      JSONObject data;
+      try (MockedStatic<ModelProvider> model = mockModel()) {
+        data = StatementLineFilter.discardedLinesData(rows("L1", "L2", "L3"));
+      }
+
+      JSONObject counts = data.getJSONObject(ReconciliationHandler.KEY_COUNTS);
+      assertEquals(3, counts.getInt(StatementLineFilter.STATUS_DISCARDED));
+      assertEquals(2, counts.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+      verify(obDal, times(1)).createQuery(eq(FIN_BankStatementLine.class), anyString());
+      verify(query, never()).createQuery(Object[].class);
     }
   }
 
