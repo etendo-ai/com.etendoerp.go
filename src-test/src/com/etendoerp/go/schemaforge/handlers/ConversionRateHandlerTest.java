@@ -60,7 +60,8 @@ import com.etendoerp.go.schemaforge.NeoResponse;
  * evaluation is covered by {@code AccountTargetedFlagTest}.
  *
  * <p>Also the overlap refusal (QA CP-13): its instants travel structured, with the server zone, and
- * its text names that zone.
+ * its text names that zone. And the agent hint of the currency refusals: their text names the
+ * window's buttons, the hint names the action to call.
  *
  * @covers com.etendoerp.go.schemaforge.handlers.ConversionRateHandler
  * @covers com.etendoerp.go.schemaforge.handlers.ConversionRateRefusal
@@ -216,5 +217,35 @@ public class ConversionRateHandlerTest {
     assertTrue(details.getBoolean("conflictOpen"));
     assertEquals("America/Argentina/Cordoba", details.getString("timeZone"));
     assertNull(ConversionRateRefusal.badRequest(ConversionRateRefusal.INVALID_RATE).detailsJson());
+  }
+
+  // ── agent hint: the action to call, not the window's button ────────────────
+
+  @Test
+  public void theCurrencyRefusalsHintTheActionToCall() throws Exception {
+    Object[][] cases = {
+        { ConversionRateRefusal.CURRENCY_HAS_RATES, ConversionRateWriteActions.CREATE_RATE },
+        { ConversionRateRefusal.CURRENCY_NO_RATES, ConversionRateWriteActions.CREATE_CURRENCY },
+    };
+    for (Object[] c : cases) {
+      ConversionRateRefusal refusal = ConversionRateRefusal.conflict((String) c[0], "CHF")
+          .on("toCurrency");
+
+      JSONObject error = refusal.toResponse().getBody().getJSONObject("error");
+      String hint = error.getString("hint");
+      assertTrue(hint, hint.contains((String) c[1]));
+      assertTrue(hint, hint.contains("CHF"));
+      assertEquals(c[0], error.getJSONArray("messageKeys").getString(0));
+      assertEquals(hint, refusal.hint());
+    }
+  }
+
+  @Test
+  public void aRefusalThatNamesNoButtonHasNoHint() throws Exception {
+    ConversionRateRefusal refusal =
+        ConversionRateRefusal.badRequest(ConversionRateRefusal.INVALID_RATE);
+
+    assertNull(refusal.hint());
+    assertFalse(refusal.toResponse().getBody().getJSONObject("error").has("hint"));
   }
 }

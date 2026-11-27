@@ -137,7 +137,8 @@ final class ConversionRateActions {
             + " an overlapping range: error names the colliding range, the start to choose"
             + " instead and the server's time zone; errorField is the parameter at fault;"
             + " errorDetails carries those instants as {conflictFrom, conflictTo, conflictOpen,"
-            + " suggestedFrom, timeZone})."
+            + " suggestedFrom, timeZone}; errorHint, when present, names the action to call"
+            + " instead of the window's button the error text names)."
             + SERVER_ZONE_NOTE
             + CREATE_HINT,
         Param.required(ConversionRateWrites.F_TO_CURRENCY, NeoActionContract.TYPE_STRING,
@@ -300,6 +301,10 @@ final class ConversionRateActions {
       JSONObject details = refusal.detailsJson();
       if (details != null) {
         result.put("errorDetails", details);
+      }
+      String hint = refusal.hint();
+      if (hint != null) {
+        result.put("errorHint", hint);
       }
     }
     return result;

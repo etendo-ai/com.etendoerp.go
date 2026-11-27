@@ -40,6 +40,9 @@ import com.etendoerp.go.schemaforge.NeoResponse;
  * {@code previewManualRate}, as {@code errorField}. A refusal about instants carries them
  * structured too ({@link #getDetails()}), answered as {@code error.details} and, by
  * {@code previewManualRate}, as {@code errorDetails} — so a client can show them in its own zone.
+ * A refusal whose text names a button of the window carries an agent hint naming the action to
+ * call instead ({@link #hint()}), answered as {@code error.hint} and, by {@code previewManualRate},
+ * as {@code errorHint}: the message stays the one a person reads in the window.
  *
  * <p>Message keys (Spanish and English text in {@code messages/neo_hints_*.properties}):</p>
  * <ul>
@@ -68,6 +71,18 @@ class ConversionRateRefusal extends RuntimeException {
   static final String FUTURE_START = "ETGO_ConvRateFutureStart";
   static final String CURRENCY_HAS_RATES = "ETGO_ConvRateCurrencyHasRates";
   static final String CURRENCY_NO_RATES = "ETGO_ConvRateCurrencyNoRates";
+  /** Agent hint of {@value #CURRENCY_HAS_RATES}: the action to call, not the window's button. */
+  static final String CURRENCY_HAS_RATES_HINT = "ETGO_ConvRateCurrencyHasRatesHint";
+  /** Agent hint of {@value #CURRENCY_NO_RATES}: the action to call, not the window's button. */
+  static final String CURRENCY_NO_RATES_HINT = "ETGO_ConvRateCurrencyNoRatesHint";
+
+  /**
+   * The refusals whose text names a button of the window ("Use Nueva tasa"), with the message key
+   * of the hint that names the action instead. The hint takes the refusal's own arguments.
+   */
+  private static final Map<String, String> HINT_KEYS = Map.of(
+      CURRENCY_HAS_RATES, CURRENCY_HAS_RATES_HINT,
+      CURRENCY_NO_RATES, CURRENCY_NO_RATES_HINT);
   static final String USE_ACTIONS = "ETGO_ConvRateUseActions";
   /** Not a refusal: the warning {@code updateManualRate} answers with its proposal. */
   static final String UPDATE_WARNING = "ETGO_ConvRateUpdateWarning";
@@ -206,6 +221,17 @@ class ConversionRateRefusal extends RuntimeException {
   }
 
   /**
+   * The agent hint of the refusal in the request language — the action to call where the text names
+   * a button of the window — or {@code null} when it has none.
+   *
+   * @return the hint text, or {@code null}
+   */
+  String hint() {
+    String hintKey = HINT_KEYS.get(key);
+    return hintKey == null ? null : NeoMessageText.text(hintKey, args);
+  }
+
+  /**
    * {@link #getDetails()} as JSON, or {@code null} when there are none.
    *
    * @return the JSON object
@@ -230,7 +256,7 @@ class ConversionRateRefusal extends RuntimeException {
   /**
    * The keyed error response ({@code error.message} + {@code error.messageKeys}, and
    * {@code error.field} when the refusal is bound to one, {@code error.details} when it carries
-   * structured values).
+   * structured values, {@code error.hint} when it has an agent hint).
    */
   NeoResponse toResponse() {
     NeoResponse response = NeoMessageText.error(status, key, args);
@@ -244,6 +270,10 @@ class ConversionRateRefusal extends RuntimeException {
         JSONObject structured = detailsJson();
         if (structured != null) {
           error.put("details", structured);
+        }
+        String agentHint = hint();
+        if (agentHint != null) {
+          error.put("hint", agentHint);
         }
       } catch (JSONException e) {
         // the keyed error is still a valid answer without the field and the details
