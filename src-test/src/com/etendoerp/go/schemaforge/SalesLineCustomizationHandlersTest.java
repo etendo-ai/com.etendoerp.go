@@ -277,6 +277,33 @@ class SalesLineCustomizationHandlersTest {
     assertAmount("plain parent", null, plainPatch, "lineNetAmount");
   }
 
+  /**
+   * ETP-6107: the invoice-line pre-hooks (sales and purchase) re-price a line whose product changes
+   * on a PATCH; removing the {@code setPriceFromPriceListOnProductChange} call from either fails
+   * here. The real support runs, so the update still completes.
+   */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("invoiceCustomizations")
+  void handleRePricesALineWhoseProductChangesOnUpdate(Class<? extends NeoHandler> handler,
+      String spec) throws Exception {
+    NeoContext ctx = NeoContext.builder().specName(spec).entityName("lines").httpMethod("PATCH")
+        .endpointType(NeoEndpointType.CRUD).recordId(LineAmountTestSupport.STORED_LINE_ID)
+        .requestBody(new JSONObject("{\"product\":\"P2\",\"invoicedQuantity\":20}")).build();
+
+    NeoResponse response;
+    try (MockedStatic<OBDal> dal = LineAmountTestSupport.taxRate(21.0,
+        LineAmountTestSupport.storedInvoiceLine("10", "24.5", "25", "2", "0", TAX_ID));
+        MockedStatic<InvoiceLineAmountSupport> support = mockStatic(
+            InvoiceLineAmountSupport.class, org.mockito.Mockito.CALLS_REAL_METHODS)) {
+      response = handler.getDeclaredConstructor().newInstance().handle(ctx);
+
+      support.verify(() -> InvoiceLineAmountSupport.setPriceFromPriceListOnProductChange(
+          same(ctx)), times(1));
+    }
+
+    assertNull(response, handler.getSimpleName());
+  }
+
   static Stream<Arguments> invoiceCustomizations() {
     return Stream.of(Arguments.of(SalesInvoiceLineHandler.class, "sales-invoice"),
         Arguments.of(PurchaseInvoiceLineHandler.class, "purchase-invoice"));

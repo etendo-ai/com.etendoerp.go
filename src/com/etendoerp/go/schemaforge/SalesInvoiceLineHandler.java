@@ -75,6 +75,7 @@ public class SalesInvoiceLineHandler extends InvoiceLineHandler {
     SalesRectificativeLineLinkSupport.dropOrderLineOnRectificativeCopy(context, sourceInvoiceLineId);
     // Before the amounts: a line sent without a price takes the price list's (ETP-5881).
     InvoiceLineAmountSupport.setPriceFromPriceListOnCreate(context);
+    InvoiceLineAmountSupport.setPriceFromPriceListOnProductChange(context);
     response = InvoiceLineAmountSupport.deriveAmountsOnWrite(context);
     if (response != null) {
       return response;

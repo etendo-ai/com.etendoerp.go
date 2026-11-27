@@ -13838,6 +13838,74 @@ it server-resolved on create, §4.12.22 point 3). This is what gives `etendo_cre
 then derives `lineGrossAmount` from the discounted price, with the tax the cascade resolved (the
 customization abstained on it, having no tax yet).
 
+##### Changing the product of a line (ETP-6107)
+
+In the form, picking another product brings its price, unit and tax, and a price typed afterwards
+is discounted from the NEW list price. An update does the same on every commercial line (sales
+order, quotation, purchase order, sales and purchase invoice), on REST and MCP alike:
+
+| Patch | Result |
+|---|---|
+| `product` alone | the new product's list price, `unitPrice = listPrice`, discount 0, its tax and unit; the stored quantity is kept |
+| `product` + `unitPrice` | `listPrice` from the new product, `unitPrice` as sent, discount = `(listPrice − unitPrice) / listPrice` |
+
+How:
+
+- **The callout re-fire** (`NeoUpdateCalloutRefire`, ETP-6176) fires the product's callout over the
+  stored line overlaid with the patch. Empty stored columns are dropped from that form state, so the
+  callout request takes the header's instead (`CalloutRequestBuilder#injectParentRecordFields` only
+  fills a column the form state lacks): an order line stores no business partner or address of its
+  own, and the empty keys made the callout pick a tax without the customer's address. It then fires
+  the callouts of the plain values sent with the product (`unitPrice`), as the form does when the
+  user types the price after picking the product. Both steps are generic, not tied to the product:
+  any update that changes a reference with a callout re-fires it over a form state without empty
+  columns, then re-fires the callouts of the plain values the update changes (a new `uOM` plus a
+  new quantity fires the unit's callout, then the quantity's). A value equal to the stored one is
+  not a change and fires nothing: a pre-hook may have carried the stored quantity or price into
+  the body (ETP-6012), and re-firing their callouts zeroed the list price and discount of a REST
+  update that only changed the tax. A value the caller sent is never overwritten; fields it did
+  not send take the callouts' outputs, as in the form.
+- **The order line rules abstain** (`OrderLineDiscountSupport.applyLineRules`,
+  `completeAmountInputsOnUpdate`) when `StoredLine.changesProduct()`: the stored price, list price
+  and tax are the previous product's, so nothing is derived from them nor carried into the body
+  (the re-fire keeps what the body carries). Only the stored quantity is carried, which the gross
+  needs.
+- **Order lines are priced from the order's price list** (`OrderLineProductChangePrice`), not from
+  the product callout's answer: `SL_Order_Product` reads the price from the selector's auxiliary
+  values, which `SelectorAuxResolver` resolves by the product id alone, without the order's price
+  list, so on a tenant with several lists the line kept a price of another list (the public API
+  e2e, 33 instead of 44). The new product's catalog price in the order's price list
+  (`FinancialUtils.getProductPrice`, converted to the order's currency as on create) gives the list
+  price; the unit price is the caller's when sent (the net, on MCP too: with a product change a
+  lone `unitPrice` is not the ETP-5852 Precio), else the list less a sent discount, else the
+  catalog's standard price, and the standard price follows it; the discount is the caller's when
+  sent, else the gap. A sent `listPrice` and a tax-included list are left to the callout. On REST
+  the body is what the caller sent; on MCP the re-fire and the agent price rule rewrote it first,
+  so the caller's values are a snapshot `McpToolRouter.handleUpdate` takes before them
+  (`NeoContext.ATTR_CLIENT_SENT_VALUES`).
+- **Gross on every update.** On any update, not only a product change, a `lineGrossAmount` of 0 in the body is the
+  re-fire's (`SL_Order_Amt` publishes `grossUnitPrice × qty`, 0 on a net list) and is derived
+  again (`dropZeroGrossOnUpdate`), as on create (`dropStaleGrossAfterRefire`): an MCP update of the
+  tax alone used to store a gross of 0.
+- **Channel order.** MCP re-fires before the pre-hook (`McpNotOfferedReference`), so the pre-hook
+  derives the gross over the new price. REST re-fires after it (`NeoCrudHandler#executeUpdate`),
+  where `lineGrossAmount` is read-only: the pre-hook's gross is dropped by `filterWriteRequest` and
+  `injectCommercialAmounts` derives it over the final body.
+- **MCP agent price.** `McpLinePriceInjector.applyAgentPriceOnUpdate` (ETP-5852) leaves a sent
+  price alone when the re-fire, which on MCP runs first, left a list price the agent did not send
+  and that differs from the stored one (`repricedByTheRefire`): the line moved to another tariff,
+  so the price is the net, not the Precio. A re-fire that keeps the list price (another tax or
+  unit) keeps the ETP-5852 rule.
+- **Invoice lines.** Their product selector carries no prices, so the product callout answers 0.
+  `InvoiceLineAmountSupport.setPriceFromPriceListOnProductChange` prices the line from the
+  invoice's price list instead, as `setPriceFromPriceListOnCreate` does for a new line; a sent
+  `unitPrice` is the net and `etgoDiscount` is the gap to the new list price (0 when the price is
+  not below it). Without a sent discount the stored one is reset to 0: it was the previous
+  product's.
+
+Known gap: on invoice lines, an update can persist a `lineNetAmount` of 0 or keep a stale
+`grossAmount` (any update, not only a product change; ETP-6477).
+
 ##### Where a caller's value is replaced
 
 The rules keep what the caller sent, **with exactly two exceptions**, both because the body cannot
