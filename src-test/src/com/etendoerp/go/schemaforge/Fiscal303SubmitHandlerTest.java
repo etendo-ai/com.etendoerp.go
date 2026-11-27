@@ -113,6 +113,7 @@ import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
  *
  * @covers com.etendoerp.go.schemaforge.Fiscal303BoxesHandler
  * @covers com.etendoerp.go.schemaforge.Fiscal303SubmissionSupport
+ * @covers com.etendoerp.go.schemaforge.FiscalAeatSubmissionSupport
  */
 public class Fiscal303SubmitHandlerTest {
 
@@ -2692,6 +2693,78 @@ public class Fiscal303SubmitHandlerTest {
       assertEquals(FiscalAeatSubmissionSupport.ERR_VALIDATION_UNAVAILABLE,
           run.body.getString("errorCode"));
       assertEquals(Outcome.CONNECTION_FAILURE, run.attemptRows(1).get(0).outcome());
+    }
+  }
+
+  /** The validator's EV0 answer for a model/exercise it has not loaded yet. */
+  private static final String MODEL_NOT_LOADED_ERROR =
+      "EV0 - Error al cargar el modelo: No existe información del modelo: 303, 2026.";
+
+  /**
+   * "Validar sin presentar" while the validator has not loaded the 303 for the exercise (EV0):
+   * no verdict, so a 200 {@code ERROR / NOT_VALIDATED} in test mode, and no AEAT incident stored
+   * — the declaration's incidents are neither replaced nor committed.
+   */
+  @Test
+  public void testHandleSubmit_testModeModelNotLoaded_isNotValidatedAndStoresNoIncidents()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit("{\"testMode\":true}", new SubmitRun(), (service, ctx) ->
+        when(service.submitValidation(anyString(), anyString(), anyString(), anyString()))
+            .thenReturn(notLoaded));
+
+    verify(run.response).setStatus(HttpServletResponse.SC_OK);
+    assertEquals("ERROR", run.body.getString("status"));
+    assertTrue(run.body.getBoolean("testMode"));
+    assertEquals(FiscalAeatSubmissionSupport.ERR_NOT_VALIDATED,
+        run.body.getString("errorCode"));
+    verify(run.service, never()).submitProduction(any());
+    verify(run.obDal, never()).remove(run.staleIncident);
+    verify(run.obDal, never()).save(run.newIncident);
+    verify(run.obDal, never()).commitAndClose();
+
+    List<FiscalAeatValidationOutcome> rows = run.attemptRows(1);
+    assertEquals(Path.MANUAL_VALIDATION, rows.get(0).path());
+    assertEquals(Outcome.NOT_VALIDATED, rows.get(0).outcome());
+  }
+
+  /**
+   * The validation before a real presentation answers EV0 (model not loaded): that is no verdict,
+   * never a rejection, so the attempt is {@code NOT_VALIDATED} and — under
+   * {@link FiscalAeatSubmissionSupport#PRESENT_WHEN_VALIDATOR_UNANSWERED} — the presentation to
+   * PresBasicaDos goes ahead.
+   */
+  @Test
+  public void testHandleSubmit_productionValidatorModelNotLoaded_followsThePolicy()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit(PRODUCTION_REQUEST, new SubmitRun(), (service, ctx) -> {
+      when(service.hasOrgCertificate(any())).thenReturn(true);
+      when(service.submitValidation(eq("303"), anyString(), anyString(), anyString(),
+          anyString())).thenReturn(notLoaded);
+      when(service.submitProduction(any())).thenReturn(presentationResult(true));
+    });
+
+    if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
+      verify(run.service).submitProduction(any());
+      assertEquals("SUCCESS", run.body.getString("status"));
+      assertFalse(run.body.has("stage"));
+      verify(run.decl).setDeclarationStatus("submitted_ack");
+      List<FiscalAeatValidationOutcome> rows = run.attemptRows(2);
+      assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());
+      assertEquals(Outcome.NOT_VALIDATED, rows.get(0).outcome());
+      assertEquals(Path.DIRECT_SUBMISSION, rows.get(1).path());
+      assertEquals(Outcome.ACCEPTED, rows.get(1).outcome());
+    } else {
+      verify(run.service, never()).submitProduction(any());
+      verify(run.response).setStatus(HttpServletResponse.SC_BAD_GATEWAY);
+      assertEquals(FiscalAeatSubmissionSupport.ERR_VALIDATION_UNAVAILABLE,
+          run.body.getString("errorCode"));
+      assertEquals(Outcome.NOT_VALIDATED, run.attemptRows(1).get(0).outcome());
     }
   }
 
