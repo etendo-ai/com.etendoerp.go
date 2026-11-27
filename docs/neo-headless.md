@@ -5512,6 +5512,25 @@ Resolution rules (`McpToolRouterSupport.resolvePrimaryEntityName`):
   and report (`R`) specs never carry it.
 - A spec with no included entities yields `null`, and the key is omitted from the response entirely.
 
+**Where the user finds the window (ETP-6421).** Each window spec also carries `windowName` and
+`windowUrl`, so an agent can tell a person where to go instead of guessing a menu path
+(`McpDiscoverTool.addWindowLinks`):
+
+```json
+{ "name": "price-list", "type": "W", "windowName": "Tarifa", "windowUrl": "https://go.example.com/price-list" }
+```
+
+- **Window specs only.** Process (`P`) and report (`R`) specs never carry either key.
+- `windowName` is the name of the spec's `AD_Window` in the **language of the token's user**
+  (`OBContext` language), the same name the user sees in the app; the base name when no translation
+  exists. It never falls back to the process name (`McpToolTitles.windowNameForSpec`). The key is
+  omitted when the spec has no window or the lookup fails.
+- `windowUrl` is `{app base URL}/{spec name}` (`McpRecordUrls.buildWindowUrl`): the spec name is
+  the app's window segment. It is omitted when no app base URL is configured. A `routeOnly` or
+  hidden spec still gets the link the record links use.
+- **No menu path.** Go's menu tree lives in the SPA (`menu.json`), not in the backend, so the
+  result names the window and links it but does not say under which menu group it sits.
+
 #### 4.12.3 FK resolution on the write verbs (IMP-4, extended to every verb by IMP-15)
 
 Historically every foreign-key field in a write body required the exact 32-character record id,
