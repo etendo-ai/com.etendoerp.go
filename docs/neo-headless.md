@@ -10647,6 +10647,19 @@ should a configuration push open the flags again, by the customization itself (4
 `com.etendoerp.go.template`'s `configScript.xml`; NEO serialises them as server-local wall clock
 `yyyy-MM-dd'T'HH:mm:ss` (ETP-5100).
 
+**Behind the per-account flag `currency-conversion-v2`** (`CurrencyConversionV2Flag`, see
+`feature-flags-and-tenant-upgrade.md`). Off — the default — the window is the one before ETP-6365
+(the SPA renders the generated read-only window) and every write of this entity is refused **before
+anything else** with 403 `feature_disabled` (`ETGO_CurrencyConversionV2Disabled`, "La carga manual de
+tasas de conversión no está habilitada para este usuario: las tasas solo se pueden consultar.") on
+every channel: `createManualCurrency`, `createManualRate`, `updateManualRate`, `previewManualRate`,
+`DELETE` (including the System-row delete worded by `refusalForReadOnlyTarget`) and a generic
+`POST`/`PUT`/`PATCH`. `actionContracts()` then declares only `manualCurrencyOptions`, `currentRates`
+and `serverClock`, so the MCP does not advertise the writes. Reads, `serverClock`, `currentRates`,
+`manualCurrencyOptions` and `etgoRateStatus` are never gated. What is gated is listed once, in
+`ConversionRateFlagGate`. Known gap: `etendo_delete` still lists the spec (its `DELETE` method is
+configuration), and the call answers the 403. Everything below describes the flag **on**.
+
 **Every write is served by the customization itself** — the three write actions and the delete,
 on REST and MCP alike — no channel divergence.
 It validates everything first, then writes on the request's session and only flushes: the channel
@@ -10747,7 +10760,8 @@ the Spanish meaning travels in the catalog.
 **Why virtual (`Computation_Mode = 'V'`):** it depends on `now()`, the case a stored column cannot
 follow. The function is total (every edge case answers `HISTORIC`).
 
-**Actions** (`actionContracts`, read-only, not tied to a record — REST
+**Actions** (`actionContracts`, read-only, not tied to a record; `previewManualRate` only while
+`currency-conversion-v2` is on — REST
 `POST /sws/neo/conversion-rates/conversionRate/new/action/<name>`, MCP `etendo_action` with
 `id: "_"`):
 

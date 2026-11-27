@@ -898,6 +898,46 @@
         ],
         "e2e": []
       }
+    },
+    {
+      "id": "currency-conversion-v2",
+      "flagKey": "currency-conversion-v2",
+      "symbols": [
+        "FLAG_CURRENCY_CONVERSION_V2",
+        "ETGO_FLAG_CURRENCY_CONVERSION_V2",
+        "etendo.go.flags.currency-conversion-v2",
+        "CurrencyConversionV2Flag",
+        "ConversionRateFlagGate",
+        "ETGO_CurrencyConversionV2Disabled",
+        "currencyConversionV2"
+      ],
+      "paths": [
+        "src/com/etendoerp/go/schemaforge/CurrencyConversionV2Flag.java",
+        "src/com/etendoerp/go/schemaforge/handlers/ConversionRateFlagGate.java"
+      ],
+      "testSpecs": {
+        "unit": [
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/AccountTargetedFlagTest.java",
+            "note": "CurrencyConversionV2Flag runs every per-account case: the account email reaches the provider as targeting key, Email and lowercase email; a targeted account reads on, any other off; no OBContext, no account, null email, failed lookup, unset, non-boolean and failing provider read off."
+          },
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/handlers/ConversionRateHandlerTest.java",
+            "note": "Flag off: create/createRate/update/preview actions, DELETE and the System-row delete answer 403 feature_disabled before the store is read; GET passes; actionContracts drops the gated actions. Flag on: every contract declared."
+          },
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/webhooks/SFWindowAccessMapTest.java",
+            "expected": true,
+            "note": "Extension (tester-go): capabilities.currencyConversionV2 on and off for a restricted role and the admin branch (explicit false when off), evaluated with the request account email, same shape as the sepaRemittances cases."
+          },
+          {
+            "path": "src-test/src/com/etendoerp/go/schemaforge/handlers/ConversionRateFlagGateTest.java",
+            "expected": true,
+            "note": "Table-driven isGated (tester-go; extend ConversionRateHandlerTest instead if it stays small): ACTION gated/ungated names, CRUD POST/PUT/PATCH/DELETE gated, GET and SELECTOR/DEFAULTS/CALLOUT never gated, null context false."
+          }
+        ],
+        "e2e": []
+      }
     }
   ]
 }

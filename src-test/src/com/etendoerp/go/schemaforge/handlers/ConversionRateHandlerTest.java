@@ -17,7 +17,9 @@
 package com.etendoerp.go.schemaforge.handlers;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 import static org.mockito.Mockito.atLeastOnce;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.mock;
@@ -36,7 +38,9 @@ import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.system.Client;
 import org.openbravo.model.common.currency.ConversionRate;
 
+import com.etendoerp.go.schemaforge.CurrencyConversionV2Flag;
 import com.etendoerp.go.schemaforge.NeoContext;
+import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoResponse;
 
 /**
@@ -45,6 +49,11 @@ import com.etendoerp.go.schemaforge.NeoResponse;
  * customization runs (ETP-6365). A downloaded one is worded as the synced lock (409
  * {@code ETGO_ConvRateSyncedLocked}); any other keeps the guard's 404 ({@code null}). The store is
  * a mock; OBContext/OBDal are mocked statically so the message text falls back to the catalogue.
+ *
+ * <p>Also the {@code currency-conversion-v2} gate (seam {@code featureEnabled()}): off, the write
+ * actions, their preview and a delete answer 403 {@code feature_disabled} before the store is read
+ * and the MCP only sees the read actions; reads are never gated. The flag's own per-account
+ * evaluation is covered by {@code AccountTargetedFlagTest}.
  *
  * @covers com.etendoerp.go.schemaforge.handlers.ConversionRateHandler
  */
@@ -64,6 +73,7 @@ public class ConversionRateHandlerTest {
     store = mock(ConversionRateStore.class);
     handler = spy(new ConversionRateHandler());
     doReturn(store).when(handler).store();
+    doReturn(true).when(handler).featureEnabled();
   }
 
   @After
@@ -114,5 +124,51 @@ public class ConversionRateHandlerTest {
     assertNull(handler.refusalForReadOnlyTarget(delete("  ")));
     assertNull(handler.refusalForReadOnlyTarget(null));
     verify(store, never()).readableRate(Mockito.anyString());
+  }
+
+  // ── currency-conversion-v2 gate (ETP-6365) ─────────────────────────────────
+
+  private static NeoContext action(String name) {
+    return NeoContext.builder().endpointType(NeoEndpointType.ACTION).fieldName(name)
+        .httpMethod("POST").recordId("new").build();
+  }
+
+  private static void assertFeatureDisabled(NeoResponse response) throws Exception {
+    assertEquals(403, response.getHttpStatus());
+    assertEquals(CurrencyConversionV2Flag.CODE_FEATURE_DISABLED,
+        response.getBody().getJSONObject("error").getString("code"));
+    assertEquals(CurrencyConversionV2Flag.MSG_DISABLED,
+        response.getBody().getJSONObject("error").getJSONArray("messageKeys").getString(0));
+  }
+
+  @Test
+  public void flagOffRefusesEveryWriteBeforeReadingTheStore() throws Exception {
+    doReturn(false).when(handler).featureEnabled();
+
+    for (String name : new String[] { ConversionRateWriteActions.CREATE_CURRENCY,
+        ConversionRateWriteActions.CREATE_RATE, ConversionRateWriteActions.UPDATE_RATE,
+        ConversionRateActions.PREVIEW_MANUAL_RATE }) {
+      assertFeatureDisabled(handler.handle(action(name)));
+    }
+    assertFeatureDisabled(handler.handle(delete(ID)));
+    assertFeatureDisabled(handler.refusalForReadOnlyTarget(delete(ID)));
+    verify(store, never()).readableRate(Mockito.anyString());
+  }
+
+  @Test
+  public void flagOffKeepsTheReadsAndDeclaresOnlyThemToTheMcp() {
+    doReturn(false).when(handler).featureEnabled();
+
+    assertNull(handler.handle(NeoContext.builder().httpMethod("GET").build()));
+    assertTrue(handler.actionContracts().containsKey(ConversionRateActions.SERVER_CLOCK));
+    assertTrue(handler.actionContracts().containsKey(ConversionRateActions.CURRENT_RATES));
+    assertFalse(handler.actionContracts().containsKey(ConversionRateWriteActions.CREATE_RATE));
+    assertFalse(handler.actionContracts().containsKey(ConversionRateWriteActions.UPDATE_RATE));
+    assertFalse(handler.actionContracts().containsKey(ConversionRateActions.PREVIEW_MANUAL_RATE));
+  }
+
+  @Test
+  public void flagOnDeclaresEveryAction() {
+    assertEquals(ConversionRateActions.CONTRACTS, handler.actionContracts());
   }
 }
