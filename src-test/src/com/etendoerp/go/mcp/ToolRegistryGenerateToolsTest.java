@@ -1049,10 +1049,10 @@ class ToolRegistryGenerateToolsTest {
             String.valueOf(second.get(i).getInputSchema()), first.get(i).getName());
       }
       List<String> names = toolNames(first);
-      assertEquals(List.of(McpConstants.TOOL_NEO_WHOAMI, "etendo_discover", "docs",
-          McpConstants.TOOL_NEO_WIDGET, McpConstants.TOOL_NEO_VECTOR_SEARCH,
-          McpConstants.TOOL_NEO_FEEDBACK),
-          names.subList(0, 6), "built-ins first, in a fixed order: " + names);
+      assertEquals(List.of(McpConstants.TOOL_NEO_HOW_TO, McpConstants.TOOL_NEO_WHOAMI,
+          "etendo_discover", "docs", McpConstants.TOOL_NEO_WIDGET,
+          McpConstants.TOOL_NEO_VECTOR_SEARCH, McpConstants.TOOL_NEO_FEEDBACK),
+          names.subList(0, 7), "built-ins first, in a fixed order: " + names);
       assertTrue(names.indexOf("complete_order") < names.indexOf("etendo_list"),
           "process tools before the CRUD tools: " + names);
       Map<String, Object> listSchema = first.get(names.indexOf("etendo_list")).getInputSchema();
