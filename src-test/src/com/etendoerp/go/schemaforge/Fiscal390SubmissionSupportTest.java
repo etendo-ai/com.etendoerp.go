@@ -559,6 +559,30 @@ public class Fiscal390SubmissionSupportTest {
   }
 
   /**
+   * ETP-5716: "Validar sin presentar" answered by a validator that has not loaded the exercise
+   * (EV0 "No existe información del modelo") is no verdict: NOT_VALIDATED, no AEAT incident
+   * stored, and the attempt row says not_validated.
+   */
+  @Test
+  public void testTestModeWithTheModelNotLoadedIsNotValidated() throws Exception {
+    AEAT303SubmissionResult r = new AEAT303SubmissionResult();
+    r.setStatus(AEAT303SubmissionResult.Status.ERROR);
+    r.setTestMode(true);
+    r.addError("EV0 - Error al cargar el modelo: No existe información del modelo: 390, 2026.");
+    when(service.submitValidation("390", FILE, "2026", "0A", "ES")).thenReturn(r);
+    StringWriter out = new StringWriter();
+
+    JSONObject json = submit("{\"testMode\":true}", response(out), out);
+
+    assertEquals("ERROR", json.getString("status"));
+    assertTrue(json.getBoolean("testMode"));
+    assertEquals(FiscalAeatSubmissionSupport.ERR_NOT_VALIDATED, json.getString("errorCode"));
+    verify(declHandler, never()).replaceAeatIncidentsNoCommit(any(), any(), any());
+    List<FiscalAeatValidationOutcome> rows = attemptRows(1, VALIDATION_ENDPOINT);
+    assertEquals(Outcome.NOT_VALIDATED, rows.get(0).outcome());
+  }
+
+  /**
    * The blocking guard is evaluated fresh from the STORED inputs (the ones the file is built
    * from), never from the stored incident rows — so a stored AEAT answer cannot block the retry.
    */

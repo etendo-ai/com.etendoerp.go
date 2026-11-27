@@ -304,6 +304,23 @@ the one `submit` uses in test mode; no certificate) and returned **whatever the 
 | `connection_failure` | an `IOException` reaching the validator (timeout, refused, unknown host) | untouched |
 | `not_validated` | any other failure (e.g. an answer that is not the validator's JSON, or one that is neither accepted nor carries an error) | untouched |
 
+**"Model not available" is not a rejection (ETP-5716).** While the AEAT has not loaded an exercise
+into ServValiDos, the validator answers every file of that model/year with
+`EV0 - Error al obtener la respuesta de la impresión OSGI... Error al cargar el modelo: No existe
+información del modelo: 390, 2026...` — a statement about the service, not about the file (the same
+file is accepted by the AEAT web form of that exercise). `FiscalAeatValidationOutcome.isModelNotAvailable`
+matches it by code AND text: every error must be code `EV0` (any case) with the text "No existe
+información del modelo" (case-insensitive; accent plain, missing or mis-decoded). Such an answer is
+`not_validated`: the file is downloaded with the "could not be validated" notice, no AEAT incident
+is stored (the previous ones are kept) and the attempt row records outcome `not_validated` with
+error code `EV0`. Any other error — another `EV0` text, or a real error next to it — keeps the answer
+`rejected`. The same rule applies to the 303 and 390 submit paths: a **test-mode** submit
+("Validar sin presentar") with that answer returns 200 `{ status: "ERROR", testMode: true,
+errorCode: "NOT_VALIDATED", errors: [<the AEAT text>] }` and stores no incident; the validation that
+precedes a **real** presentation treats it as "no answer", so the presentation follows
+`PRESENT_WHEN_VALIDATOR_UNANSWERED` (goes ahead). An `EV0` returned by the filing service itself
+(PresBasicaDos) is not matched: it stays an error.
+
 **Validation PDF.** An `accepted` answer carries the validator's draft PDF. It is attached to
 the declaration as `VALIDACION-390-<year>-0A.pdf`, as proof that the file was validated — it is not a filing
 receipt. Each accepted validation replaces the previous `VALIDACION-` attachment (the new one

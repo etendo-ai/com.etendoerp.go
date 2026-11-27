@@ -209,6 +209,12 @@ class Fiscal390SubmissionSupport {
       return;
     }
 
+    if (FiscalAeatSubmissionSupport.isNotValidatedTestAnswer(testMode, result)) {
+      // The validator has not loaded this model/exercise yet: no verdict, no AEAT incident.
+      FiscalAeatSubmissionSupport.writeJson(response, HttpServletResponse.SC_OK,
+          FiscalAeatSubmissionSupport.notValidatedJson(result));
+      return;
+    }
     persistAeatIncidentsBestEffort(decl, result);
     if (result.isSuccessful()) {
       recordAcceptedSubmission(decl, org, year, period, result, snapshot, testMode);

@@ -149,6 +149,40 @@ public class FiscalAeatValidationOutcomeTest {
     assertEquals(Outcome.REJECTED, rejectedWith("E00 - x").outcome());
   }
 
+  /** The validator's text when it has not loaded the model/exercise yet (QA, 390 of 2026). */
+  private static final String MODEL_NOT_LOADED = "EV0 - Error al obtener la respuesta de la"
+      + " impresión OSGI.Mensaje del error: Error al cargar el modelo: No existe información del"
+      + " modelo: 390, 2026.Error al generar el PDF 071-02  26/11/2026 19:27:58.";
+
+  /**
+   * ETP-5716: the validator saying it has no information about the model is no verdict about the
+   * file — {@code not_validated}, nothing to store — but its code still reaches the attempt log.
+   */
+  @Test
+  public void theValidatorWithoutTheModelIsNotValidated() {
+    FiscalAeatValidationOutcome outcome = rejectedWith(MODEL_NOT_LOADED);
+
+    assertEquals(Outcome.NOT_VALIDATED, outcome.outcome());
+    assertFalse(outcome.answered());
+    assertEquals(Arrays.asList("EV0"), outcome.loggedErrorCodes());
+  }
+
+  /** Accent-free or mis-decoded text and any case still match; code AND text are both required. */
+  @Test
+  public void modelNotAvailableNeedsTheCodeAndTheTextOnEveryError() {
+    assertTrue(FiscalAeatValidationOutcome.isModelNotAvailable(
+        List.of("ev0 - ... NO EXISTE INFORMACION DEL MODELO: 303, 2027")));
+    assertTrue(FiscalAeatValidationOutcome.isModelNotAvailable(
+        List.of("EV0 - No existe informaciÃ³n del modelo: 390, 2026")));
+    // Another EV0, the same text under another code, or a real error next to it: a rejection.
+    assertEquals(Outcome.REJECTED, rejectedWith("EV0 - Error al generar el PDF").outcome());
+    assertEquals(Outcome.REJECTED,
+        rejectedWith("E00 - No existe información del modelo: 390, 2026").outcome());
+    assertEquals(Outcome.REJECTED, rejectedWith(MODEL_NOT_LOADED, "PAR016 - x").outcome());
+    assertFalse(FiscalAeatValidationOutcome.isModelNotAvailable(List.of()));
+    assertFalse(FiscalAeatValidationOutcome.isModelNotAvailable(null));
+  }
+
   // ── Path ────────────────────────────────────────────────────────────
 
   @Test

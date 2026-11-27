@@ -250,6 +250,37 @@ final class FiscalAeatSubmissionSupport {
     return result;
   }
 
+  /**
+   * {@code errorCode} of a "Validar sin presentar" whose answer is no verdict about the file: the
+   * validator has not loaded the model/exercise yet
+   * ({@link FiscalAeatValidationOutcome#isModelNotAvailable}).
+   */
+  static final String ERR_NOT_VALIDATED = "NOT_VALIDATED";
+
+  /**
+   * True when a TEST-mode answer (ServValiDos) is the validator saying it cannot validate this
+   * model/exercise yet. Such an answer is not a rejection of the file: the caller answers
+   * {@link #notValidatedJson} and stores no AEAT incident (like a validator that did not answer).
+   * A production answer is never matched: there it is the filing service speaking.
+   */
+  static boolean isNotValidatedTestAnswer(boolean testMode, AEAT303SubmissionResult result) {
+    return testMode && result != null && !result.isSuccessful()
+        && FiscalAeatValidationOutcome.isModelNotAvailable(result.getErrors());
+  }
+
+  /**
+   * The answer of a "Validar sin presentar" the validator could not validate
+   * ({@link #isNotValidatedTestAnswer}): {@code status ERROR}, {@code testMode true},
+   * {@code errorCode NOT_VALIDATED} and the AEAT text in {@code errors}, for reference.
+   */
+  static JSONObject notValidatedJson(AEAT303SubmissionResult result) throws Exception {
+    JSONObject o = failureJson(true, ERR_NOT_VALIDATED,
+        "The AEAT could not validate the file: its validation service has no information about"
+            + " this model and exercise yet.");
+    o.put("errors", new JSONArray(result.getErrors()));
+    return o;
+  }
+
   /** The answer of a presentation stopped because the validator could not be reached. */
   static JSONObject validationUnavailableJson() throws Exception {
     JSONObject o = failureJson(false, ERR_VALIDATION_UNAVAILABLE,
