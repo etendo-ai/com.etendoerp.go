@@ -133,9 +133,11 @@ final class ConversionRateActions {
             + " rate, validFrom}], closes:[{id, fromIso, toIso, validFrom, newValidTo}]} — the"
             + " two rows (rate and its inverse) the create inserts and the rows of the range in"
             + " force it closes one minute before validFromDate — or {creates:[], closes:[],"
-            + " error, errorKey, errorField} when the create would be refused (e.g. an"
-            + " overlapping range: error names the colliding range and the start to choose"
-            + " instead; errorField is the parameter at fault)."
+            + " error, errorKey, errorField, errorDetails?} when the create would be refused (e.g."
+            + " an overlapping range: error names the colliding range, the start to choose"
+            + " instead and the server's time zone; errorField is the parameter at fault;"
+            + " errorDetails carries those instants as {conflictFrom, conflictTo, conflictOpen,"
+            + " suggestedFrom, timeZone})."
             + SERVER_ZONE_NOTE
             + CREATE_HINT,
         Param.required(ConversionRateWrites.F_TO_CURRENCY, NeoActionContract.TYPE_STRING,
@@ -294,6 +296,10 @@ final class ConversionRateActions {
       result.put("errorKey", refusal.getKey());
       if (refusal.getField() != null) {
         result.put("errorField", refusal.getField());
+      }
+      JSONObject details = refusal.detailsJson();
+      if (details != null) {
+        result.put("errorDetails", details);
       }
     }
     return result;

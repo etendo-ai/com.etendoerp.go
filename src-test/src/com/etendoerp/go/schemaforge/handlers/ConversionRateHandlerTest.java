@@ -28,6 +28,10 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+
+import org.codehaus.jettison.json.JSONObject;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -55,7 +59,11 @@ import com.etendoerp.go.schemaforge.NeoResponse;
  * and the MCP only sees the read actions; reads are never gated. The flag's own per-account
  * evaluation is covered by {@code AccountTargetedFlagTest}.
  *
+ * <p>Also the overlap refusal (QA CP-13): its instants travel structured, with the server zone, and
+ * its text names that zone.
+ *
  * @covers com.etendoerp.go.schemaforge.handlers.ConversionRateHandler
+ * @covers com.etendoerp.go.schemaforge.handlers.ConversionRateRefusal
  */
 public class ConversionRateHandlerTest {
 
@@ -170,5 +178,43 @@ public class ConversionRateHandlerTest {
   @Test
   public void flagOnDeclaresEveryAction() {
     assertEquals(ConversionRateActions.CONTRACTS, handler.actionContracts());
+  }
+
+  // ── overlap refusal: instants structured, zone named (QA CP-13) ────────────
+
+  @Test
+  public void anOverlapCarriesItsInstantsAndTheServerZone() throws Exception {
+    ConversionRateRules.Range closed = new ConversionRateRules.Range("f", "i",
+        LocalDateTime.of(2026, 11, 26, 12, 0), LocalDateTime.of(2026, 11, 27, 8, 29), false);
+
+    NeoResponse response = ConversionRateRefusal.overlapOf("EUR", "CHF", closed,
+        LocalDateTime.of(2026, 11, 27, 8, 30), ZoneId.of("UTC")).toResponse();
+
+    JSONObject error = response.getBody().getJSONObject("error");
+    JSONObject details = error.getJSONObject("details");
+    assertEquals(409, response.getHttpStatus());
+    assertEquals("validFromDate", error.getString("field"));
+    assertEquals("2026-11-26T12:00:00", details.getString("conflictFrom"));
+    assertEquals("2026-11-27T08:29:00", details.getString("conflictTo"));
+    assertFalse(details.getBoolean("conflictOpen"));
+    assertEquals("2026-11-27T08:30:00", details.getString("suggestedFrom"));
+    assertEquals("UTC", details.getString("timeZone"));
+    assertTrue(error.getString("message"), error.getString("message").contains("(UTC)"));
+  }
+
+  @Test
+  public void anOverlapWithAnOpenRangeHasNoEndAndKeepsTheFieldOnACopy() throws Exception {
+    ConversionRateRules.Range open = new ConversionRateRules.Range("f", "i",
+        LocalDateTime.of(2026, 11, 26, 12, 0), null, false);
+
+    ConversionRateRefusal refusal = ConversionRateRefusal.overlapOf("EUR", "CHF", open,
+        LocalDateTime.of(2026, 11, 26, 12, 0), ZoneId.of("America/Argentina/Cordoba"))
+        .on("validFromDate");
+
+    JSONObject details = refusal.detailsJson();
+    assertTrue(details.isNull("conflictTo"));
+    assertTrue(details.getBoolean("conflictOpen"));
+    assertEquals("America/Argentina/Cordoba", details.getString("timeZone"));
+    assertNull(ConversionRateRefusal.badRequest(ConversionRateRefusal.INVALID_RATE).detailsJson());
   }
 }

@@ -18,7 +18,11 @@
 package com.etendoerp.go.schemaforge.handlers;
 
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.Map;
 
 import javax.servlet.http.HttpServletResponse;
 
@@ -33,7 +37,9 @@ import com.etendoerp.go.schemaforge.NeoResponse;
  * {@code AD_MESSAGE} key and the HTTP status it is answered with. Thrown before anything is
  * written, so the caller only has to turn it into a response. A refusal about one request field
  * carries it ({@link #getField()}), answered as {@code error.field} and, by
- * {@code previewManualRate}, as {@code errorField}.
+ * {@code previewManualRate}, as {@code errorField}. A refusal about instants carries them
+ * structured too ({@link #getDetails()}), answered as {@code error.details} and, by
+ * {@code previewManualRate}, as {@code errorDetails} — so a client can show them in its own zone.
  *
  * <p>Message keys (Spanish and English text in {@code messages/neo_hints_*.properties}):</p>
  * <ul>
@@ -75,22 +81,39 @@ class ConversionRateRefusal extends RuntimeException {
   /** How {@value #OVERLAP} shows an instant, in every language (the design's format). */
   static final DateTimeFormatter INSTANT_FORMAT = DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
 
+  /** How {@link #getDetails()} carries an instant: the server's wall clock, as NEO answers it. */
+  static final DateTimeFormatter WIRE_FORMAT = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss");
+
+  /** {@link #getDetails()} of {@value #OVERLAP}: start of the colliding range. */
+  static final String D_CONFLICT_FROM = "conflictFrom";
+  /** End of the colliding range; {@code null} when it is open (or unknown). */
+  static final String D_CONFLICT_TO = "conflictTo";
+  /** Whether the colliding range is open (no end date). */
+  static final String D_CONFLICT_OPEN = "conflictOpen";
+  /** The start a new range must be later than. */
+  static final String D_SUGGESTED_FROM = "suggestedFrom";
+  /** The server's zone id, the zone of the three instants above. */
+  static final String D_TIME_ZONE = "timeZone";
+
   private static final String NO_VALUE = "—";
 
   private final int status;
   private final String key;
   private final String field;
   private final transient Object[] args;
+  private final transient Map<String, Object> details;
 
   ConversionRateRefusal(int status, String key, Object... args) {
-    this(status, key, null, args);
+    this(status, key, null, Collections.emptyMap(), args);
   }
 
-  private ConversionRateRefusal(int status, String key, String field, Object... args) {
+  private ConversionRateRefusal(int status, String key, String field, Map<String, Object> details,
+      Object... args) {
     super(key);
     this.status = status;
     this.key = key;
     this.field = field;
+    this.details = details;
     this.args = args == null ? new Object[0] : args.clone();
   }
 
@@ -105,16 +128,21 @@ class ConversionRateRefusal extends RuntimeException {
   /**
    * The overlap refusal, with the conflicting range and the start to choose instead: "Ya existe
    * una tasa de conversión para EUR → CHF en las fechas indicadas (01/11/2026 09:00 – 18/11/2026
-   * 14:29). Elija una fecha de inicio posterior al 18/11/2026 14:30."
+   * 14:29). Elija una fecha de inicio posterior al 18/11/2026 14:30. Las horas están en la zona
+   * horaria del servidor (UTC)." The text names the zone, so an MCP agent reads it right; the same
+   * instants travel structured in {@link #getDetails()} ({@code conflictFrom}, {@code conflictTo},
+   * {@code conflictOpen}, {@code suggestedFrom}, {@code timeZone}), so the window shows them in the
+   * browser's zone instead of the server's.
    *
    * @param fromIso    the origin ISO code
    * @param toIso      the destination ISO code
    * @param conflict   the range the new one collides with; {@code null} renders "—"
    * @param suggestion the start to choose a later one than; {@code null} renders "—"
+   * @param zone       the server's zone, the zone of every instant above
    * @return the 409, bound to {@code validFromDate}
    */
   static ConversionRateRefusal overlapOf(String fromIso, String toIso,
-      ConversionRateRules.Range conflict, LocalDateTime suggestion) {
+      ConversionRateRules.Range conflict, LocalDateTime suggestion, ZoneId zone) {
     String start = conflict != null ? format(conflict.validFrom()) : NO_VALUE;
     String end;
     if (conflict == null) {
@@ -124,8 +152,21 @@ class ConversionRateRefusal extends RuntimeException {
     } else {
       end = format(conflict.validTo());
     }
+    String zoneId = zone != null ? zone.getId() : ZoneId.systemDefault().getId();
+    Map<String, Object> details = new LinkedHashMap<>();
+    details.put(D_CONFLICT_FROM, conflict != null ? wire(conflict.validFrom()) : null);
+    boolean open = conflict != null && conflict.isOpen();
+    details.put(D_CONFLICT_TO, conflict != null && !open ? wire(conflict.validTo()) : null);
+    details.put(D_CONFLICT_OPEN, open);
+    details.put(D_SUGGESTED_FROM, wire(suggestion));
+    details.put(D_TIME_ZONE, zoneId);
     return new ConversionRateRefusal(HttpServletResponse.SC_CONFLICT, OVERLAP,
-        ConversionRateWrites.F_VALID_FROM, fromIso, toIso, start, end, format(suggestion));
+        ConversionRateWrites.F_VALID_FROM, Collections.unmodifiableMap(details), fromIso, toIso,
+        start, end, format(suggestion), zoneId);
+  }
+
+  private static String wire(LocalDateTime instant) {
+    return instant == null ? null : instant.format(WIRE_FORMAT);
   }
 
   static String format(LocalDateTime instant) {
@@ -139,7 +180,7 @@ class ConversionRateRefusal extends RuntimeException {
    * @return a copy carrying the field
    */
   ConversionRateRefusal on(String requestField) {
-    return new ConversionRateRefusal(status, key, requestField, args);
+    return new ConversionRateRefusal(status, key, requestField, details, args);
   }
 
   int getStatus() {
@@ -155,6 +196,32 @@ class ConversionRateRefusal extends RuntimeException {
     return field;
   }
 
+  /**
+   * The structured values of the refusal (see {@link #overlapOf}), empty when it has none.
+   *
+   * @return the values by name; a {@code null} value is answered as JSON {@code null}
+   */
+  Map<String, Object> getDetails() {
+    return details;
+  }
+
+  /**
+   * {@link #getDetails()} as JSON, or {@code null} when there are none.
+   *
+   * @return the JSON object
+   * @throws JSONException if a value cannot be put
+   */
+  JSONObject detailsJson() throws JSONException {
+    if (details.isEmpty()) {
+      return null;
+    }
+    JSONObject json = new JSONObject();
+    for (Map.Entry<String, Object> entry : details.entrySet()) {
+      json.put(entry.getKey(), entry.getValue() == null ? JSONObject.NULL : entry.getValue());
+    }
+    return json;
+  }
+
   /** The text in the request language. */
   String text() {
     return NeoMessageText.text(key, args);
@@ -162,17 +229,24 @@ class ConversionRateRefusal extends RuntimeException {
 
   /**
    * The keyed error response ({@code error.message} + {@code error.messageKeys}, and
-   * {@code error.field} when the refusal is bound to one).
+   * {@code error.field} when the refusal is bound to one, {@code error.details} when it carries
+   * structured values).
    */
   NeoResponse toResponse() {
     NeoResponse response = NeoMessageText.error(status, key, args);
     JSONObject error = response.getBody() != null ? response.getBody().optJSONObject("error")
         : null;
-    if (error != null && field != null) {
+    if (error != null) {
       try {
-        error.put("field", field);
+        if (field != null) {
+          error.put("field", field);
+        }
+        JSONObject structured = detailsJson();
+        if (structured != null) {
+          error.put("details", structured);
+        }
       } catch (JSONException e) {
-        // the keyed error is still a valid answer without the field
+        // the keyed error is still a valid answer without the field and the details
       }
     }
     return NeoResponse.ensureTopLevelMessage(response);

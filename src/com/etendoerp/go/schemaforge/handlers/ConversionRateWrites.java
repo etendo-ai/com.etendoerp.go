@@ -178,7 +178,7 @@ class ConversionRateWrites {
    */
   ConversionRateRefusal overlapAfterFailure() {
     if (lastCreate == null) {
-      return ConversionRateRefusal.overlapOf(fromIso, toIso, null, null);
+      return ConversionRateRefusal.overlapOf(fromIso, toIso, null, null, store.zone());
     }
     List<Range> ranges = rangesOf(lastCreate);
     Plan plan = ConversionRateRules.planCreate(ranges, lastCreate.validFrom());
@@ -188,7 +188,7 @@ class ConversionRateWrites {
   private ConversionRateRefusal overlapRefusal(List<Range> ranges, Range conflict,
       LocalDateTime from) {
     return ConversionRateRefusal.overlapOf(fromIso, toIso, conflict,
-        ConversionRateRules.suggestedStart(ranges, from));
+        ConversionRateRules.suggestedStart(ranges, from), store.zone());
   }
 
   private List<Range> rangesOf(CreateRequest request) {
