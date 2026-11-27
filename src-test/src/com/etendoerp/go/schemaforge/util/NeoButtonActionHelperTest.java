@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
@@ -873,6 +874,19 @@ class NeoButtonActionHelperTest {
 
       assertNotNull(result);
       assertEquals("Processing", result.getDBColumnName());
+    }
+
+    @Test
+    @DisplayName("ETP-5812: findButtonField answers the field whose column findButtonColumn returns")
+    void findButtonFieldReturnsTheMatchedField() {
+      Column column = mock(Column.class);
+      when(column.getDBColumnName()).thenReturn("Processing");
+      SFField field = createMockField(column, "processNow");
+      setupFieldCriteria(new ArrayList<>(List.of(createMockField(null, "nullField"), field)));
+
+      assertSame(field, NeoButtonActionHelper.findButtonField("entity1", "processNow"));
+      assertSame(field, NeoButtonActionHelper.findButtonField("entity1", "Processing"));
+      assertNull(NeoButtonActionHelper.findButtonField("entity1", "nonExistent"));
     }
 
     @Test
