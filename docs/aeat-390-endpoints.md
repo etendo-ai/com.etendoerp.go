@@ -362,10 +362,13 @@ service's default timeouts are restored for the presentation):
 | no errors (warnings allowed) | the presentation goes ahead, as before |
 | errors (at least one) | **not presented**: `200` with the usual result shape, `status: "ERROR"`, `testMode: false`, `stage: "validation"`, the AEAT `errors`; they replace the declaration's AEAT incidents; nothing else changes (draft) |
 | no answer, or an answer with neither a PDF nor an error | `FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED` (`true`): present anyway. When `false`: `502`, `errorCode: "VALIDATION_UNAVAILABLE"`, `stage: "validation"` |
+| "model not available": only `EV0` errors with the text "No existe información del modelo" | treated as **no answer** (row above), not as a rejection; any other error next to it keeps it a rejection — see "Model not available" is not a rejection |
 
 It writes its own attempt row (path `pre_submission_validation`); the presentation that follows
-writes its `direct_submission` row. No PDF is attached for this validation. `testMode = true` is
-unchanged.
+writes its `direct_submission` row. No PDF is attached for this validation. A presentation that went
+ahead without a verdict answers with `"preValidation": "NOT_VALIDATED"`. `testMode = true` is
+unchanged, except for the "model not available" answer (`200`, `errorCode: "NOT_VALIDATED"`, no
+incident stored). Same rules as `/fiscal303/submit` (`aeat-303-submit-endpoint.md`).
 
 Request body (JSON): `{ testMode, idi, presenterNif, presenterName }` — the same shape as
 `/fiscal303/submit` (see `aeat-303-submit-endpoint.md`), without `nrc`: a 390 is informative (the
