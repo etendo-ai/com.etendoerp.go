@@ -68,6 +68,7 @@ import org.hibernate.query.NativeQuery;
 import org.hibernate.query.Query;
 import org.mockito.ArgumentCaptor;
 import org.junit.Test;
+import org.mockito.InOrder;
 import org.mockito.MockedStatic;
 import org.mockito.Answers;
 import org.mockito.Mockito;
@@ -2478,7 +2479,15 @@ public class CreateDraftInvoiceHandlerTest {
         assertTrue(handler.ensuredGrossAmounts);
       assertNotNull("ETP-5714: the shipment path aligns the list prices of its whole invoice",
           handler.alignedListPricesInvoice);
-        verify(dal, Mockito.times(2)).flush();
+        // The recalculation is flushed before the completion runs: the handler flushes after the
+        // refresh (post-alignment), then the completion flushes and clears the session (ETP-6414).
+        InOrder order = Mockito.inOrder(dal, session, completion.processInvoiceUtil);
+        order.verify(dal, Mockito.calls(1)).flush();
+        order.verify(session, Mockito.calls(1)).refresh(invoice);
+        order.verify(dal, Mockito.calls(2)).flush();
+        order.verify(session, Mockito.calls(1)).clear();
+        order.verify(completion.processInvoiceUtil).process(
+            eq("inv-s-1"), eq("CO"), anyString(), anyString(), anyString(), any(), any());
       }
     }
   }

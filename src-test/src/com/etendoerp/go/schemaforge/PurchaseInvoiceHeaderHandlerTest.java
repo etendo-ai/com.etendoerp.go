@@ -46,6 +46,7 @@ import javax.servlet.http.HttpServletResponse;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
+import org.hibernate.Session;
 import org.hibernate.criterion.Criterion;
 import org.junit.Rule;
 import org.junit.Test;
@@ -1314,6 +1315,8 @@ public class PurchaseInvoiceHeaderHandlerTest {
 
       OBDal dal = mock(OBDal.class);
       dalMock.when(OBDal::getInstance).thenReturn(dal);
+      // InvoiceCompletionService flushes and clears the session before the process (ETP-6414).
+      when(dal.getSession()).thenReturn(mock(Session.class));
       dalMock.when(OBDal::getReadOnlyInstance).thenReturn(dal);
       Connection conn = mock(Connection.class);
       PreparedStatement ps = mock(PreparedStatement.class);
@@ -1453,6 +1456,8 @@ public class PurchaseInvoiceHeaderHandlerTest {
 
       OBDal dal = mock(OBDal.class);
       dalMock.when(OBDal::getInstance).thenReturn(dal);
+      // InvoiceCompletionService flushes and clears the session before the process (ETP-6414).
+      when(dal.getSession()).thenReturn(mock(Session.class));
       dalMock.when(OBDal::getReadOnlyInstance).thenReturn(dal);
       Connection conn = mock(Connection.class);
       PreparedStatement ps = mock(PreparedStatement.class);

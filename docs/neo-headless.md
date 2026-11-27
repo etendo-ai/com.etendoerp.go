@@ -2323,6 +2323,16 @@ grant (`TemplateRoleWindowAccess`). The NEO built-in path runs in admin mode, so
 check the organization: the endpoint requires the current organization to be a real one (not `*`)
 and in the role's writable organizations, else `403 org_not_allowed`.
 
+**Menu node (ETP-6051).** The Invoice Inbox window ships an active `AD_MENU` node (action `W`,
+`AD_MENU_ID` `581A06FAE09540B58D316136EC023B3A`) and its `AD_TREENODE` row in tree `10` under
+`Transactions` (`800242`, Procurement Management), seqno 75, right after Purchase Invoice
+(`AD_MENU.xml` / `AD_TREENODE.xml`). `SFListMenu` therefore returns it for the roles that hold the
+window (Compras and Financiero by template grant, admins and client admins by the
+`hasWindowAccess` bypass), and the Schema Forge `menu.json` entry identifies the window by
+`windowId`. The node is also visible in the Classic menu, under Procurement Management > Transactions, for the roles that hold the window grant (`AD_Window_Access`), gated by the same grant as in GO. Do not deactivate or remove the node: the sidebar entry and the category of the window in the Roles
+screen depend on it. There is no `AD_MENU_TRL` row: the label is translated in the SPA by menu label
+("Bandeja de facturas").
+
 **Limits.** At most 20 files and 10 MB per file; the whole request at most 210 MB
 (`NeoServlet` `maxRequestSize` = 20 x 10 MB + 10 MB of multipart margin, derived in
 `NeoAttachmentPolicy.MAX_REQUEST_BYTES`; `maxFileSize` is `NeoAttachmentPolicy.MAX_SIZE_MB` in
