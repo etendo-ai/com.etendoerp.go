@@ -37,6 +37,8 @@ import org.openbravo.model.ad.ui.Tab;
 import org.openbravo.service.json.DataResolvingMode;
 import org.openbravo.service.json.DataToJsonConverter;
 
+import com.etendoerp.go.schemaforge.util.NeoValueEquivalence;
+
 /**
  * Gives an update the callout effects the UI gives it when a reference changes (ETP-6176).
  *
@@ -94,7 +96,7 @@ public final class NeoUpdateCalloutRefire {
           triggers, sent);
       // ETP-6107: then the values sent with it, as when the user types a price after picking the
       // product — a price sent with a new product is discounted from the NEW list price.
-      List<String> sentValues = sentValuesWithCallout(entity, body, sent, adTab);
+      List<String> sentValues = sentValuesWithCallout(entity, body, sent, adTab, stored);
       if (!sentValues.isEmpty()) {
         NeoDefaultsCascadeHelper.executeCalloutsForTriggerFields(ctx, adTab, formState, body,
             sentValues, sent);
@@ -133,15 +135,21 @@ public final class NeoUpdateCalloutRefire {
     return formState;
   }
 
-  /** The non-reference fields the caller sent that have a callout, in the order sent. */
+  /**
+   * The non-reference fields the update changes that have a callout, in the order sent. A value
+   * equal to the stored one is not a change: a pre-hook may have carried the stored quantity or
+   * price into the body (ETP-6012), and re-firing their callouts re-derived the line from them
+   * (a new tax alone zeroed the list price and the discount over REST).
+   */
   static List<String> sentValuesWithCallout(Entity entity, JSONObject body,
-      Set<String> sent, Tab adTab) {
+      Set<String> sent, Tab adTab, BaseOBObject stored) {
     List<String> fields = new ArrayList<>();
     Iterator<?> keys = body.keys();
     while (keys.hasNext()) {
       String key = String.valueOf(keys.next());
       Property property = entity.getProperty(key, false);
       if (sent.contains(key) && property != null && property.isPrimitive()
+          && !NeoValueEquivalence.same(body.opt(key), stored.get(key))
           && NeoCalloutService.resolveCallout(adTab, key) != null) {
         fields.add(key);
       }
