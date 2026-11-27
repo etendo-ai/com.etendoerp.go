@@ -671,6 +671,8 @@ public class Fiscal390SubmissionSupportTest {
 
     assertEquals("SUCCESS", json.getString("status"));
     assertFalse(json.has("stage"));
+    // A validated file: the answer does not say "not validated".
+    assertFalse(json.has(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
     verify(decl).setDeclarationStatus("submitted_ack");
 
     List<FiscalAeatValidationOutcome> rows = attemptRows(2, VALIDATION_ENDPOINT,
@@ -681,6 +683,37 @@ public class Fiscal390SubmissionSupportTest {
     assertEquals(Path.DIRECT_SUBMISSION, rows.get(1).path());
     assertEquals(Outcome.ACCEPTED, rows.get(1).outcome());
     assertFalse(rows.get(1).testMode());
+  }
+
+  /**
+   * The validation before a real presentation answers EV0 (model not loaded): no verdict, so the
+   * presentation goes ahead ({@link FiscalAeatSubmissionSupport#PRESENT_WHEN_VALIDATOR_UNANSWERED})
+   * and its answer — accepted or rejected by PresBasicaDos — says the file was not validated first
+   * ({@code preValidation: NOT_VALIDATED}, ETP-5716).
+   */
+  @Test
+  public void testProductionWithTheModelNotLoadedSaysNotValidated() throws Exception {
+    AEAT303SubmissionResult notLoaded = new AEAT303SubmissionResult();
+    notLoaded.setStatus(AEAT303SubmissionResult.Status.ERROR);
+    notLoaded.setTestMode(true);
+    notLoaded.addError("EV0 - Error al cargar el modelo: No existe información del modelo: 390, 2026.");
+    validatorAnswers(notLoaded);
+    when(service.submitProduction(any())).thenReturn(success(false));
+    StringWriter out = new StringWriter();
+
+    JSONObject json = submit(PRODUCTION_BODY, response(out), out);
+
+    if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
+      verify(service).submitProduction(any());
+      assertEquals("SUCCESS", json.getString("status"));
+      assertFalse(json.has("stage"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          json.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+      verify(decl).setDeclarationStatus("submitted_ack");
+      List<FiscalAeatValidationOutcome> rows = attemptRows(2, VALIDATION_ENDPOINT,
+          PRODUCTION_ENDPOINT);
+      assertEquals(Outcome.NOT_VALIDATED, rows.get(0).outcome());
+    }
   }
 
   /**
@@ -703,6 +736,8 @@ public class Fiscal390SubmissionSupportTest {
     if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
       verify(service).submitProduction(any());
       assertEquals("SUCCESS", json.getString("status"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          json.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
       List<FiscalAeatValidationOutcome> rows = attemptRows(2, VALIDATION_ENDPOINT,
           PRODUCTION_ENDPOINT);
       assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());

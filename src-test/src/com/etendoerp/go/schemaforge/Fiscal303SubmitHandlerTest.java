@@ -2629,6 +2629,8 @@ public class Fiscal303SubmitHandlerTest {
 
     assertEquals("SUCCESS", run.body.getString("status"));
     assertFalse(run.body.has("stage"));
+    // A validated file: the answer does not say "not validated".
+    assertFalse(run.body.has(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
     verify(run.decl).setDeclarationStatus("submitted_ack");
 
     List<FiscalAeatValidationOutcome> rows = run.attemptRows(2);
@@ -2683,6 +2685,8 @@ public class Fiscal303SubmitHandlerTest {
     if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
       verify(run.service).submitProduction(any());
       assertEquals("SUCCESS", run.body.getString("status"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
       List<FiscalAeatValidationOutcome> rows = run.attemptRows(2);
       assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());
       assertEquals(Outcome.CONNECTION_FAILURE, rows.get(0).outcome());
@@ -2753,6 +2757,9 @@ public class Fiscal303SubmitHandlerTest {
       verify(run.service).submitProduction(any());
       assertEquals("SUCCESS", run.body.getString("status"));
       assertFalse(run.body.has("stage"));
+      // ETP-5716 — presented, but the answer says the file was not validated first.
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
       verify(run.decl).setDeclarationStatus("submitted_ack");
       List<FiscalAeatValidationOutcome> rows = run.attemptRows(2);
       assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());
@@ -2765,6 +2772,58 @@ public class Fiscal303SubmitHandlerTest {
       assertEquals(FiscalAeatSubmissionSupport.ERR_VALIDATION_UNAVAILABLE,
           run.body.getString("errorCode"));
       assertEquals(Outcome.NOT_VALIDATED, run.attemptRows(1).get(0).outcome());
+    }
+  }
+
+  /**
+   * EV0 before the presentation, then PresBasicaDos rejects the filing: the answer is the usual
+   * {@code ERROR} (nothing presented) AND says the file was not validated first (ETP-5716).
+   */
+  @Test
+  public void testHandleSubmit_productionModelNotLoadedThenRejected_saysNotValidated()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit(PRODUCTION_REQUEST, new SubmitRun(), (service, ctx) -> {
+      when(service.hasOrgCertificate(any())).thenReturn(true);
+      when(service.submitValidation(eq("303"), anyString(), anyString(), anyString(),
+          anyString())).thenReturn(notLoaded);
+      when(service.submitProduction(any())).thenReturn(presentationResult(false));
+    });
+
+    if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
+      verify(run.service).submitProduction(any());
+      assertEquals("ERROR", run.body.getString("status"));
+      assertFalse(run.body.getBoolean("testMode"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+      verify(run.decl, never()).setDeclarationStatus("submitted_ack");
+    }
+  }
+
+  /**
+   * EV0 before the presentation, then the filing call itself throws: the 502
+   * {@code SUBMISSION_FAILED} also says the file was not validated first (ETP-5716).
+   */
+  @Test
+  public void testHandleSubmit_productionModelNotLoadedThenCallFails_saysNotValidated()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit(PRODUCTION_REQUEST, new SubmitRun(), (service, ctx) -> {
+      when(service.hasOrgCertificate(any())).thenReturn(true);
+      when(service.submitValidation(eq("303"), anyString(), anyString(), anyString(),
+          anyString())).thenReturn(notLoaded);
+      when(service.submitProduction(any())).thenThrow(new OBException("refused"));
+    });
+
+    if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
+      verify(run.response).setStatus(HttpServletResponse.SC_BAD_GATEWAY);
+      assertEquals("SUBMISSION_FAILED", run.body.getString("errorCode"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
     }
   }
 

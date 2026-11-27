@@ -174,9 +174,12 @@ class Fiscal390SubmissionSupport {
     FiscalAeatValidationOutcome.Path path = FiscalAeatValidationOutcome.Path.ofSubmission(testMode);
     // A real presentation is validated first, with the very file it is about to send: the
     // validator's errors stop it (nothing presented, the declaration stays a draft).
-    if (!testMode && stoppedByValidation(service, attempted, new FiscalAeatSubmissionSupport
-        .FileToPresent(AEAT303SubmissionRequestBuilder.MODELO_390, fileContent, fiscalYear,
-            period, idi), decl, response)) {
+    // Null in test mode; it tells the presentation's answer whether the file went unvalidated.
+    FiscalAeatSubmissionSupport.PreSubmissionValidation validation = testMode ? null
+        : validateOrAnswer(service, attempted, new FiscalAeatSubmissionSupport.FileToPresent(
+            AEAT303SubmissionRequestBuilder.MODELO_390, fileContent, fiscalYear, period, idi),
+            decl, response);
+    if (validation != null && !validation.proceed()) {
       return;
     }
     String endpoint = FiscalAeatAttemptLog.endpointOf(service, testMode);
@@ -204,8 +207,9 @@ class Fiscal390SubmissionSupport {
     } catch (OBException e) {
       AbstractFiscalHandler.log.error("AEAT 390 submission failed (decl=" + declId + ")", e);
       FiscalAeatSubmissionSupport.writeJson(response, HttpServletResponse.SC_BAD_GATEWAY,
-          FiscalAeatSubmissionSupport.failureJson(testMode, ERR_SUBMISSION_FAILED,
-              translatedMessage(e)));
+          FiscalAeatSubmissionSupport.withPreValidation(
+              FiscalAeatSubmissionSupport.failureJson(testMode, ERR_SUBMISSION_FAILED,
+                  translatedMessage(e)), validation));
       return;
     }
 
@@ -222,27 +226,28 @@ class Fiscal390SubmissionSupport {
     commitBestEffort(declId);
 
     FiscalAeatSubmissionSupport.writeJson(response, HttpServletResponse.SC_OK,
-        FiscalAeatSubmissionSupport.resultJson(result,
-            declarationDataJson(decl, year, period, snapshot)));
+        FiscalAeatSubmissionSupport.withPreValidation(FiscalAeatSubmissionSupport.resultJson(
+            result, declarationDataJson(decl, year, period, snapshot)), validation));
   }
 
   /**
    * Runs the validation that precedes a real presentation and, when it stops the presentation,
-   * answers the request ({@link #answerStoppedByValidation}). Returns {@code true} when the
-   * presentation must not go ahead.
+   * answers the request ({@link #answerStoppedByValidation}). Returns the validation: the
+   * presentation goes ahead only when it {@code proceed()}s, and its answer reports a validation
+   * with no verdict ({@link FiscalAeatSubmissionSupport#withPreValidation}).
    */
-  private boolean stoppedByValidation(AEAT303SubmissionService service,
+  private FiscalAeatSubmissionSupport.PreSubmissionValidation validateOrAnswer(AEAT303SubmissionService service,
       FiscalAeatAttemptLog.Declaration attempted, FiscalAeatSubmissionSupport.FileToPresent file,
       FiscalDecl decl, HttpServletResponse response) throws Exception {
     FiscalAeatSubmissionSupport.PreSubmissionValidation validation =
         FiscalAeatSubmissionSupport.validateBeforeSubmission(service, owner.attemptLog, attempted,
             file);
     if (validation.proceed()) {
-      return false;
+      return validation;
     }
     answerStoppedByValidation(validation, decl, attempted.declId(), attempted.year(),
         attempted.period(), response);
-    return true;
+    return validation;
   }
 
   /**

@@ -319,7 +319,11 @@ error code `EV0`. Any other error — another `EV0` text, or a real error next t
 errorCode: "NOT_VALIDATED", errors: [<the AEAT text>] }` and stores no incident; the validation that
 precedes a **real** presentation treats it as "no answer", so the presentation follows
 `PRESENT_WHEN_VALIDATOR_UNANSWERED` (goes ahead). An `EV0` returned by the filing service itself
-(PresBasicaDos) is not matched: it stays an error.
+(PresBasicaDos) is not matched: it stays an error. The presentation that goes ahead without a verdict —
+"model not available" or no answer at all — answers with `"preValidation": "NOT_VALIDATED"`, on
+success and on failure alike (`200 SUCCESS` / `200 ERROR` / `502 SUBMISSION_FAILED`); an accepted
+validation, and test mode, leave the field out (`FiscalAeatSubmissionSupport.withPreValidation`,
+shared with `/fiscal303/submit`).
 
 **Validation PDF.** An `accepted` answer carries the validator's draft PDF. It is attached to
 the declaration as `VALIDACION-390-<year>-0A.pdf`, as proof that the file was validated — it is not a filing

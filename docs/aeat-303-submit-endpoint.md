@@ -440,4 +440,12 @@ stores no incident. An `EV0` returned by the filing service itself (PresBasicaDo
 it stays an error. Same rule as `/fiscal390/submit` — see `aeat-390-endpoints.md` ("Model not
 available" is not a rejection).
 
+**`preValidation` on the presentation's answer (ETP-5716).** When a real presentation goes ahead
+without a verdict from that validation — no answer, an answer with neither a PDF nor an error, or
+"model not available" (`PreSubmissionValidation.notValidated`) — its answer carries
+`"preValidation": "NOT_VALIDATED"`, on success (`200 SUCCESS`) and on failure alike (`200 ERROR`
+from PresBasicaDos, `502 SUBMISSION_FAILED`). An accepted validation, and test mode, leave the
+field out. The front end says, next to the result, that the file was presented without being
+validated first (`FiscalAeatSubmissionSupport.withPreValidation`).
+
 Shared with `/fiscal390/submit`; attempt rows: `aeat-attempt-log.md`.

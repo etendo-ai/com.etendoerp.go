@@ -137,16 +137,33 @@ final class FiscalAeatSubmissionSupport {
   static final int VALIDATION_CONNECT_TIMEOUT_MILLIS = 10_000;
   static final int VALIDATION_READ_TIMEOUT_MILLIS = 30_000;
 
+  /**
+   * {@code preValidation} value of a real presentation's answer when its validation got no
+   * verdict ({@link PreSubmissionValidation#notValidated}).
+   */
+  static final String PRE_VALIDATION_NOT_VALIDATED = "NOT_VALIDATED";
+  /** Field of a real presentation's answer that reports a validation with no verdict. */
+  static final String PARAM_PRE_VALIDATION = "preValidation";
+
   /** What the validation before a presentation decided. */
   static final class PreSubmissionValidation {
     /** The validator's rejection: the presentation must not go ahead. Null otherwise. */
     final AEAT303SubmissionResult rejected;
     /** No answer and the policy is to stop ({@link #PRESENT_WHEN_VALIDATOR_UNANSWERED}). */
     final boolean unavailable;
+    /**
+     * No verdict was obtained — the validator did not answer, or answered without accepting or
+     * rejecting the file ("model not available", EV0). The presentation may still go ahead
+     * ({@link #PRESENT_WHEN_VALIDATOR_UNANSWERED}); its answer then says the file was not
+     * validated first ({@link #withPreValidation}).
+     */
+    final boolean notValidated;
 
-    private PreSubmissionValidation(AEAT303SubmissionResult rejected, boolean unavailable) {
+    private PreSubmissionValidation(AEAT303SubmissionResult rejected, boolean unavailable,
+        boolean notValidated) {
       this.rejected = rejected;
       this.unavailable = unavailable;
+      this.notValidated = notValidated;
     }
 
     /** True when the real presentation goes ahead. */
@@ -201,12 +218,27 @@ final class FiscalAeatSubmissionSupport {
     // Only a verdict decides: an answer that is neither accepted nor carries a single error is
     // "no answer", never a rejection.
     if (outcome.outcome() == FiscalAeatValidationOutcome.Outcome.REJECTED) {
-      return new PreSubmissionValidation(result, false);
+      return new PreSubmissionValidation(result, false, false);
     }
     if (outcome.outcome() == FiscalAeatValidationOutcome.Outcome.ACCEPTED) {
-      return new PreSubmissionValidation(null, false);
+      return new PreSubmissionValidation(null, false, false);
     }
-    return new PreSubmissionValidation(null, !PRESENT_WHEN_VALIDATOR_UNANSWERED);
+    return new PreSubmissionValidation(null, !PRESENT_WHEN_VALIDATOR_UNANSWERED, true);
+  }
+
+  /**
+   * Marks a real presentation's answer — success or failure — with
+   * {@code preValidation: "NOT_VALIDATED"} when the validation that preceded it got no verdict, so
+   * the user learns the file was presented without being validated first. An accepted validation
+   * (or none, in test mode: {@code validation == null}) leaves the answer unchanged. Returns
+   * {@code answer}.
+   */
+  static JSONObject withPreValidation(JSONObject answer, PreSubmissionValidation validation)
+      throws Exception {
+    if (validation != null && validation.notValidated) {
+      answer.put(PARAM_PRE_VALIDATION, PRE_VALIDATION_NOT_VALIDATED);
+    }
+    return answer;
   }
 
   private static void restoreTimeouts(AEAT303SubmissionService service) {
