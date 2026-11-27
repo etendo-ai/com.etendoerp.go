@@ -1447,46 +1447,28 @@ On a create the order is: explicit `parentId`, then the link value of the body. 
 naming both parents), since persistence would keep one and the check would judge the other. Ids are
 compared ignoring case.
 
+**The link to the parent is not judged (ETP-6470).** On a child tab, the link-to-parent property
+(the first active column the AD flags `IsParent`, when its target is the parent tab's entity) is
+skipped by the selector check on a create, and on an update that keeps the stored parent, on every
+channel. The app never offers it in a
+picker: it fills it with the record the user is standing on. Its selector belongs to the header
+field and filters for that use, so judging the link refused legitimate parents: the Business Partner
+window is a sales window, so the merged context gets `isCustomer=Y` from the window direction, and
+the default business-partner selector (`ContextParamSelectorPolicy`) then lists customers only.
+Creating an address (`C_BPartner_Location`) under a vendor-only partner from the SPA Contacts
+window answered 422 `REFERENCE_NOT_ALLOWED`. The link still decides the parent of the merged context.
+Nothing about the parent goes unchecked: `NeoReferenceOwnership` refuses a link value or `parentId`
+of another tenant before this check (`NeoWritePreflight` for REST single and `/batch`, the MCP
+create/update router). A create naming two different parents is still refused, as described above.
+On an update the exemption holds only while the link keeps the stored parent: an update that sends
+a different link value moves the record (NEO does not enforce `IsUpdateable` on the link), and that
+changed link is judged by its selector like any other reference, besides the ownership check. Only a tab that has
+a parent tab qualifies: on a header tab a column flagged as a link stays a picker choice and keeps
+its selector.
+
 **`.id` spelling.** A body key `<reference>.id` is treated as `<reference>`, as
 `NeoReferenceOwnership` already does, so it cannot skip the selector check. A body sending both
 spellings with different ids (compared ignoring case) is refused, with a `detail` naming both.
-
-**Rule variables are read regardless of case (ETP-6452).** A selector whose validation rule is SQL
-runs through core's `ComboTableData`, which asks for each variable exactly as the rule spells it
-(`@FIN_Financial_Account_ID@`, `@FIN_PaymentMethod_ID@`, `@IsReceipt@`), while the context
-publishes a field under its AD column name (`Fin_Financial_Account_ID`, `Fin_Paymentmethod_ID`,
-`Isreceipt`). The lookup was exact, so the rule "Currency of Financial Account" resolved empty and
-the payment-out `currency` the form proposed (EUR for "Caja - EUR") was refused. The context now
-reaches `ComboTableData` through `ComboReferenceSelectorExecutor.contextFields`: exact name first,
-then any casing — what Classic does (the form sends `inp`+camelCase) and what the HQL route
-(`SelectorValidationResolver`) already did. Structural, no name is special; it applies to the
-selector endpoint (REST `…/selectors/{field}`, MCP `etendo_selectors`) and to this check alike. The
-window's direction no longer shadows a direction flag the record carries under another casing
-(`IsReceipt` is added only when no `isreceipt` of any casing is there), and each layer of the merged
-record (parent, stored row, request) drops the casings an earlier layer wrote for the same name, so a
-parent's `FIN_X` never competes with the record's `Fin_X`. Where two other casings still hold
-different values (a selector endpoint request), the first in natural order answers, never hash order.
-
-**What the base defaults propose is accepted on a create (ETP-6452).** A value the selector does
-not offer is still accepted on a **create** when it is exactly the value the **base defaults**
-propose for that field in the record's context — `NeoDefaultsService.resolveDefaults` with the
-other fields the request sets as the record context (`/defaults?field=value`, ETP-5852) and the parent, never the
-judged field itself (it would trivially "default" to what was sent). Case: purchase-order
-`salesRepresentative` defaults to the session user (`#SalesRep_ID`), whom the "AD_User SalesRep"
-selector does not list when that user has no business partner; a client echoing `/defaults` got a
-422. Narrow on purpose: computed only on the refusal path (an offered value pays nothing), exact id
-equality, updates unchanged, defaults that cannot be computed accept nothing. **Base defaults
-only:** a `DEFAULTS` customization (`handle`/`afterHandle`) is not consulted, so a value only such a
-customization proposes is still judged by the selector. REST (`NeoSubEndpointDispatcher` →
-`NeoHookDispatcher`) and MCP (`McpToolRouter` → `NeoExtensionDispatcher`) wire that dispatch
-separately, there is no shared entry point to call, and those handlers read the servlet request,
-which inside a write is the POST. Another request field's callout can derive the judged one, so two
-fields could vouch for each other; accepted, the form derives the same values from the same input.
-The callout cascade this runs puts the caller's `RequestContext` request and variables back when
-each callout ends (`NeoCalloutService.CalloutRequestSwap`); before, the synthetic callout request
-stayed installed for the rest of the request.
-It sits in `NeoReferenceSelectorValidation`, which REST single, `/batch` and MCP all reach, so the
-three channels behave the same; no divergence to declare in §4.12.9.
 
 **Stored-row reads are client-scoped.** The stored record and the parent are loaded only when they
 belong to a client the caller may read; otherwise they read as missing.
@@ -1533,9 +1515,7 @@ pick the currency from `currencyOptions` (`CurrencyRatePicker`, matched by the S
 selector, so the change is MCP-only and no screen changes.
 
 Tests: `NeoReferenceSelectorValidationTest` (including the customization answer that replaces or
-defers to the selector, and the echoed `/defaults` value on a create), `CurrencyOptionsHandlerTest`
-(`offersHeaderCurrency`), `ComboReferenceSelectorExecutorTest` (`contextFields`),
-`NeoCalloutServiceTest` (`CalloutRequestSwap`).
+defers to the selector), `CurrencyOptionsHandlerTest` (`offersHeaderCurrency`).
 
 #### 4.3.9 Document actions over REST: refusal and idempotency (ETP-5783)
 
