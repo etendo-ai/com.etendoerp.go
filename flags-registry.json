@@ -933,7 +933,7 @@
           {
             "path": "src-test/src/com/etendoerp/go/schemaforge/handlers/ConversionRateFlagGateTest.java",
             "expected": true,
-            "note": "Table-driven isGated (tester-go; extend ConversionRateHandlerTest instead if it stays small): ACTION gated/ungated names, CRUD POST/PUT/PATCH/DELETE gated, GET and SELECTOR/DEFAULTS/CALLOUT never gated, null context false."
+            "note": "Table-driven ConversionRateFlagGate.isGated (tester-go; extending ConversionRateHandlerTest is acceptable): gated and ungated ACTION names, CRUD POST/PUT/PATCH/DELETE gated, GET and SELECTOR/DEFAULTS/CALLOUT/READ never gated, null context false; UNGATED_CONTRACTS holds serverClock, currentRates, manualCurrencyOptions only."
           }
         ],
         "e2e": []
