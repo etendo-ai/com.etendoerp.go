@@ -17796,26 +17796,46 @@ an agent prompt. The domain owners (returns, finance) still have to validate the
 | `RMInsertOrphanLine` | `sales-order/header` and `purchase-order/header`, `rMAddOrphanLine` | **Not offered** | The field is not included (curated `discarded`); *Action not found*. `sales-quotation/quotation` includes it and hides `RM_AddOrphanLine` explicitly; the return specs that include it are not shown to MCP (`SHOWINMCP=N`). Returns declare `importShipmentLines` / `importReceiptLines` for adding lines. |
 | `UpdatePaymentPlan` | `sales-invoice/paymentPlan`, `purchase-invoice/paymentPlan`, `updatePaymentPlan` | **Hidden** (`actions.hidden`) | A Classic process (`AD_PROCESS` `UpdatePaymentPlan`, parameters `DueDate` and `FIN_Payment_Priority_ID`) that changes an installment's due date and payment priority; Classic does not display it on the Payment Plan tabs. Before it was hidden it was still callable (live, with a real installment id it failed with *id to load is required for loading*). The installments change only through the invoice's payments (`registerPayment`). |
 
-#### 4.12.45 Which Etendo this is: server `instructions` and `etendo_how_to` (ETP-6421)
+#### 4.12.45 Which Etendo this is, and how the tools fit: server `instructions` and `etendo_how_to` (ETP-6421)
 
 Asked "where do I manage price lists in Etendo?", models answered with Etendo Classic menu paths (the
-SmartClient ERP, which their training knows), not the web app this server belongs to. Two channels now
-say which Etendo this is, with the same text (`McpHowToTool.INSTRUCTIONS`): it is the web app, not Etendo
-Classic; never guide with Classic or Openbravo menu paths; to say where something is done, call
-`etendo_discover` and give the user `windowName` and `windowUrl` (§4.12.2); say so when the tools do not
-show it.
+SmartClient ERP, which their training knows), not the web app this server belongs to, and nothing gave
+them an overview of the tools. Two channels now carry it (`McpHowToTool`):
 
-- **Server `instructions`**, in the `initialize` result and at the top level of `server/discover`. Claude
-  Code, ChatGPT and Cursor put it in the model's context at connection. The essentials are in the first
-  512 characters (OpenAI's guidance) and the whole text stays under Claude Code's 2 KB cut.
+- `PRODUCT`: it is the web app, not Etendo Classic; never guide with Classic or Openbravo menu paths; to
+  say where something is done, call `etendo_discover` and give the user `windowName` and `windowUrl`
+  (§4.12.2); say so when the tools do not show it.
+- `USAGE`: how the tools are used, in task order: context (`etendo_whoami`), find (`etendo_discover`,
+  `etendo_vector_search`), understand a spec (`etendo_schema`, `view:'actions'`, `etendo_selectors`,
+  `etendo_defaults`), read (`etendo_list`, `etendo_get`), write (`etendo_create` with `parentId`,
+  `etendo_update` after `etendo_get`, `etendo_delete`, `etendo_action`, `etendo_batch` +
+  `etendo_job_status`), documents and reports; rules (never invent ids, read the error, confirm an
+  irreversible step the user did not ask for, `etendo_feedback`, `docs` topic `mcp`).
+- `ROUTINES`, only where `etendo_routine` is offered (`mcp-routines` flag, `McpRoutinesFlag`): run a saved
+  routine that fits, use `exec` for a known multi-step flow, and after a repeated flow OFFER to save it
+  (`save` with `fromExecution`), never without the user's OK.
+
+The `docs` tool description no longer sends the agent there "before answering questions about Etendo":
+it is for concepts and this API's reference (topic `mcp`), not for where a screen is, since parts of the
+documentation describe Etendo Classic.
+
+- **Server `instructions`** (`INSTRUCTIONS` = `PRODUCT` + a pointer to `etendo_how_to`, saying routines are
+  expected to be reused when `etendo_routine` is listed), in the `initialize` result and at the top level
+  of `server/discover`. Claude Code, ChatGPT and Cursor put it in the model's context at connection. The
+  essentials are in the first 512 characters (OpenAI's guidance) and the whole text stays under Claude
+  Code's 2 KB cut. It is the same for every caller (`server/discover` is public and cached), so the
+  routines part is conditional on the tool being listed instead of on the flag.
 - **Tool `etendo_how_to`**, for clients that ignore `instructions`. Claude desktop and claude.ai drop
   them (anthropics/claude-ai-mcp#93, open in 2026-11) and show the model only deferred tool names until it
   searches, so the name is the only signal. In a name test (simulated deferred list, two Claude models,
   "how/where do I … in Etendo" questions), the model looked up `etendo_how_to` first in 41 of 42 runs;
   `etendo_start_here` in 14, `etendo_help` in 27, and with no such tool it answered from memory in 39.
   - No arguments (any is refused), read scope, read-only/idempotent hints, first in `tools/list`.
-  - Returns `{guide, appUrl}`: `guide` is the instructions text, `appUrl` the instance's app base URL when
-    configured.
+  - Returns `{product, usage, routines?, appUrl?}`. `routines` (flag on) is `{guide, yours, more?}`:
+    `yours` lists the caller's saved routines by name and description, at most 20, `more` counts the
+    rest; a failed lookup leaves `yours` out and keeps the guide. `appUrl` is the instance's app base
+    URL when configured.
+  - Its description names routines only when the flag is on (`tools/list` is per caller).
   - Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code loads it with
     the session instead of deferring it. claude.ai ignores the flag today (anthropics/claude-ai-mcp#1105).
   - Telemetry verb `how_to`.
