@@ -114,7 +114,7 @@ final class ConversionRateResponses {
       return writes.overlapAfterFailure();
     } catch (RuntimeException e) {
       log.debug("Could not read the colliding range again: {}", e.getMessage());
-      return ConversionRateRefusal.overlapOf(null, null, null, null);
+      return ConversionRateRefusal.overlapOf(null, null, null, null, null);
     }
   }
 

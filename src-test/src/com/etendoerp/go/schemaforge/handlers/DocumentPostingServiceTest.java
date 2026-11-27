@@ -482,9 +482,9 @@ public class DocumentPostingServiceTest {
    * ETP-5714 (round 2): "retry in 30 seconds" is a lie when costing is stuck — in a live tenant the
    * background process ran every 30 s but aborted on the first transaction it could not cost, so
    * everything behind it waited for ever. When the oldest uncalculated transaction of the
-   * document's organisation is older than the threshold the answer says costing looks stalled and
-   * that retrying will not help: its own code and key, {@code retryable:false}, no
-   * {@code Retry-After}.
+   * document's organisation is older than the threshold the answer is still 409
+   * {@code costNotCalculated} (ETP-6406: one code for one cause), flagged {@code stalled:true}
+   * with its own message key, {@code retryable:false} and no {@code Retry-After}.
    */
   @Test
   public void handleActionAnswersStalledCostingAsNotRetryable() throws Exception {
@@ -515,15 +515,16 @@ public class DocumentPostingServiceTest {
 
       NeoResponse resp = svc.handleAction(mockPostActionContext());
 
-      assertEquals(422, resp.getHttpStatus());
+      assertEquals(409, resp.getHttpStatus());
       assertNull(resp.getHeaders().get("Retry-After"));
       JSONObject body = resp.getBody();
-      assertEquals("costCalculationStalled", body.getString("error"));
+      assertEquals("costNotCalculated", body.getString("error"));
+      assertTrue(body.getBoolean("stalled"));
       assertFalse(body.getBoolean("retryable"));
       assertFalse(body.has("retryAfterSeconds"));
       assertEquals("ETGO_CostCalculationStalled", body.getJSONArray("messageKeys").getString(0));
       assertEquals("Cost calculation looks stalled.", body.getString("message"));
-      assertTrue(body.getString("hint"), body.getString("hint").contains("administrator"));
+      assertTrue(body.getString("hint"), body.getString("hint").contains("missing product costs"));
     }
   }
 
@@ -3508,7 +3509,7 @@ public class DocumentPostingServiceTest {
 
   // ---------------------------------------------------------------------------------------------
   // ETP-6406: the cost pre-check answers like a goods document (ETP-5714) — a retryable 409
-  // costNotCalculated, or a 422 costCalculationStalled when the organisation's costing queue is
+  // costNotCalculated, or the same 409 flagged stalled (not retryable) when the org's costing queue is
   // stuck — instead of a plain 422 with no retry guidance.
   // ---------------------------------------------------------------------------------------------
 
@@ -3576,7 +3577,7 @@ public class DocumentPostingServiceTest {
   /**
    * ETP-6406 — when an uncalculated transaction of the document's organisation is older than the
    * threshold, costing is stuck: the pre-check answers the non-retryable
-   * {@code costCalculationStalled} 422, as a goods document does (ETP-5714).
+   * 409 flagged {@code stalled}, as a goods document does (ETP-5714).
    */
   @Test
   public void testUncalculatedInternalConsumptionWithStalledCostingIsNotRetryable() throws Exception {
@@ -3596,10 +3597,12 @@ public class DocumentPostingServiceTest {
 
       assertFalse(r.ok());
       assertEquals(List.of("ETGO_CostCalculationStalled"), r.messageKeys());
-      assertEquals(422, resp.getHttpStatus());
+      assertEquals(409, resp.getHttpStatus());
       assertNull(resp.getHeaders().get("Retry-After"));
-      assertEquals("costCalculationStalled", resp.getBody().getString("error"));
+      assertEquals("costNotCalculated", resp.getBody().getString("error"));
+      assertTrue(resp.getBody().getBoolean("stalled"));
       assertFalse(resp.getBody().getBoolean("retryable"));
+      assertFalse(resp.getBody().has("retryAfterSeconds"));
       acctStatic.verify(
           () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
     }
@@ -3707,7 +3710,7 @@ public class DocumentPostingServiceTest {
     }
   }
 
-  /** ETP-6406 — the same Goods Movement with the organisation's costing stuck: 422 stalled. */
+  /** ETP-6406 — the same Goods Movement with the organisation's costing stuck: 409 stalled. */
   @Test
   public void testUncalculatedGoodsMovementWithStalledCostingIsNotRetryable() throws Exception {
     DocumentPostingService svc = new DocumentPostingService();
@@ -3724,7 +3727,7 @@ public class DocumentPostingServiceTest {
           svc.post(TABLE_ID_M_MOVEMENT, MOVEMENT_RECORD_ID, mock(ConnectionProvider.class));
 
       assertEquals(List.of("ETGO_CostCalculationStalled"), r.messageKeys());
-      assertEquals(422, svc.toResponse(r, MOVEMENT_RECORD_ID).getHttpStatus());
+      assertEquals(409, svc.toResponse(r, MOVEMENT_RECORD_ID).getHttpStatus());
       acctStatic.verify(
           () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
     }

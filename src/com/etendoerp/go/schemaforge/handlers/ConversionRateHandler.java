@@ -27,6 +27,7 @@ import org.apache.logging.log4j.Logger;
 import org.openbravo.model.common.currency.ConversionRate;
 
 import com.etendoerp.go.schemaforge.AbstractNeoHandler;
+import com.etendoerp.go.schemaforge.CurrencyConversionV2Flag;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoErrorResponses;
@@ -56,6 +57,13 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  *
  * <p>Reads are the generic ones; {@code etgoRateStatus} (CURRENT / HISTORIC, a list reference) is
  * a virtual AD column.</p>
+ *
+ * <p><b>Feature flag {@code currency-conversion-v2}</b> ({@link CurrencyConversionV2Flag}, per
+ * account): while it is off every write of this entity — the write actions, their preview, the
+ * delete and a generic create/update — answers 403 {@code feature_disabled} before anything else,
+ * and {@link #actionContracts()} stops declaring those actions to the MCP. What is gated lives in
+ * {@link ConversionRateFlagGate}; the {@link #featureEnabled()} checks below are its only toggle
+ * points (handle, refusalForReadOnlyTarget, actionContracts).</p>
  */
 @NeoExtension(spec = "conversion-rates", entity = "conversionRate")
 public class ConversionRateHandler extends AbstractNeoHandler {
@@ -73,6 +81,9 @@ public class ConversionRateHandler extends AbstractNeoHandler {
    */
   @Override
   public NeoResponse handle(NeoContext context) {
+    if (ConversionRateFlagGate.isGated(context) && !featureEnabled()) {
+      return CurrencyConversionV2Flag.featureDisabled();
+    }
     NeoEndpointType type = context.getEndpointType();
     if (type == NeoEndpointType.ACTION) {
       return ConversionRateActions.serves(context.getFieldName()) ? runAction(context) : null;
@@ -117,6 +128,9 @@ public class ConversionRateHandler extends AbstractNeoHandler {
     if (recordId == null) {
       return null;
     }
+    if (!featureEnabled()) {
+      return CurrencyConversionV2Flag.featureDisabled();
+    }
     try {
       enterAdminMode();
       new ConversionRateWrites(store()).writableRate(recordId);
@@ -153,9 +167,20 @@ public class ConversionRateHandler extends AbstractNeoHandler {
     }
   }
 
+  /**
+   * The actions declared to the MCP: all of them while {@code currency-conversion-v2} is on for the
+   * request user, only the reads while it is off ({@link ConversionRateFlagGate}).
+   *
+   * @return the declared actions
+   */
   @Override
   public Map<String, NeoActionContract> actionContracts() {
-    return ConversionRateActions.CONTRACTS;
+    return ConversionRateFlagGate.declaredContracts(featureEnabled());
+  }
+
+  /** The {@code currency-conversion-v2} flag for the request user; a seam for unit tests. */
+  boolean featureEnabled() {
+    return CurrencyConversionV2Flag.isEnabled();
   }
 
   /** The reads; a seam for unit tests. */

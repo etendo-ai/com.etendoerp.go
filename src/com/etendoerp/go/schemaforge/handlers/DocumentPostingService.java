@@ -456,7 +456,7 @@ public class DocumentPostingService {
    * gets from {@link #failureOf} when core reports {@code STATUS_NotCalculatedCost} (ETP-5714), so
    * an agent posting an Internal Consumption or a Physical Inventory is told to wait and repeat
    * (409 {@code costNotCalculated}, {@code retryAfterSeconds}) or, when costing is stuck, not to
-   * retry (422 {@code costCalculationStalled}). Before, this pre-check answered a plain 422 with
+   * retry automatically (the same 409 flagged {@code stalled:true}, {@code retryable:false}). Before, this pre-check answered a plain 422 with
    * no retry guidance, so the agent fell back to the AD {@code Posted} button and core's broken
    * message.
    *
@@ -603,7 +603,7 @@ public class DocumentPostingService {
 
   /**
    * The action-endpoint answer for a post/unpost result: 200 on success, 422 (or the costing
-   * stall answers) on failure, always the flat {@code success/message[/messageKeys]} body.
+   * 409 answers) on failure, always the flat {@code success/message[/messageKeys]} body.
    *
    * @param result   the post/unpost outcome
    * @param recordId the record, for the log only

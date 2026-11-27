@@ -104,10 +104,10 @@ public final class InventoryPostingContracts {
             + "period also answers 422 with the reason. Nothing changes on a refusal. Cost is "
             + "calculated by a background process about every 30 seconds, so posting right after "
             + "processing can answer 409 costNotCalculated with retryAfterSeconds 30 (nothing was "
-            + "posted): wait that long and repeat the same call. If it answers 422 "
-            + "costCalculationStalled (retryable false), costing is stuck, not slow: do not retry, "
-            + "tell the user an administrator must check the Costing Background process. Takes no "
-            + "parameters; never use the AD Posted button instead.")
+            + "posted): wait that long and repeat the same call. If the 409 carries stalled:true "
+            + "(retryable false), cost has been pending for more than 10 minutes, usually a product "
+            + "with no cost: do not retry automatically, tell the user to fix the missing costs, "
+            + "then post again. Takes no parameters; never use the AD Posted button instead.")
         .withIdDescription(ID_DESCRIPTION)
         .availableWhen(whenDone.andWhen(DocumentAvailability.PROP_POSTED, NOT_POSTED)));
     contracts.put(InvoicePostingGate.ACTION_UNPOST, NeoActionContract.write(

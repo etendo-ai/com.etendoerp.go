@@ -62,7 +62,8 @@ import com.etendoerp.go.schemaforge.BankStatementLineSet.BankIdentity;
  * The part of a statement edit ({@code bank-statements?action=update}) that keeps a rebuilt line's
  * bank identity (ETP-5581): {@link BankStatementLineSet#bankIdentitiesOfUnmatched} reads, before
  * the unmatched lines are deleted, the PSD2 transaction id, the discard flag and button and the
- * bounce-pair link; {@link BankStatementLineSet#restoreBankIdentity} writes them back on the line
+ * bounce-pair link and the "No es un rechazo" mark; {@link BankStatementLineSet#restoreBankIdentity}
+ * writes them back on the line
  * rebuilt from the same {@code "id"}; {@link BankStatementLineSet#relinkBouncePairs} relinks the
  * pairs once every line has its new id — between two rebuilt lines of one statement, or in both
  * directions with a counterpart kept in another statement.
@@ -78,6 +79,7 @@ import com.etendoerp.go.schemaforge.BankStatementLineSet.BankIdentity;
 class BankStatementLineSetTest {
 
   private static final Date DISCARDED_AT = new Date(1_780_000_000_000L);
+  private static final Date DISMISSED_AT = new Date(1_781_000_000_000L);
 
   private final Map<String, String> mappedColumns = new HashMap<>();
   private MockedStatic<ModelProvider> modelStatic;
@@ -93,7 +95,8 @@ class BankStatementLineSetTest {
     for (String column : new String[] { StatementLineDiscard.COL_IS_DISCARDED,
         StatementLineDiscard.COL_DISCARD_LINE, StatementLineDiscard.COL_TRANSACTION_IDENTIFIER,
         BankBouncePairService.COL_PAIR_LINE, BankBouncePairService.COL_DISCARDED_AT,
-        BankBouncePairService.COL_SIGNAL, BankBouncePairService.COL_CONFIDENCE }) {
+        BankBouncePairService.COL_SIGNAL, BankBouncePairService.COL_CONFIDENCE,
+        BankBounceDismissal.COL_DISMISSED_AT }) {
       mappedColumns.put(column.toUpperCase(Locale.ROOT), prop(column));
     }
     ModelProvider model = mock(ModelProvider.class);
@@ -153,8 +156,8 @@ class BankStatementLineSetTest {
 
       assertEquals(2, identities.size(), "a manual line with nothing to keep is left out");
       assertEquals(new BankIdentity("TX-1", true, "Y", "L-IN", DISCARDED_AT, "return_text",
-          "high"), identities.get("L-OUT"));
-      assertEquals(new BankIdentity("TX-2", false, null, null, null, null, null),
+          "high", null), identities.get("L-OUT"));
+      assertEquals(new BankIdentity("TX-2", false, null, null, null, null, null, null),
           identities.get("L-PSD2"));
       ArgumentCaptor<Criterion> restrictions = ArgumentCaptor.forClass(Criterion.class);
       verify(crit, org.mockito.Mockito.atLeastOnce()).add(restrictions.capture());
@@ -179,6 +182,35 @@ class BankStatementLineSetTest {
       assertTrue(identity.discarded());
       assertFalse(identity.isEmpty());
     }
+
+    /** A line whose only data is the "No es un rechazo" mark is still captured. */
+    @Test
+    @DisplayName("a line whose only data is the not-a-rejection mark is still captured")
+    void dismissedMarkAloneIsKept() {
+      Map<String, Object> values = new HashMap<>();
+      values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), DISMISSED_AT);
+      criteria(List.of(line("L-1", values)));
+
+      BankIdentity identity = BankStatementLineSet
+          .bankIdentitiesOfUnmatched(mock(FIN_BankStatement.class)).get("L-1");
+
+      assertEquals(new BankIdentity(null, false, null, null, null, null, null, DISMISSED_AT),
+          identity);
+      assertFalse(identity.isEmpty());
+    }
+
+    /** With the mark column not mapped yet, a line carrying only the mark has nothing to keep. */
+    @Test
+    @DisplayName("with the mark column not mapped, a line carrying only the mark is left out")
+    void unmappedMarkIsNotRead() {
+      mappedColumns.remove(BankBounceDismissal.COL_DISMISSED_AT.toUpperCase(Locale.ROOT));
+      Map<String, Object> values = new HashMap<>();
+      values.put(prop(BankBounceDismissal.COL_DISMISSED_AT), DISMISSED_AT);
+      criteria(List.of(line("L-1", values)));
+
+      assertTrue(BankStatementLineSet.bankIdentitiesOfUnmatched(mock(FIN_BankStatement.class))
+          .isEmpty());
+    }
   }
 
   @Nested
@@ -193,7 +225,7 @@ class BankStatementLineSetTest {
       FIN_BankStatementLine rebuilt = line("NEW-1", values);
 
       BankStatementLineSet.restoreBankIdentity(rebuilt, new BankIdentity("TX-1", true, "Y",
-          "L-IN", DISCARDED_AT, "pis_link", "high"));
+          "L-IN", DISCARDED_AT, "pis_link", "high", null));
 
       assertEquals("TX-1", values.get(prop(StatementLineDiscard.COL_TRANSACTION_IDENTIFIER)));
       assertEquals(Boolean.TRUE, values.get(prop(StatementLineDiscard.COL_IS_DISCARDED)));
@@ -203,6 +235,23 @@ class BankStatementLineSetTest {
       assertEquals("high", values.get(prop(BankBouncePairService.COL_CONFIDENCE)));
       assertFalse(values.containsKey(prop(BankBouncePairService.COL_PAIR_LINE)),
           "the link itself waits for relinkBouncePairs, once every line has its new id");
+      assertFalse(values.containsKey(prop(BankBounceDismissal.COL_DISMISSED_AT)),
+          "no mark captured, none written");
+    }
+
+    /** The "No es un rechazo" mark is written back on the rebuilt line. */
+    @Test
+    @DisplayName("writes the not-a-rejection mark back")
+    void writesTheMarkBack() {
+      Map<String, Object> values = new HashMap<>();
+      FIN_BankStatementLine rebuilt = line("NEW-1", values);
+
+      BankStatementLineSet.restoreBankIdentity(rebuilt,
+          new BankIdentity("TX-1", false, null, null, null, null, null, DISMISSED_AT));
+
+      assertEquals(DISMISSED_AT, values.get(prop(BankBounceDismissal.COL_DISMISSED_AT)));
+      assertEquals("TX-1", values.get(prop(StatementLineDiscard.COL_TRANSACTION_IDENTIFIER)));
+      assertFalse(values.containsKey(prop(StatementLineDiscard.COL_IS_DISCARDED)));
     }
 
     /** A discarded identity with no captured button gets the discarded value Y. */
@@ -211,7 +260,7 @@ class BankStatementLineSetTest {
     void missingButtonDefaultsToDiscarded() {
       Map<String, Object> values = new HashMap<>();
       BankStatementLineSet.restoreBankIdentity(line("NEW-1", values),
-          new BankIdentity(null, true, null, null, null, null, null));
+          new BankIdentity(null, true, null, null, null, null, null, null));
 
       assertEquals(StatementLineDiscard.BUTTON_DISCARDED,
           values.get(prop(StatementLineDiscard.COL_DISCARD_LINE)));
@@ -225,7 +274,7 @@ class BankStatementLineSetTest {
       Map<String, Object> values = new HashMap<>();
 
       BankStatementLineSet.restoreBankIdentity(line("NEW-1", values),
-          new BankIdentity("TX-1", true, "Y", null, null, null, null));
+          new BankIdentity("TX-1", true, "Y", null, null, null, null, null));
 
       assertEquals("TX-1", values.get(prop(StatementLineDiscard.COL_TRANSACTION_IDENTIFIER)));
       assertFalse(values.containsKey(prop(StatementLineDiscard.COL_IS_DISCARDED)));
@@ -237,10 +286,11 @@ class BankStatementLineSetTest {
     void writesOnlyWhatThereIs() {
       FIN_BankStatementLine rebuilt = line("NEW-1", new HashMap<>());
       BankStatementLineSet.restoreBankIdentity(rebuilt,
-          new BankIdentity("TX-1", false, "N", null, null, null, null));
+          new BankIdentity("TX-1", false, "N", null, null, null, null, null));
       verify(rebuilt).set(prop(StatementLineDiscard.COL_TRANSACTION_IDENTIFIER), "TX-1");
       verify(rebuilt, never()).set(eq(prop(BankBouncePairService.COL_SIGNAL)), any());
       verify(rebuilt, never()).set(eq(prop(StatementLineDiscard.COL_IS_DISCARDED)), any());
+      verify(rebuilt, never()).set(eq(prop(BankBounceDismissal.COL_DISMISSED_AT)), any());
 
       FIN_BankStatementLine fresh = line("NEW-2", new HashMap<>());
       BankStatementLineSet.restoreBankIdentity(fresh, null);
@@ -317,7 +367,7 @@ class BankStatementLineSetTest {
       FIN_BankStatementLine newLine = line("NEW-1", new HashMap<>());
 
       BankStatementLineSet.relinkBouncePairs(
-          Map.of("OLD-1", new BankIdentity("TX-1", false, null, null, null, null, null)),
+          Map.of("OLD-1", new BankIdentity("TX-1", false, null, null, null, null, null, null)),
           Map.of("OLD-1", newLine));
 
       verify(newLine, never()).set(anyString(), any());
@@ -336,7 +386,7 @@ class BankStatementLineSetTest {
    */
   private static BankIdentity identity(String transactionId, String pairLineId) {
     return new BankIdentity(transactionId, true, "Y", pairLineId, DISCARDED_AT, "counterparty",
-        "review");
+        "review", null);
   }
 
   /**
