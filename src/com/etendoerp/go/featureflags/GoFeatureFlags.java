@@ -538,6 +538,33 @@ public final class GoFeatureFlags {
   public static final String FLAG_MCP_ROUTINES = "mcp-routines";
 
   /**
+   * ETP-6365 — the redesigned <b>Currency Conversion</b> window: manual conversion rates written
+   * through the {@code conversion-rates} actions. Positive polarity: {@code true} = the new
+   * behaviour; the default and every failure read {@code false}, which is the window as it was
+   * before ETP-6365 (read-only).
+   *
+   * <p><b>What it gates.</b> On the {@code conversion-rates/conversionRate} customization
+   * ({@code ConversionRateHandler}): the write actions {@code createManualCurrency},
+   * {@code createManualRate} and {@code updateManualRate} (each writes the rate and its inverse),
+   * their dry run {@code previewManualRate}, the {@code DELETE} of a rate and any generic create or
+   * update — off, 403 {@code feature_disabled} ({@code ETGO_CurrencyConversionV2Disabled}) on
+   * every channel (REST single, batch, MCP), and the customization stops declaring those actions
+   * to the MCP. <b>Not gated:</b> the reads, {@code serverClock}, {@code currentRates},
+   * {@code manualCurrencyOptions} and the {@code etgoRateStatus} column.
+   *
+   * <p><b>One reader.</b> Only {@code CurrencyConversionV2Flag} reads this key, evaluated per
+   * request and never cached. <b>Targeted per account</b>: the {@code ETGO_ACCOUNT} email of the
+   * request user, resolved as {@link #FLAG_BP_PORTAL_LINK} does; no account, no email or a failed
+   * lookup reads off. Locally {@code etendo.go.flags.currency-conversion-v2} /
+   * {@code ETGO_FLAG_CURRENCY_CONVERSION_V2}.
+   *
+   * <p><b>Backend-only</b>: never add it to {@code flag-keys.js}. The web client reads
+   * {@code capabilities.currencyConversionV2} off {@code SFWindowAccessMap} and never evaluates
+   * the flag. TTL 2027-03-31 (placeholder).
+   */
+  public static final String FLAG_CURRENCY_CONVERSION_V2 = "currency-conversion-v2";
+
+  /**
    * ConfigCat SDK key. Set ⇒ flags come from ConfigCat and can be flipped without a restart; unset
    * ⇒ {@link PropertiesFeatureProvider} resolves them from local configuration.
    */

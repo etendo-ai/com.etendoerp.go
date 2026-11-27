@@ -19,12 +19,11 @@ package com.etendoerp.go.schemaforge;
 
 import java.util.List;
 
-import javax.inject.Named;
-
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONArray;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.query.NativeQuery;
 import org.openbravo.dal.core.OBContext;
@@ -43,10 +42,13 @@ import com.etendoerp.go.schemaforge.util.NeoDateFormat;
  *
  * <p>All non-GET requests and single-record GETs fall through to the default handler.
  *
- * <p>Registered via {@code JAVA_QUALIFIER = 'productStockWarehouseHandler'} on the
- * {@code ETGO_SF_ENTITY} record for the {@code stock} entity of the {@code product} spec.
+ * <p>Each row also carries {@code etgoUomSymbol}, the {@code C_UOM.UOMSymbol} of the product's unit of
+ * measure (ETP-5908, PS-69), behind {@link ProductMovementsPolicy}; a UOM with no symbol leaves it out.
+ *
+ * <p>Bound to the {@code stock} entity of the {@code product} spec through {@link NeoExtension} (it was
+ * bound by {@code JAVA_QUALIFIER = 'productStockWarehouseHandler'}, cleared in the same change).
  */
-@Named("productStockWarehouseHandler")
+@NeoExtension(spec = "product", entity = "stock")
 public class ProductStockWarehouseHandler implements NeoHandler {
 
   private static final Logger log = LogManager.getLogger(ProductStockWarehouseHandler.class);
@@ -62,8 +64,11 @@ public class ProductStockWarehouseHandler implements NeoHandler {
       + "  COALESCE(sd.reservedqty, 0)   AS reserved_qty, "
       + "  COALESCE(sd.allocatedqty, 0)  AS allocated_qty, "
       + "  COALESCE(sd.m_attributesetinstance_id, '0') AS attribute_set_instance, "
-      + "  sd.updated                    AS updated "
+      + "  sd.updated                    AS updated, "
+      + "  u.uomsymbol                   AS uom_symbol "
       + "FROM m_storage_detail sd "
+      + "JOIN m_product p  ON p.m_product_id  = sd.m_product_id "
+      + "LEFT JOIN c_uom u ON u.c_uom_id      = p.c_uom_id "
       + "JOIN m_locator l  ON l.m_locator_id  = sd.m_locator_id "
       + "JOIN m_warehouse wh ON wh.m_warehouse_id = l.m_warehouse_id "
       + "WHERE sd.m_product_id = :productId "
@@ -101,26 +106,10 @@ public class ProductStockWarehouseHandler implements NeoHandler {
             ? List.of()
             : query.list();
 
+        final boolean withUnit = !rows.isEmpty() && ProductMovementsPolicy.isEnabled();
         JSONArray data = new JSONArray();
         for (Object[] row : rows) {
-          JSONObject item = new JSONObject();
-          item.put("id",                      row[0]);
-          item.put("storageBin",              row[1]);
-          item.put("storageBin$_identifier",  row[2]);
-          item.put("warehouse",               row[3]);
-          item.put("warehouse$_identifier",   row[4]);
-          item.put("quantityOnHand",          ProductHandlerUtils.toBigDecimal(row[5]));
-          item.put("reservedQty",             ProductHandlerUtils.toBigDecimal(row[6]));
-          item.put("allocatedQuantity",       ProductHandlerUtils.toBigDecimal(row[7]));
-          item.put("attributeSetValue",       row[8]);
-          // ETP-5220: the generic write path requires `updated` echoed back on every PUT/PATCH
-          // (NeoCrudHandler#validateUpdateRequest); without it each edit 400s as missing_updated.
-          // toAuditToken keeps the offset, as in ProductPriceHandler (ETP-5245/ETP-5255).
-          String auditToken = NeoDateFormat.toAuditToken(row[9]);
-          String rawUpdated = row[9] != null ? String.valueOf(row[9]) : null;
-          String updatedValue = auditToken != null ? auditToken : rawUpdated;
-          item.put("updated", updatedValue != null ? updatedValue : JSONObject.NULL);
-          data.put(item);
+          data.put(toItem(row, withUnit));
         }
 
         return ProductHandlerUtils.buildListResponse(data);
@@ -132,6 +121,34 @@ public class ProductStockWarehouseHandler implements NeoHandler {
       log.error("Error fetching stock with warehouse info for product {}: {}", parentId, e.getMessage(), e);
       return NeoResponse.error(500, "Error fetching stock data");
     }
+  }
+
+  private static JSONObject toItem(Object[] row, boolean withUnit) throws JSONException {
+    JSONObject item = new JSONObject();
+    item.put("id",                      row[0]);
+    item.put("storageBin",              row[1]);
+    item.put("storageBin$_identifier",  row[2]);
+    item.put("warehouse",               row[3]);
+    item.put("warehouse$_identifier",   row[4]);
+    item.put("quantityOnHand",          ProductHandlerUtils.toBigDecimal(row[5]));
+    item.put("reservedQty",             ProductHandlerUtils.toBigDecimal(row[6]));
+    item.put("allocatedQuantity",       ProductHandlerUtils.toBigDecimal(row[7]));
+    item.put("attributeSetValue",       row[8]);
+    // ETP-5220: the generic write path requires `updated` echoed back on every PUT/PATCH
+    // (NeoCrudHandler#validateUpdateRequest); without it each edit 400s as missing_updated.
+    // toAuditToken keeps the offset, as in ProductPriceHandler (ETP-5245/ETP-5255).
+    String auditToken = NeoDateFormat.toAuditToken(row[9]);
+    String rawUpdated = row[9] != null ? String.valueOf(row[9]) : null;
+    String updatedValue = auditToken != null ? auditToken : rawUpdated;
+    item.put("updated", updatedValue != null ? updatedValue : JSONObject.NULL);
+    // ETP-5908 (PS-69): the unit symbol of the product's UOM, for the side panel. A row-level,
+    // display-only injection (the stock rows carry no UOM of their own), so it is behind the
+    // Movements policy like the other fields this feature adds; off, rows are exactly as before.
+    String symbol = row.length > 10 && row[10] != null ? String.valueOf(row[10]).trim() : "";
+    if (withUnit && !symbol.isEmpty()) {
+      item.put("etgoUomSymbol", symbol);
+    }
+    return item;
   }
 
 }

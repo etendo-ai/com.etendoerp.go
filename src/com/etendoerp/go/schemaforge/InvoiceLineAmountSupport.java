@@ -210,20 +210,111 @@ final class InvoiceLineAmountSupport {
       if (StringUtils.isBlank(productId) || StringUtils.isBlank(invoiceId)) {
         return;
       }
-      Product product = OBDal.getInstance().get(Product.class, productId);
-      Invoice invoice = OBDal.getInstance().get(Invoice.class, invoiceId);
-      if (product == null || invoice == null || invoice.getInvoiceDate() == null
-          || invoice.getPriceList() == null
-          || Boolean.TRUE.equals(invoice.getPriceList().isPriceIncludesTax())) {
-        return;
-      }
-      ProductPrice catalog = FinancialUtils.getProductPrice(product, invoice.getInvoiceDate(),
-          Boolean.TRUE.equals(invoice.isSalesTransaction()), invoice.getPriceList(), false);
+      ProductPrice catalog = catalogPrice(OBDal.getInstance().get(Product.class, productId),
+          OBDal.getInstance().get(Invoice.class, invoiceId));
       LinePriceListSupport.applyCatalogPrice(body, catalog, FIELD_UNIT_PRICE, FIELD_LIST_PRICE);
     } catch (Exception e) {
       log.warn("[INVOICE-LINE-PRICE] Could not price the line on {} {}: {}", ctx.getSpecName(),
           ctx.getEntityName(), e.getMessage());
     }
+  }
+
+  /**
+   * ETP-6107: an update that points the line at another product takes that product's price in the
+   * invoice's price list, as {@link #setPriceFromPriceListOnCreate} does for a new line. The invoice
+   * line's product selector carries no prices, so the product callout the update re-fires
+   * ({@code NeoUpdateCalloutRefire}) answers 0 and the line was priced at 0. A price the caller sent
+   * is kept as the net and the list price still follows the new product, as in the form when the
+   * user picks a product and then types the price. Total: never throws.
+   *
+   * @param ctx the pre-hook context; its request body is mutated in place
+   */
+  static void setPriceFromPriceListOnProductChange(NeoContext ctx) {
+    if (!isCrudUpdate(ctx) || StringUtils.isBlank(ctx.getRecordId())) {
+      return;
+    }
+    JSONObject body = ctx.getRequestBody();
+    try {
+      String productId = body.optString(FIELD_PRODUCT, null);
+      if (StringUtils.isBlank(productId)) {
+        return;
+      }
+      InvoiceLine line = OBDal.getInstance().get(InvoiceLine.class, ctx.getRecordId());
+      if (line != null
+          && (line.getProduct() == null || !productId.equals(line.getProduct().getId()))) {
+        priceForNewProduct(body, productId, line);
+      }
+    } catch (Exception e) {
+      log.warn("[INVOICE-LINE-PRICE] Could not re-price the line on {} {}: {}",
+          ctx.getSpecName(), ctx.getEntityName(), e.getMessage());
+    }
+  }
+
+  private static boolean isCrudUpdate(NeoContext ctx) {
+    return ctx != null && NeoEndpointType.CRUD.equals(ctx.getEndpointType())
+        && (METHOD_PATCH.equals(ctx.getHttpMethod()) || METHOD_PUT.equals(ctx.getHttpMethod()))
+        && ctx.getRequestBody() != null;
+  }
+
+  /** {@link #setPriceFromPriceListOnProductChange} once the line is known to change product. */
+  private static void priceForNewProduct(JSONObject body, String productId, InvoiceLine line)
+      throws JSONException {
+    // A sent list price, or the catalog one, is undiscounted unless a discount is sent: the
+    // stored discount was the previous product's.
+    if (LinePriceListSupport.applyClientListPrice(body, FIELD_UNIT_PRICE, FIELD_LIST_PRICE,
+        FIELD_DISCOUNT)) {
+      undiscountedUnlessSent(body);
+      return;
+    }
+    ProductPrice catalog = catalogPrice(OBDal.getInstance().get(Product.class, productId),
+        line.getInvoice());
+    if (LinePriceListSupport.applyCatalogPrice(body, catalog, FIELD_UNIT_PRICE,
+        FIELD_LIST_PRICE)) {
+      undiscountedUnlessSent(body);
+      return;
+    }
+    if (catalog != null && catalog.getListPrice() != null
+        && catalog.getListPrice().signum() > 0
+        && LineAmountSupport.isZero(body.opt(FIELD_LIST_PRICE))) {
+      body.put(FIELD_LIST_PRICE, catalog.getListPrice());
+      discountAgainstNewList(body, catalog.getListPrice());
+    }
+  }
+
+  private static void undiscountedUnlessSent(JSONObject body) throws JSONException {
+    if (!body.has(FIELD_DISCOUNT)) {
+      body.put(FIELD_DISCOUNT, BigDecimal.ZERO);
+    }
+  }
+
+  /**
+   * The discount of a net price sent with a new product, as on an order: the gap to the new list
+   * price, or none when the price is at or above it. A sent discount is kept.
+   */
+  private static void discountAgainstNewList(JSONObject body, BigDecimal list)
+      throws JSONException {
+    BigDecimal unit = LineAmountSupport.decimal(body.opt(FIELD_UNIT_PRICE));
+    if (body.has(FIELD_DISCOUNT) || unit == null || unit.signum() < 0) {
+      return;
+    }
+    body.put(FIELD_DISCOUNT, unit.compareTo(list) < 0
+        ? list.subtract(unit).multiply(HUNDRED).divide(list, 2, RoundingMode.HALF_UP)
+        : BigDecimal.ZERO);
+  }
+
+  /**
+   * The product's entry in the invoice's price list at the invoice date, or {@code null} when the
+   * product or invoice is missing, the invoice has no price list or its list includes tax
+   * (deriving the net side is the callout's job).
+   */
+  private static ProductPrice catalogPrice(Product product, Invoice invoice) {
+    if (product == null || invoice == null || invoice.getInvoiceDate() == null
+        || invoice.getPriceList() == null
+        || Boolean.TRUE.equals(invoice.getPriceList().isPriceIncludesTax())) {
+      return null;
+    }
+    return FinancialUtils.getProductPrice(product, invoice.getInvoiceDate(),
+        Boolean.TRUE.equals(invoice.isSalesTransaction()), invoice.getPriceList(), false);
   }
 
   /**

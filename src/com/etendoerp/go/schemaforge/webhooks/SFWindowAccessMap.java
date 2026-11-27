@@ -39,6 +39,7 @@ import com.etendoerp.go.featureflags.FeatureFlagContext;
 import com.etendoerp.go.featureflags.GoFeatureFlags;
 import com.etendoerp.go.schemaforge.InvoiceInboxFlag;
 import com.etendoerp.go.schemaforge.ProductMovementsPolicy;
+import com.etendoerp.go.schemaforge.CurrencyConversionV2Flag;
 import com.etendoerp.go.schemaforge.SepaRemittancesFlag;
 import com.etendoerp.go.schemaforge.SiiImportDuaFlag;
 import com.etendoerp.go.schemaforge.data.SFSpec;
@@ -132,6 +133,12 @@ import com.etendoerp.webhookevents.services.BaseWebhookService;
  * import-taxes cards) and the Confirm of an import invoice without lines read this capability and
  * never evaluate the flag.</p>
  *
+ * <p>{@code capabilities.currencyConversionV2} (ETP-6365) mirrors the backend-only
+ * {@code currency-conversion-v2} flag. Same shape as {@code siiImportDua}: per account, outside the
+ * admin branch. {@link CurrencyConversionV2Flag} stays the one evaluator of the key; the
+ * {@code conversion-rates} route of the SPA reads this capability to choose between the redesigned
+ * Currency Conversion page and the read-only generated window, and never evaluates the flag.</p>
+ *
  * GET /webhooks/SFWindowAccessMap
  */
 public class SFWindowAccessMap extends BaseWebhookService {
@@ -192,6 +199,13 @@ public class SFWindowAccessMap extends BaseWebhookService {
    * #SEPA_REMITTANCES}.
    */
   private static final String SII_IMPORT_DUA = "siiImportDua";
+
+  /**
+   * JSON key used for the {@code currency-conversion-v2} backend-only flag's capability signal
+   * (ETP-6365). Per account, same value in both branches of {@link #buildAccessMap}, like {@link
+   * #SII_IMPORT_DUA}.
+   */
+  private static final String CURRENCY_CONVERSION_V2 = "currencyConversionV2";
 
   /** Access-tier value for a role with full (read+write) access to a window. */
   private static final String FULL = "full";
@@ -309,6 +323,9 @@ public class SFWindowAccessMap extends BaseWebhookService {
 
     // ETP-6284 — same account, same reasoning; SiiImportDuaFlag never throws (false on any error).
     capabilities.put(SII_IMPORT_DUA, SiiImportDuaFlag.isEnabledFor(accountEmail));
+
+    // ETP-6365 — same account, same reasoning; never throws (false on any error).
+    capabilities.put(CURRENCY_CONVERSION_V2, CurrencyConversionV2Flag.isEnabledFor(accountEmail));
 
     JSONObject result = new JSONObject();
     result.put(WINDOW_ACCESS, windowAccess);

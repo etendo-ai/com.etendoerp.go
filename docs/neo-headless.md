@@ -10844,6 +10844,19 @@ should a configuration push open the flags again, by the customization itself (4
 `com.etendoerp.go.template`'s `configScript.xml`; NEO serialises them as server-local wall clock
 `yyyy-MM-dd'T'HH:mm:ss` (ETP-5100).
 
+**Behind the per-account flag `currency-conversion-v2`** (`CurrencyConversionV2Flag`, see
+`feature-flags-and-tenant-upgrade.md`). Off — the default — the window is the one before ETP-6365
+(the SPA renders the generated read-only window) and every write of this entity is refused **before
+anything else** with 403 `feature_disabled` (`ETGO_CurrencyConversionV2Disabled`, "La carga manual de
+tasas de conversión no está habilitada para este usuario: las tasas solo se pueden consultar.") on
+every channel: `createManualCurrency`, `createManualRate`, `updateManualRate`, `previewManualRate`,
+`DELETE` (including the System-row delete worded by `refusalForReadOnlyTarget`) and a generic
+`POST`/`PUT`/`PATCH`. `actionContracts()` then declares only `manualCurrencyOptions`, `currentRates`
+and `serverClock`, so the MCP does not advertise the writes. Reads, `serverClock`, `currentRates`,
+`manualCurrencyOptions` and `etgoRateStatus` are never gated. What is gated is listed once, in
+`ConversionRateFlagGate`. Known gap: `etendo_delete` still lists the spec (its `DELETE` method is
+configuration), and the call answers the 403. Everything below describes the flag **on**.
+
 **Every write is served by the customization itself** — the three write actions and the delete,
 on REST and MCP alike — no channel divergence.
 It validates everything first, then writes on the request's session and only flushes: the channel
@@ -10921,11 +10934,11 @@ for `InvalidRate`, `validFromDate` for `InvalidValidFrom`/`FutureStart`/`Overlap
 | `ETGO_ConvRateAutoCurrency` | 400 | the currency is downloaded automatically |
 | `ETGO_ConvRateInvalidRate` | 400 | rate missing, not a number, or ≤ 0 |
 | `ETGO_ConvRateInvalidValidFrom` | 400 | start missing or not a date |
-| `ETGO_ConvRateCurrencyHasRates` | 409 | `createManualCurrency` (or preview `mode: newCurrency`) for a currency that already has rates — "CHF ya tiene tasas. Use Nueva tasa para cargar una tasa nueva." |
-| `ETGO_ConvRateCurrencyNoRates` | 409 | `createManualRate` (or preview `mode: newRate`) for a currency without rates — "CHF todavía no tiene tasas. Use Nueva divisa para darla de alta con su primera tasa." |
+| `ETGO_ConvRateCurrencyHasRates` | 409 | `createManualCurrency` (or preview `mode: newCurrency`) for a currency that already has rates — "CHF ya tiene tasas. Use Nueva tasa para cargar una tasa nueva." The text names the window's button; the refusal also carries `error.hint` (`errorHint` in the preview), key `ETGO_ConvRateCurrencyHasRatesHint`, naming the action for an agent: "CHF ya tiene tasas: carga la tasa nueva con la acción createManualRate (mismos parámetros). …" |
+| `ETGO_ConvRateCurrencyNoRates` | 409 | `createManualRate` (or preview `mode: newRate`) for a currency without rates — "CHF todavía no tiene tasas. Use Nueva divisa para darla de alta con su primera tasa." Also `error.hint` / `errorHint` (`ETGO_ConvRateCurrencyNoRatesHint`): "CHF todavía no tiene tasas: dala de alta con su primera tasa mediante la acción createManualCurrency (mismos parámetros). …" |
 | `ETGO_ConvRateUseActions` | 405 | a generic create or update reached the customization (only if the flags were opened again) |
 | `ETGO_ConvRateFutureStart` | 400 | start later than the server's current minute — "La fecha y hora de inicio no puede ser posterior al momento actual." |
-| `ETGO_ConvRateOverlap` | 409 | the new range falls inside a closed range, or does not start after the start of the range in force — "Ya existe una tasa de conversión para EUR → CHF en las fechas indicadas (01/11/2026 09:00 – 18/11/2026 14:29). Elija una fecha de inicio posterior al 18/11/2026 14:30." `{2}`–`{3}` is the colliding range (`dd/MM/yyyy HH:mm` in every language; an open end reads "sin fecha de fin" / "no end date", key `ETGO_ConvRateNoEndDate`); `{4}` is the start of the pair's open range, or, with none, the latest end of the colliding ranges. Also the translation of core's 20504 (the ranges are read again after the rollback to fill the dates) |
+| `ETGO_ConvRateOverlap` | 409 | the new range falls inside a closed range, or does not start after the start of the range in force — "Ya existe una tasa de conversión para EUR → CHF en las fechas indicadas (01/11/2026 09:00 – 18/11/2026 14:29). Elija una fecha de inicio posterior al 18/11/2026 14:30. Las horas están en la zona horaria del servidor (UTC)." `{2}`–`{3}` is the colliding range (`dd/MM/yyyy HH:mm` in every language; an open end reads "sin fecha de fin" / "no end date", key `ETGO_ConvRateNoEndDate`); `{4}` is the start of the pair's open range, or, with none, the latest end of the colliding ranges; `{5}` is the server's zone id, the zone of `{2}`–`{4}` (QA CP-13: the text alone read as the viewer's time). The same instants travel structured in `error.details` (and `errorDetails` of `previewManualRate`): `{conflictFrom, conflictTo (null when open), conflictOpen, suggestedFrom, timeZone}`, server wall clock `yyyy-MM-dd'T'HH:mm:ss` — the SPA words the message itself from them, in the browser's zone. Also the translation of core's 20504 (the ranges are read again after the rollback to fill the dates) |
 | `ETGO_ConvRateSyncedLocked` | 409 | update/delete of a downloaded row — the tenant's own or a System (`0`) one, where the downloader writes (also the translation of `SMFCR_CannotDeleteSyncedRate`) |
 | `ETGO_ConvRateNoOrgCurrency` | 422 | the organization has no currency |
 
@@ -10944,14 +10957,15 @@ the Spanish meaning travels in the catalog.
 **Why virtual (`Computation_Mode = 'V'`):** it depends on `now()`, the case a stored column cannot
 follow. The function is total (every edge case answers `HISTORIC`).
 
-**Actions** (`actionContracts`, read-only, not tied to a record — REST
+**Actions** (`actionContracts`, read-only, not tied to a record; `previewManualRate` only while
+`currency-conversion-v2` is on — REST
 `POST /sws/neo/conversion-rates/conversionRate/new/action/<name>`, MCP `etendo_action` with
 `id: "_"`):
 
 | Action | Parameters | Answer (`response.data`) |
 |---|---|---|
 | `manualCurrencyOptions` | optional `withoutRates` (boolean, default `false`; `"true"`/`"false"` accepted on the query string) | `[{id, isoCode, name, symbol}]`: active currencies minus the organization currency and the automatic ones; with `withoutRates: true` also minus every currency that already has an active `C_Conversion_Rate` row of the client (or of System) with the organization currency, in either direction and on any date — the list of the "Nueva divisa" popup (a currency that already has rates gets a new range from its own "Nueva tasa · ISO" entry). `name`/`symbol` in the request language |
-| `previewManualRate` | `toCurrency`, `multipleRateBy`, optional `validFromDate` (default now), optional `mode` (`newCurrency` = the checks of `createManualCurrency`, `newRate` = those of `createManualRate`; absent = no check on existing rates) | `{creates:[{fromIso, toIso, rate, validFrom}], closes:[{id, fromIso, toIso, validFrom, newValidTo}]}` — or `{creates:[], closes:[], error, errorKey, errorField}` with the refusal a create would get (same text as the create; `errorField` as `error.field` above, absent for refusals bound to no field). Writes nothing |
+| `previewManualRate` | `toCurrency`, `multipleRateBy`, optional `validFromDate` (default now), optional `mode` (`newCurrency` = the checks of `createManualCurrency`, `newRate` = those of `createManualRate`; absent = no check on existing rates) | `{creates:[{fromIso, toIso, rate, validFrom}], closes:[{id, fromIso, toIso, validFrom, newValidTo}]}` — or `{creates:[], closes:[], error, errorKey, errorField, errorDetails, errorHint}` with the refusal a create would get (same text as the create; `errorField` as `error.field` above, absent for refusals bound to no field; `errorDetails` as `error.details`, only on the overlap; `errorHint` as `error.hint`, only on the two currency refusals). Writes nothing |
 | `serverClock` | — | `{now: "yyyy-MM-dd'T'HH:mm:00", timeZone: "<zone id>"}` — the server's current minute, server-local wall clock, and the id of that zone (JVM default, e.g. `UTC`; the zone `validFromDate` and every range datetime are read in); the default start of a new rate |
 | `currentRates` | — | `[{currencyId, isoCode, name, symbol, origin: AUTO\|MANUAL, rate, validFrom, lastDownloadAt}]` — one per currency with a range in force now, of the client or of System (the downloader's rows): the client's row wins over the System one, as in `ConversionRateLookup`, then the latest start; `rate` is always "1 organization currency = rate"; `lastDownloadAt` (AUTO only) is the latest `SUCCESS` run in `SMFCR_SYNC_LOG` of the client or of System, or the row's `updated` when that is newer or there is no run (the log is per run, not per pair) |
 
@@ -14045,6 +14059,74 @@ it server-resolved on create, §4.12.22 point 3). This is what gives `etendo_cre
 then derives `lineGrossAmount` from the discounted price, with the tax the cascade resolved (the
 customization abstained on it, having no tax yet).
 
+##### Changing the product of a line (ETP-6107)
+
+In the form, picking another product brings its price, unit and tax, and a price typed afterwards
+is discounted from the NEW list price. An update does the same on every commercial line (sales
+order, quotation, purchase order, sales and purchase invoice), on REST and MCP alike:
+
+| Patch | Result |
+|---|---|
+| `product` alone | the new product's list price, `unitPrice = listPrice`, discount 0, its tax and unit; the stored quantity is kept |
+| `product` + `unitPrice` | `listPrice` from the new product, `unitPrice` as sent, discount = `(listPrice − unitPrice) / listPrice` |
+
+How:
+
+- **The callout re-fire** (`NeoUpdateCalloutRefire`, ETP-6176) fires the product's callout over the
+  stored line overlaid with the patch. Empty stored columns are dropped from that form state, so the
+  callout request takes the header's instead (`CalloutRequestBuilder#injectParentRecordFields` only
+  fills a column the form state lacks): an order line stores no business partner or address of its
+  own, and the empty keys made the callout pick a tax without the customer's address. It then fires
+  the callouts of the plain values sent with the product (`unitPrice`), as the form does when the
+  user types the price after picking the product. Both steps are generic, not tied to the product:
+  any update that changes a reference with a callout re-fires it over a form state without empty
+  columns, then re-fires the callouts of the plain values the update changes (a new `uOM` plus a
+  new quantity fires the unit's callout, then the quantity's). A value equal to the stored one is
+  not a change and fires nothing: a pre-hook may have carried the stored quantity or price into
+  the body (ETP-6012), and re-firing their callouts zeroed the list price and discount of a REST
+  update that only changed the tax. A value the caller sent is never overwritten; fields it did
+  not send take the callouts' outputs, as in the form.
+- **The order line rules abstain** (`OrderLineDiscountSupport.applyLineRules`,
+  `completeAmountInputsOnUpdate`) when `StoredLine.changesProduct()`: the stored price, list price
+  and tax are the previous product's, so nothing is derived from them nor carried into the body
+  (the re-fire keeps what the body carries). Only the stored quantity is carried, which the gross
+  needs.
+- **Order lines are priced from the order's price list** (`OrderLineProductChangePrice`), not from
+  the product callout's answer: `SL_Order_Product` reads the price from the selector's auxiliary
+  values, which `SelectorAuxResolver` resolves by the product id alone, without the order's price
+  list, so on a tenant with several lists the line kept a price of another list (the public API
+  e2e, 33 instead of 44). The new product's catalog price in the order's price list
+  (`FinancialUtils.getProductPrice`, converted to the order's currency as on create) gives the list
+  price; the unit price is the caller's when sent (the net, on MCP too: with a product change a
+  lone `unitPrice` is not the ETP-5852 Precio), else the list less a sent discount, else the
+  catalog's standard price, and the standard price follows it; the discount is the caller's when
+  sent, else the gap. A sent `listPrice` and a tax-included list are left to the callout. On REST
+  the body is what the caller sent; on MCP the re-fire and the agent price rule rewrote it first,
+  so the caller's values are a snapshot `McpToolRouter.handleUpdate` takes before them
+  (`NeoContext.ATTR_CLIENT_SENT_VALUES`).
+- **Gross on every update.** On any update, not only a product change, a `lineGrossAmount` of 0 in the body is the
+  re-fire's (`SL_Order_Amt` publishes `grossUnitPrice × qty`, 0 on a net list) and is derived
+  again (`dropZeroGrossOnUpdate`), as on create (`dropStaleGrossAfterRefire`): an MCP update of the
+  tax alone used to store a gross of 0.
+- **Channel order.** MCP re-fires before the pre-hook (`McpNotOfferedReference`), so the pre-hook
+  derives the gross over the new price. REST re-fires after it (`NeoCrudHandler#executeUpdate`),
+  where `lineGrossAmount` is read-only: the pre-hook's gross is dropped by `filterWriteRequest` and
+  `injectCommercialAmounts` derives it over the final body.
+- **MCP agent price.** `McpLinePriceInjector.applyAgentPriceOnUpdate` (ETP-5852) leaves a sent
+  price alone when the re-fire, which on MCP runs first, left a list price the agent did not send
+  and that differs from the stored one (`repricedByTheRefire`): the line moved to another tariff,
+  so the price is the net, not the Precio. A re-fire that keeps the list price (another tax or
+  unit) keeps the ETP-5852 rule.
+- **Invoice lines.** Their product selector carries no prices, so the product callout answers 0.
+  `InvoiceLineAmountSupport.setPriceFromPriceListOnProductChange` prices the line from the
+  invoice's price list instead, as `setPriceFromPriceListOnCreate` does for a new line; a sent
+  `unitPrice` is the net and `etgoDiscount` is the gap to the new list price (0 when the price is
+  not below it). Without a sent discount the stored one is reset to 0: it was the previous
+  product's.
+
+Known gap: on invoice lines, an update can persist a `lineNetAmount` of 0 or keep a stale
+`grossAmount` (any update, not only a product change; ETP-6477).
+
 ##### Where a caller's value is replaced
 
 The rules keep what the caller sent, **with exactly two exceptions**, both because the body cannot
@@ -14543,7 +14625,7 @@ hand links to the user and reach nobody else, so they stay closed-world.
 
 | Tools | `readOnlyHint` | `destructiveHint` | `idempotentHint` |
 |---|---|---|---|
-| `etendo_list`, `etendo_get`, `etendo_schema`, `etendo_discover`, `etendo_selectors`, `etendo_defaults`, `docs`, `etendo_widget`, `etendo_vector_search`, `etendo_get_image_upload`, `etendo_list_attachments`, `etendo_get_document_pdf`, `etendo_extract_invoice_document`, `etendo_job_status`, `etendo_whoami`, every `generate_*` report | true | false | true |
+| `etendo_list`, `etendo_get`, `etendo_schema`, `etendo_discover`, `etendo_selectors`, `etendo_defaults`, `docs`, `etendo_widget`, `etendo_vector_search`, `etendo_get_image_upload`, `etendo_list_attachments`, `etendo_get_document_pdf`, `etendo_extract_invoice_document`, `etendo_job_status`, `etendo_whoami`, `etendo_how_to`, every `generate_*` report | true | false | true |
 | `etendo_create`, `etendo_request_image_upload`, `etendo_upload_image`, `etendo_feedback`, `etendo_request_document_extraction_upload` | false | false | false |
 | `etendo_delete`, `etendo_delete_attachment` | false | true | true |
 | `etendo_update`, `etendo_batch`, `etendo_job_cancel`, `etendo_action`, `etendo_action_batch`, `etendo_routine` (its steps may update and complete documents), `etendo_request_attachment_upload` (`main:true` replaces the previous main file), `etendo_send_document_email` (two calls are two emails), `etendo_generate_amortization_plan`, every process tool (`complete_order` …) | false | true (conservative) | false |
@@ -17713,3 +17795,29 @@ an agent prompt. The domain owners (returns, finance) still have to validate the
 | `RMCreateInvoice` | `purchase-order/header`, `RM_CreateInvoice` | **Redirected** to `createPurchaseInvoice` (`actions.redirect`, since ETP-5714) | Included (`system`) but not displayed by Classic on the purchase order. The redirect refuses it (405) by any spelling; its reason says that `createPurchaseInvoice` invoices the order and that a return to vendor is invoiced with `createReturnInvoice` on `return-to-vendor-shipment`. |
 | `RMInsertOrphanLine` | `sales-order/header` and `purchase-order/header`, `rMAddOrphanLine` | **Not offered** | The field is not included (curated `discarded`); *Action not found*. `sales-quotation/quotation` includes it and hides `RM_AddOrphanLine` explicitly; the return specs that include it are not shown to MCP (`SHOWINMCP=N`). Returns declare `importShipmentLines` / `importReceiptLines` for adding lines. |
 | `UpdatePaymentPlan` | `sales-invoice/paymentPlan`, `purchase-invoice/paymentPlan`, `updatePaymentPlan` | **Hidden** (`actions.hidden`) | A Classic process (`AD_PROCESS` `UpdatePaymentPlan`, parameters `DueDate` and `FIN_Payment_Priority_ID`) that changes an installment's due date and payment priority; Classic does not display it on the Payment Plan tabs. Before it was hidden it was still callable (live, with a real installment id it failed with *id to load is required for loading*). The installments change only through the invoice's payments (`registerPayment`). |
+
+#### 4.12.45 Which Etendo this is: server `instructions` and `etendo_how_to` (ETP-6421)
+
+Asked "where do I manage price lists in Etendo?", models answered with Etendo Classic menu paths (the
+SmartClient ERP, which their training knows), not the web app this server belongs to. Two channels now
+say which Etendo this is, with the same text (`McpHowToTool.INSTRUCTIONS`): it is the web app, not Etendo
+Classic; never guide with Classic or Openbravo menu paths; to say where something is done, call
+`etendo_discover` and give the user `windowName` and `windowUrl` (§4.12.2); say so when the tools do not
+show it.
+
+- **Server `instructions`**, in the `initialize` result and at the top level of `server/discover`. Claude
+  Code, ChatGPT and Cursor put it in the model's context at connection. The essentials are in the first
+  512 characters (OpenAI's guidance) and the whole text stays under Claude Code's 2 KB cut.
+- **Tool `etendo_how_to`**, for clients that ignore `instructions`. Claude desktop and claude.ai drop
+  them (anthropics/claude-ai-mcp#93, open in 2026-11) and show the model only deferred tool names until it
+  searches, so the name is the only signal. In a name test (simulated deferred list, two Claude models,
+  "how/where do I … in Etendo" questions), the model looked up `etendo_how_to` first in 41 of 42 runs;
+  `etendo_start_here` in 14, `etendo_help` in 27, and with no such tool it answered from memory in 39.
+  - No arguments (any is refused), read scope, read-only/idempotent hints, first in `tools/list`.
+  - Returns `{guide, appUrl}`: `guide` is the instructions text, `appUrl` the instance's app base URL when
+    configured.
+  - Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code loads it with
+    the session instead of deferring it. claude.ai ignores the flag today (anthropics/claude-ai-mcp#1105).
+  - Telemetry verb `how_to`.
+- Nothing reaches a claude.ai/desktop model that answers without searching any tool; the connector's
+  display name, chosen by the user, is the only text it sees up front.

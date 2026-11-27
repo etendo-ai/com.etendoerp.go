@@ -88,6 +88,8 @@ final class McpAuthorizationService {
       case McpConstants.TOOL_NEO_FEEDBACK:
       // etendo-ai#53: knowing who you are is the read every session needs before any other.
       case McpConstants.TOOL_NEO_WHOAMI:
+      // ETP-6421: a fixed text about the product; reads nothing of the tenant.
+      case McpConstants.TOOL_NEO_HOW_TO:
       // ETP-6236: a routine asks nothing of its own. Every step goes through the router, which
       // checks that step's tool against the same scopes, so a write step of a read-only session
       // is refused exactly as the separate call would be.

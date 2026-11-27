@@ -1015,6 +1015,8 @@ public class McpServletTest {
         McpProtocolVersion.LATEST, result.getString("protocolVersion"));
     assertTrue(result.has("capabilities"));
     assertTrue(result.has("serverInfo"));
+    assertEquals("ETP-6421: the handshake tells the client which Etendo this is",
+        McpHowToTool.INSTRUCTIONS, result.getString("instructions"));
 
     JSONObject serverInfo = result.getJSONObject("serverInfo");
     assertEquals("etendo-mcp", serverInfo.getString("name"));
@@ -1436,7 +1438,8 @@ public class McpServletTest {
     assertTrue(serverInfo.has("icons"));
     assertEquals(McpModernResults.DISCOVER_TTL_MS, result.getLong("ttlMs"));
     assertEquals("public", result.getString("cacheScope"));
-    assertFalse("no instructions, as initialize", result.has("instructions"));
+    assertEquals("same instructions as initialize", McpHowToTool.INSTRUCTIONS,
+        result.getString("instructions"));
     verify(response, never()).setHeader(eq(McpUsageTelemetry.HEADER_SESSION_ID), anyString());
   }
 
@@ -1452,6 +1455,7 @@ public class McpServletTest {
         discover.getJSONObject("capabilities").toString());
     assertEquals(init.getJSONObject("serverInfo").toString(), discover.getJSONObject("_meta")
         .getJSONObject(McpModernResults.META_SERVER_INFO).toString());
+    assertEquals(init.getString("instructions"), discover.getString("instructions"));
   }
 
   /**

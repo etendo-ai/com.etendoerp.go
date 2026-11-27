@@ -62,12 +62,13 @@ import dev.openfeature.sdk.ProviderEvaluation;
 import dev.openfeature.sdk.Value;
 
 /**
- * The per-account flag readers {@link BankBounceSuggestionsFlag} ({@code bank-bounce-suggestions})
- * and {@link Psd2ImportSettingsFlag} ({@code psd2-statement-import-settings}): the
+ * The per-account flag readers {@link BankBounceSuggestionsFlag} ({@code bank-bounce-suggestions}),
+ * {@link Psd2ImportSettingsFlag} ({@code psd2-statement-import-settings}) and
+ * {@link CurrencyConversionV2Flag} ({@code currency-conversion-v2}): the
  * {@code ETGO_ACCOUNT} email of the request user reaches the provider as targeting key and as both
  * email attributes, a targeted account reads on and any other account off, and every way of not
  * knowing the account — no {@link OBContext}, no account behind the user, an account without email,
- * a failed lookup — reads off, never on. Both classes are independent copies of the same reader, so
+ * a failed lookup — reads off, never on. The classes are independent copies of the same reader, so
  * every case runs on each of them.
  *
  * <p>End to end through the real {@link GoFeatureFlags} and, where the account resolution is what
@@ -78,6 +79,7 @@ import dev.openfeature.sdk.Value;
  *
  * @covers com.etendoerp.go.schemaforge.BankBounceSuggestionsFlag
  * @covers com.etendoerp.go.schemaforge.Psd2ImportSettingsFlag
+ * @covers com.etendoerp.go.schemaforge.CurrencyConversionV2Flag
  */
 class AccountTargetedFlagTest {
 
@@ -109,7 +111,9 @@ class AccountTargetedFlagTest {
         new Flag("bank-bounce-suggestions", GoFeatureFlags.FLAG_BANK_BOUNCE_SUGGESTIONS,
             BankBounceSuggestionsFlag::isEnabled),
         new Flag("psd2-statement-import-settings",
-            GoFeatureFlags.FLAG_PSD2_STATEMENT_IMPORT_SETTINGS, Psd2ImportSettingsFlag::isEnabled));
+            GoFeatureFlags.FLAG_PSD2_STATEMENT_IMPORT_SETTINGS, Psd2ImportSettingsFlag::isEnabled),
+        new Flag("currency-conversion-v2", GoFeatureFlags.FLAG_CURRENCY_CONVERSION_V2,
+            CurrencyConversionV2Flag::isEnabled));
   }
 
   static Stream<Arguments> flagsAndNonBooleanValues() {

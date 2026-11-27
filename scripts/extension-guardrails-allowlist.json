@@ -61,7 +61,6 @@
     "ProductCostingHandler",
     "ProductDefaultsHandler",
     "ProductPriceHandler",
-    "ProductStockWarehouseHandler",
     "ProfitLossReportHandler",
     "RegisterPaymentHandler",
     "RegisterPaymentOutHandler",

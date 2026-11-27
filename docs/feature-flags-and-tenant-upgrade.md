@@ -189,6 +189,7 @@ Declare every flag's key as a constant on `GoFeatureFlags` and add its row here.
 | `sepa-remittances` | `etendo.go.flags.sepa-remittances` | `ETGO_FLAG_SEPA_REMITTANCES` | absent ⇒ **`false`** (no SEPA remittances: settings and the `remittance` spec refused, mandate keys dropped; per account on a hosted arm only; TTL 2027-03-31, provisional) — see its section below |
 | `sii-import-dua` | `etendo.go.flags.sii-import-dua` | `ETGO_FLAG_SII_IMPORT_DUA` | absent ⇒ **`false`** (no imports with DUA: turning `etgoImportDua` on, purchase-invoice tax-line writes and `siiDeferredVat` refused with 403 `feature_disabled`; per account on a hosted arm only; TTL 2027-03-31, placeholder) — see its section below |
 | `psd2-statement-import-settings` | `etendo.go.flags.psd2-statement-import-settings` | `ETGO_FLAG_PSD2_STATEMENT_IMPORT_SETTINGS` | absent ⇒ **`false`** (PSD2 import settings, `maxFetchInterval` on `accounts` and deleting statements of connected accounts all as before ETP-6151; per account on a hosted arm only; placeholder TTL 2026-12-31). Registered before any code reads it — see its section below |
+| `currency-conversion-v2` | `etendo.go.flags.currency-conversion-v2` | `ETGO_FLAG_CURRENCY_CONVERSION_V2` | absent ⇒ **`false`** (Currency Conversion as before ETP-6365: read-only; the manual rate writes, their preview and delete refused with 403 `feature_disabled`; per account on a hosted arm only; TTL 2027-03-31, placeholder) — see its section below |
 | `mcp-routines` | `etendo.go.flags.mcp-routines` | `ETGO_FLAG_MCP_ROUTINES` | absent ⇒ **`false`** (`etendo_routine` neither listed nor routed: the MCP as before ETP-6236; per account on a hosted arm only; TTL 2026-12-01) — see its section below |
 | *(pattern for a new flag)* | `etendo.go.flags.<key>` | `ETGO_FLAG_<KEY>` | absent ⇒ **`false`** |
 
@@ -225,10 +226,10 @@ Product window. One evaluator only, the backend: `ProductMovementsPolicy` evalua
 publishes the answer as `capabilities.productMovements`, and the tab reads that capability. The
 browser never evaluates the flag, so a rule on email, tenant or percentage cannot make the two ends
 disagree; a change reaches a user when the access map is next loaded. `ProductTransactionsHandler`
-asks the same policy before adding `etgoStockAfter` and `etgoProcessTime`. A request with no account is
+asks the same policy before adding `etgoStockAfter` and `etgoProcessTime`, and `ProductStockWarehouseHandler` (the `product/stock` rows, bound by `@NeoExtension`) before adding `etgoUomSymbol`, the `C_UOM.UOMSymbol` of the product's unit that the side panel prints after each quantity (left out when the UOM has no symbol). A request with no account is
 evaluated account-less and gets the default (off). Only behaviour is gated: the stored computed
 columns of `M_Transaction`, their triggers and the `ETGO_SF_*` configuration ship unconditionally, so
-run `update.database` and check `ad_scd_check` = 0 before targeting any account. The flag is not access control: with it off the `/transactions` rows (and the new `etgoWarehouse`, `etgoDocKind` and `etgoDocHeaderId` fields) stay readable under the role's entity and organization access; it only withholds `etgoStockAfter` and `etgoProcessTime` and hides the tab.
+run `update.database` and check `ad_scd_check` = 0 before targeting any account. The flag is not access control: with it off the `/transactions` rows (and the new `etgoWarehouse`, `etgoDocKind` and `etgoDocHeaderId` fields) stay readable under the role's entity and organization access; it only withholds `etgoStockAfter`, `etgoProcessTime` and `etgoUomSymbol` and hides the tab.
 
 `etgoProcessTime` is the time of day under each movement's date: `M_TRANSACTION.TRXPROCESSDATE` (timestamp without time zone, the server wall clock) as an ISO local date-time string `yyyy-MM-ddTHH:mm:ss`, fractions dropped and no time-zone conversion. It comes from the same statement as `etgoStockAfter` (no extra query), is display only (it changes neither ordering nor any other field), and is absent from a row with no process date.
 
@@ -950,6 +951,35 @@ MCP):
 **Not gated:** the reads of the tax entity, the header DUA fields (Classic columns), the DUA rule
 of an invoice whose check is already on, `hasManualTaxLines` and `aeatsiiFacturaIds` (the SII attachments of every record, for every
 invoice).
+
+### `currency-conversion-v2` (ETP-6365) — backend-only, per account, off by default
+
+Gates the **redesigned Currency Conversion window** (`conversion-rates`): the manual rates written
+through actions. Positive polarity: `true` = the redesign. Default and every failure = `false`, the
+window as it was before ETP-6365 (read-only). One evaluator, `CurrencyConversionV2Flag`, at request
+entry: `FeatureFlagContext.forAccount(GoAccountResolver.currentAccountEmail())`; write
+Datadog/ConfigCat rules on the lowercase `email` attribute. Locally
+`etendo.go.flags.currency-conversion-v2=true` / `ETGO_FLAG_CURRENCY_CONVERSION_V2=true` (Tomcat
+restart).
+
+**What it gates** (403 `feature_disabled`, `messageKeys = [ETGO_CurrencyConversionV2Disabled]`, on
+every channel — REST single, batch, MCP — because all of them reach the entity's customization,
+`ConversionRateHandler` (`@NeoExtension(spec = "conversion-rates", entity = "conversionRate")`); the
+list of gated requests is `ConversionRateFlagGate`):
+- the actions `createManualCurrency`, `createManualRate`, `updateManualRate` (each writes the rate
+  and its inverse) and their dry run `previewManualRate`;
+- `DELETE` of a rate (also the System-row delete answered by `refusalForReadOnlyTarget`) and any
+  generic `POST`/`PUT`/`PATCH`;
+- what the MCP is told: `actionContracts()` declares only the read actions while the flag is off,
+  so `etendo_schema(view:"actions")` and `etendo_discover` do not advertise the writes;
+- `SFWindowAccessMap`, which publishes `capabilities.currencyConversionV2`. The SPA route
+  `conversion-rates` renders the redesigned page when it is `true` and the generated read-only
+  window otherwise. The SPA never evaluates the flag and has no key for it.
+
+**Not gated:** the reads, `serverClock`, `currentRates`, `manualCurrencyOptions` and the
+`etgoRateStatus` column. **Known gap:** the entity's `DELETE` method comes from configuration
+(`ETGO_SF_ENTITY`), so `etendo_delete` still lists the spec while the flag is off; the call is
+refused with the 403 above.
 
 ### `mcp-routines` (ETP-6236) — backend-only, per account, off by default
 

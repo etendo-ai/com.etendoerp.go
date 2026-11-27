@@ -37,6 +37,8 @@ import org.openbravo.model.ad.ui.Tab;
 import org.openbravo.service.json.DataResolvingMode;
 import org.openbravo.service.json.DataToJsonConverter;
 
+import com.etendoerp.go.schemaforge.util.NeoValueEquivalence;
+
 /**
  * Gives an update the callout effects the UI gives it when a reference changes (ETP-6176).
  *
@@ -81,8 +83,8 @@ public final class NeoUpdateCalloutRefire {
       if (triggers.isEmpty()) {
         return;
       }
-      JSONObject formState = OBProvider.getInstance().get(DataToJsonConverter.class)
-          .toJsonObject(stored, DataResolvingMode.FULL);
+      JSONObject formState = withoutBlankValues(OBProvider.getInstance()
+          .get(DataToJsonConverter.class).toJsonObject(stored, DataResolvingMode.FULL));
       Set<String> sent = new HashSet<>();
       Iterator<?> keys = body.keys();
       while (keys.hasNext()) {
@@ -92,10 +94,67 @@ public final class NeoUpdateCalloutRefire {
       }
       NeoDefaultsCascadeHelper.executeCalloutsForTriggerFields(ctx, adTab, formState, body,
           triggers, sent);
+      // ETP-6107: then the values sent with it, as when the user types a price after picking the
+      // product — a price sent with a new product is discounted from the NEW list price.
+      List<String> sentValues = sentValuesWithCallout(entity, body, sent, adTab, stored);
+      if (!sentValues.isEmpty()) {
+        NeoDefaultsCascadeHelper.executeCalloutsForTriggerFields(ctx, adTab, formState, body,
+            sentValues, sent);
+      }
     } catch (Exception e) {
       log.warn("Could not re-fire the callouts of an update on {}: {}", dalEntityName,
           e.getMessage());
     }
+  }
+
+  /**
+   * Drops the stored record's empty columns from the form state (ETP-6107).
+   *
+   * <p>The callout request takes a parent (header) column only when the form state does not carry
+   * it ({@code CalloutRequestBuilder#injectParentRecordFields}). A create never carries an empty
+   * one, but the stored record does: an order line's own business partner and address are empty,
+   * so they hid the header's, and the product callout picked a tax without the customer's address.
+   * A callout reads a missing parameter as empty anyway, so dropping them changes nothing else.
+   *
+   * @param formState the stored record as JSON; mutated in place
+   * @return {@code formState}
+   */
+  static JSONObject withoutBlankValues(JSONObject formState) {
+    List<String> blank = new ArrayList<>();
+    Iterator<?> keys = formState.keys();
+    while (keys.hasNext()) {
+      String key = String.valueOf(keys.next());
+      Object value = formState.opt(key);
+      if (value == null || JSONObject.NULL.equals(value) || "".equals(value)) {
+        blank.add(key);
+      }
+    }
+    for (String key : blank) {
+      formState.remove(key);
+    }
+    return formState;
+  }
+
+  /**
+   * The non-reference fields the update changes that have a callout, in the order sent. A value
+   * equal to the stored one is not a change: a pre-hook may have carried the stored quantity or
+   * price into the body (ETP-6012), and re-firing their callouts re-derived the line from them
+   * (a new tax alone zeroed the list price and the discount over REST).
+   */
+  static List<String> sentValuesWithCallout(Entity entity, JSONObject body,
+      Set<String> sent, Tab adTab, BaseOBObject stored) {
+    List<String> fields = new ArrayList<>();
+    Iterator<?> keys = body.keys();
+    while (keys.hasNext()) {
+      String key = String.valueOf(keys.next());
+      Property property = entity.getProperty(key, false);
+      if (sent.contains(key) && property != null && property.isPrimitive()
+          && !NeoValueEquivalence.same(body.opt(key), stored.get(key))
+          && NeoCalloutService.resolveCallout(adTab, key) != null) {
+        fields.add(key);
+      }
+    }
+    return fields;
   }
 
   private static List<String> changedReferencesWithCallout(Entity entity, BaseOBObject stored,
