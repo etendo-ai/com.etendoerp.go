@@ -3,12 +3,15 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=financiero [-Pkind=mock|integration|all]
 
-# --- con mocks (128)
+# --- con mocks (134)
 com.etendoerp.go.schemaforge.AccountTargetedFlagTest
 com.etendoerp.go.schemaforge.AddPaymentServiceTest
 com.etendoerp.go.schemaforge.AutoMatchSupportRuleDimensionsTest
 com.etendoerp.go.schemaforge.AutoMatchSupportTest
+com.etendoerp.go.schemaforge.BankBounceAiQuestionsTest
+com.etendoerp.go.schemaforge.BankBounceAiTest
 com.etendoerp.go.schemaforge.BankBounceDetectorTest
+com.etendoerp.go.schemaforge.BankBounceDiscardedPairsTest
 com.etendoerp.go.schemaforge.BankBounceKpiTelemetryIdentityTest
 com.etendoerp.go.schemaforge.BankBounceLineTextTest
 com.etendoerp.go.schemaforge.BankBouncePairServiceTest
@@ -125,6 +128,7 @@ com.etendoerp.go.schemaforge.SepaCreditorIdTest
 com.etendoerp.go.schemaforge.SepaRemittancesFlagTest
 com.etendoerp.go.schemaforge.StatementLineFilterTest
 com.etendoerp.go.schemaforge.TransactionTypeHandlerTest
+com.etendoerp.go.schemaforge.handlers.ConversionRateActionsTest
 com.etendoerp.go.schemaforge.handlers.ConversionRateHandlerTest
 com.etendoerp.go.schemaforge.handlers.ConversionRateWritesTest
 com.etendoerp.go.schemaforge.handlers.DocumentActionHandlerTest

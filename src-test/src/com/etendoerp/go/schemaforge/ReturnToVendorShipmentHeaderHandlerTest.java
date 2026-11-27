@@ -1500,6 +1500,43 @@ public class ReturnToVendorShipmentHeaderHandlerTest {
   }
 
   /**
+   * ETP-6179 CP-12: the vendor return's contract does not declare {@code validateOnly}, so the key,
+   * if sent anyway, is not read (ReturnInvoiceKind.acceptsValidateOnly false): the real call runs
+   * and creates and completes the rectificativa, it is not answered as a dry run.
+   */
+  @Test
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  public void handleCreateReturnInvoice_validateOnlyIsNotReadOnTheVendorReturn() throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      mockCreateReturnInvoiceFlow(dal, provider, "ret-inv-1");
+      when(dal.get(eq(Invoice.class), eq("inv-src-1"))).thenReturn(mock(Invoice.class));
+
+      try (CompletionMocks completion = new CompletionMocks(dal, completionSuccess())) {
+        mockCompletedInvoice(dal, "ret-inv-1", "REC-2000001", "CO");
+
+        NeoResponse result = handler.handle(NeoContext.builder()
+            .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+            .fieldName("createReturnInvoice").recordId("ret-1")
+            .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+        assertEquals(200, result.getHttpStatus());
+        JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+        assertFalse(data.has("validateOnly"));
+        assertEquals("ret-inv-1", data.getString("id"));
+        verify(completion.processInvoiceUtil, Mockito.times(1))
+            .process(eq("ret-inv-1"), eq("CO"), anyString(), anyString(), anyString(), any(), any());
+      }
+    }
+  }
+
+  /**
    * ETP-5712: a second rectificative on the same return needs the explicit
    * {@code allowDuplicate:true} (one per return, like the screen) and is then reported: the answer
    * lists the non-voided ones the return already had BEFORE this call.

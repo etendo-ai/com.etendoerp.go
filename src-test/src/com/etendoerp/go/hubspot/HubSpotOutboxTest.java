@@ -90,6 +90,36 @@ class HubSpotOutboxTest {
   }
 
   @Test
+  void theConsentTextsTheVisitorWasShownAreKeptBounded() throws Exception {
+    // ETP-6363: HubSpot records them as the proof of the consent.
+    JSONObject kept = new JSONObject(HubSpotOutbox.signupContext(new JSONObject()
+        .put("consentText", " Al crear tu cuenta, aceptas los Términos y Condiciones. ")
+        .put("communicationsText", "x".repeat(900))));
+
+    assertEquals("Al crear tu cuenta, aceptas los Términos y Condiciones.",
+        kept.getString("consentText"));
+    assertEquals(500, kept.getString("communicationsText").length());
+  }
+
+  @Test
+  void theCheckboxStateJoinsTheSignUpOnlyWithTheLabelTheVisitorSaw() throws Exception {
+    Account ticked = mock(Account.class);
+    when(ticked.isMarketingConsent()).thenReturn(true);
+    Account unticked = mock(Account.class);
+    when(unticked.isMarketingConsent()).thenReturn(false);
+    String withLabel = new JSONObject().put("hutk", "0123456789abcdef0123456789abcdef")
+        .put("communicationsText", "Acepto recibir comunicaciones").toString();
+
+    assertTrue(new JSONObject(HubSpotOutbox.withMarketingConsent(withLabel, ticked))
+        .getBoolean("marketingConsent"));
+    assertFalse(new JSONObject(HubSpotOutbox.withMarketingConsent(withLabel, unticked))
+        .getBoolean("marketingConsent"));
+    String withoutLabel = "{\"consentText\":\"Al crear tu cuenta\"}";
+    assertEquals(withoutLabel, HubSpotOutbox.withMarketingConsent(withoutLabel, ticked));
+    assertNull(HubSpotOutbox.withMarketingConsent(null, ticked));
+  }
+
+  @Test
   void anAccountTheSignupApiCreatedIsNotReported() {
     Account account = mock(Account.class);
     when(account.getSignupChannel()).thenReturn("agent");

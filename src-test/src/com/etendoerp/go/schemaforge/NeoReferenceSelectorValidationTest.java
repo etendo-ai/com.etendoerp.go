@@ -309,6 +309,149 @@ public class NeoReferenceSelectorValidationTest {
     }
   }
 
+  /**
+   * ETP-6470: the link to the parent is the record the user stands on, not a picker choice, so its
+   * selector is never asked — an address created under a vendor-only partner from the sales-side
+   * Business Partner window was refused by a selector that filters partners by window direction.
+   */
+  @Test
+  public void testTheLinkToTheParentIsNotJudgedByItsSelector() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      offers(Boolean.TRUE);
+      notOffered(LineFixture.LINK);
+
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null, null,
+          new JSONObject().put(LineFixture.LINK, LineFixture.HEADER_ID)
+              .put(LineFixture.BIN, LineFixture.BIN_ID)));
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
+          LineFixture.HEADER_ID, new JSONObject().put(LineFixture.LINK, LineFixture.HEADER_ID)));
+
+      selectorStatic.verify(() -> NeoSelectorService.offersValue(any(), any(Column.class),
+          eq(LineFixture.LINK), anyString(), any()), never());
+      assertEquals(LineFixture.HEADER_ID, contextFor(LineFixture.BIN).get("M_InOut_ID"));
+    }
+  }
+
+  /** ETP-6470: the exemption is the link alone — another reference not offered is refused. */
+  @Test
+  public void testANonLinkReferenceUnderAnExemptLinkIsStillRefused() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      offers(Boolean.FALSE);
+
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(null, line.tab, null, null,
+              new JSONObject().put(LineFixture.LINK, LineFixture.HEADER_ID)
+                  .put(LineFixture.BIN, LineFixture.BIN_ID));
+
+      assertEquals(LineFixture.BIN, refused.fieldName());
+      assertEquals(LineFixture.BIN_ID, refused.value());
+      assertTrue(refused.isVerified());
+    }
+  }
+
+  /** ETP-6470: the exemption does not weaken the two-parents check, whatever the selectors say. */
+  @Test
+  public void testParentIdDisagreeingWithAnExemptLinkIsStillRefused() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      offers(Boolean.TRUE);
+      notOffered(LineFixture.LINK);
+
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(null, line.tab, null, LineFixture.HEADER_ID,
+              new JSONObject().put(LineFixture.LINK, "OTHER-HEADER"));
+
+      assertEquals(LineFixture.LINK, refused.fieldName());
+      assertEquals("OTHER-HEADER", refused.value());
+    }
+  }
+
+  /**
+   * ETP-6470: editing a stored child (here the vendor's address) without moving it does not judge
+   * its link, even when the link is sent back unchanged and another field changes.
+   */
+  @Test
+  public void testAnUpdateKeepingTheStoredParentDoesNotJudgeTheLink() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      line.storeLine();
+      // The link's selector reads the bin, so the bin change alone would re-check the link.
+      Column link = line.tab.getTable().getADColumnList().get(0);
+      org.openbravo.model.ad.domain.Validation rule = validation("@M_Locator_ID@");
+      when(link.getValidation()).thenReturn(rule);
+      offers(Boolean.TRUE);
+      notOffered(LineFixture.LINK);
+
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(null, line.tab,
+          LineFixture.LINE_ID, null, new JSONObject().put(LineFixture.LINK, LineFixture.HEADER_ID)
+              .put(LineFixture.BIN, LineFixture.BIN_ID)));
+
+      selectorStatic.verify(() -> NeoSelectorService.offersValue(any(), any(Column.class),
+          eq(LineFixture.LINK), anyString(), any()), never());
+    }
+  }
+
+  /**
+   * ETP-6470: an update that moves the child to another parent is a choice, so the changed link is
+   * judged by its selector (NEO does not enforce IsUpdateable on the link).
+   */
+  @Test
+  public void testAnUpdateMovingTheRecordToAnotherParentJudgesTheLink() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      line.storeLine();
+      offers(Boolean.TRUE);
+      notOffered(LineFixture.LINK);
+
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(null, line.tab, LineFixture.LINE_ID, null,
+              new JSONObject().put(LineFixture.LINK, "OTHER-HEADER"));
+
+      assertEquals(LineFixture.LINK, refused.fieldName());
+      assertEquals("OTHER-HEADER", refused.value());
+      assertTrue(refused.isVerified());
+    }
+  }
+
+  /**
+   * ETP-6470: a link column whose target is not the parent tab's entity gets no exemption — it is
+   * judged (fail closed).
+   */
+  @Test
+  public void testALinkNotTargetingTheParentEntityIsStillJudged() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      Entity other = mock(Entity.class);
+      when(other.getName()).thenReturn("SomeOtherEntity");
+      ModelProvider modelProvider = ModelProvider.getInstance();
+      when(modelProvider.getEntityByTableId("T-HEADER")).thenReturn(other);
+      offers(Boolean.TRUE);
+      notOffered(LineFixture.LINK);
+
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(null, line.tab, null, null,
+              new JSONObject().put(LineFixture.LINK, LineFixture.HEADER_ID));
+
+      assertEquals(LineFixture.LINK, refused.fieldName());
+    }
+  }
+
+  /**
+   * ETP-6470: a header tab (no parent tab) keeps judging a column its table flags as a link to a
+   * parent — there is no record the user stands on, the value is a picker choice.
+   */
+  @Test
+  public void testAHeaderColumnFlaggedAsLinkIsStillJudged() throws Exception {
+    Column partnerColumn = columnOf("C_BPartner_ID");
+    when(partnerColumn.isLinkToParentColumn()).thenReturn(true);
+    Property partner = order.getProperty(PARTNER, false);
+    when(order.getPropertyByColumnName("C_BPartner_ID")).thenReturn(partner);
+    offers(Boolean.TRUE);
+    notOffered(PARTNER);
+
+    NeoReferenceSelectorValidation.RefusedReference refused = check(
+        new JSONObject().put(PARTNER, PARTNER_ID));
+
+    assertEquals(PARTNER, refused.fieldName());
+    assertTrue(refused.isVerified());
+  }
+
   /** An explicit {@code parentId} and a different link value in the body are refused. */
   @Test
   public void testParentIdDisagreeingWithTheLinkValueIsRefused() throws Exception {
@@ -598,6 +741,7 @@ public class NeoReferenceSelectorValidationTest {
     static final String BIN_ID = "BIN-1";
     static final String WAREHOUSE_ID = "WH-1";
     static final String HEADER_ENTITY = "MaterialMgmtShipmentInOut";
+    static final String LINE_ID = "LINE-1";
 
     private final MockedStatic<KernelUtils> kernelStatic = mockStatic(KernelUtils.class);
     private final MockedStatic<OBProvider> providerStatic = mockStatic(OBProvider.class);
@@ -651,6 +795,21 @@ public class NeoReferenceSelectorValidationTest {
       when(provider.get(DataToJsonConverter.class)).thenReturn(converter);
       when(converter.toJsonObject(headerRecord, DataResolvingMode.FULL))
           .thenReturn(new JSONObject().put("warehouse", WAREHOUSE_ID));
+    }
+
+    /** Stores line {@link #LINE_ID} under header {@link #HEADER_ID}. */
+    BaseOBObject storeLine() throws Exception {
+      Entity lineEntity = ModelProvider.getInstance().getEntityByTableId("T-LINE");
+      when(lineEntity.getName()).thenReturn("ShipLine");
+      BaseOBObject storedHeader = mock(BaseOBObject.class);
+      when(storedHeader.getId()).thenReturn(HEADER_ID);
+      BaseOBObject stored = mock(BaseOBObject.class);
+      when(stored.get(LINK)).thenReturn(storedHeader);
+      when(dal.get("ShipLine", LINE_ID)).thenReturn(stored);
+      when(OBProvider.getInstance().get(DataToJsonConverter.class)
+          .toJsonObject(stored, DataResolvingMode.FULL))
+          .thenReturn(new JSONObject().put(LINK, HEADER_ID));
+      return stored;
     }
 
     @Override
@@ -747,6 +906,11 @@ public class NeoReferenceSelectorValidationTest {
   private void offers(Boolean answer) {
     selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), anyString(),
         anyString(), any())).thenReturn(java.util.Optional.ofNullable(answer));
+  }
+
+  private void notOffered(String field) {
+    selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), eq(field),
+        anyString(), any())).thenReturn(java.util.Optional.of(Boolean.FALSE));
   }
 
   private static Property reference(String columnName, Entity target, String name) {

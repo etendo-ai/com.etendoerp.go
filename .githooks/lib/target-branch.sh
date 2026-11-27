@@ -16,7 +16,7 @@
 #                                           (mergeblock/*), the rule CI uses when there is no PR yet
 #                                           (offline-regen-check.yml)
 #                                        4. develop
-#   check_target_conflicts <branch>    fetches origin/<branch> and exits the hook when HEAD does not
+#   check_target_conflicts <branch>    fetches <remote>/<branch> (PUSH_REMOTE, else origin) and exits the hook when HEAD does not
 #                                      merge into it cleanly (git merge-tree, no working-tree change)
 
 pushed_branch() {
@@ -51,13 +51,13 @@ target_branch() {
 }
 
 check_target_conflicts() {
-  local target="$1" base_ref out rc
+  local target="$1" remote="${PUSH_REMOTE:-origin}" base_ref out rc
   echo "==> Checking for conflicts with the target branch (fetch + merge-tree)..."
-  if ! git fetch --quiet origin "$target" 2>/dev/null; then
-    echo "    SKIPPED ⚠️ (could not fetch origin/$target — offline, or the branch does not exist)"
+  if ! git fetch --quiet "$remote" "$target" 2>/dev/null; then
+    echo "    SKIPPED ⚠️ (could not fetch $remote/$target — offline, or the branch does not exist)"
     return 0
   fi
-  base_ref="origin/$target"
+  base_ref="$remote/$target"
 
   # Tree-level merge check — no working-tree changes (git >= 2.38).
   set +e

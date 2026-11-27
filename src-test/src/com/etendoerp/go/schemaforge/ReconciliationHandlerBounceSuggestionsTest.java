@@ -46,6 +46,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.math.BigDecimal;
+import java.time.Clock;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -77,11 +78,13 @@ import org.openbravo.model.financialmgmt.payment.FIN_FinaccTransaction;
 import org.openbravo.model.financialmgmt.payment.FIN_FinancialAccount;
 import org.openbravo.model.financialmgmt.payment.FIN_Reconciliation;
 
+import com.etendoerp.go.llm.LlmDecisionException;
 import com.etendoerp.go.schemaforge.BankBounceDetector.Candidate;
 import com.etendoerp.go.schemaforge.BankBounceDetector.Pair;
 import com.etendoerp.go.schemaforge.BankBounceDetector.StatementLine;
 import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryEvents;
 import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryService;
+import com.google.common.base.Ticker;
 
 /**
  * The bounce-pair suggestions of the reconciliation ({@code bank-bounce-suggestions}, ETP-5581):
@@ -107,6 +110,7 @@ import com.etendoerp.go.schemaforge.telemetry.NeoTelemetryService;
  * @covers com.etendoerp.go.schemaforge.BankBouncePairService
  * @covers com.etendoerp.go.schemaforge.ReconciliationFlowSupport
  * @covers com.etendoerp.go.schemaforge.BankBounceKpiTelemetry
+ * @covers com.etendoerp.go.schemaforge.BankBounceAi
  */
 @RunWith(MockitoJUnitRunner.Silent.class)
 public class ReconciliationHandlerBounceSuggestionsTest {
@@ -139,6 +143,11 @@ public class ReconciliationHandlerBounceSuggestionsTest {
   private FIN_FinancialAccount account;
   /** Receives every bounce-pair KPI event of a case, never a runtime sink. */
   private NeoTelemetryService kpiTelemetry;
+  /**
+   * The model of the AI second layer (ETP-6359): not configured unless a case says so, so no case
+   * reads the runtime configuration or reaches a gateway.
+   */
+  private BankBounceAiTest.FakeDecider aiDecider;
 
   /**
    * A spied handler whose rollback, tolerances, account and rules are stubbed, so each case only
@@ -156,6 +165,9 @@ public class ReconciliationHandlerBounceSuggestionsTest {
     doReturn(Collections.emptyList()).when(handler).loadRules(eq(ACC_ID));
     kpiTelemetry = mock(NeoTelemetryService.class);
     BankBounceKpiTelemetry.setTelemetryService(kpiTelemetry);
+    aiDecider = new BankBounceAiTest.FakeDecider();
+    aiDecider.configured = false;
+    BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
   }
 
   /**
@@ -165,6 +177,7 @@ public class ReconciliationHandlerBounceSuggestionsTest {
   @After
   public void clearMocks() {
     BankBounceKpiTelemetry.setTelemetryService(null);
+    BankBounceAi.reset();
     Mockito.framework().clearInlineMocks();
   }
 
@@ -527,6 +540,105 @@ public class ReconciliationHandlerBounceSuggestionsTest {
     }
     onData.getJSONObject("kpis").remove("bouncePairs");
     assertEquals(offData.toString(), onData.toString());
+  }
+
+  /**
+   * ETP-6359: with the AI layer present but nothing assessed — no key, the gateway failing or
+   * refusing — the {@code autoMatch} answer is byte for byte the one without the layer: no field,
+   * and nothing else of the answer moved.
+   */
+  @Test
+  public void autoMatchWithTheAiLayerPresentButNothingAssessedIsTheSameAnswer() throws Exception {
+    stubAutoMatchLines();
+    String withoutAi;
+    String noGateway;
+    String failing;
+    String refusing;
+    try (MockedStatic<ReconciliationKpiTelemetry> telemetry =
+        mockStatic(ReconciliationKpiTelemetry.class);
+        MockedStatic<BankBounceDetector> detector =
+            mockStatic(BankBounceDetector.class, CALLS_REAL_METHODS)) {
+      List<Pair> pairs = Arrays.asList(HIGH, REVIEW, AMBIGUOUS);
+      withoutAi = data(runAutoMatch(true, pairs, detector)).toString();
+
+      aiDecider.configured = true;
+      aiDecider.script = qs -> {
+        throw new LlmDecisionException("429", true);
+      };
+      BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+      failing = data(runAutoMatch(true, pairs, detector)).toString();
+      assertEquals("the failing gateway was asked once", 1, aiDecider.calls.get());
+
+      aiDecider.script = BankBounceAiTest.FakeDecider::refused;
+      BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+      refusing = data(runAutoMatch(true, pairs, detector)).toString();
+      assertEquals(2, aiDecider.calls.get());
+
+      aiDecider.configured = false;
+      noGateway = data(runAutoMatch(true, pairs, detector)).toString();
+      assertEquals(2, aiDecider.calls.get());
+    }
+
+    assertFalse(withoutAi.contains("bounceAiAssessments"));
+    assertEquals(withoutAi, noGateway);
+    assertEquals(withoutAi, failing);
+    assertEquals(withoutAi, refusing);
+  }
+
+  /**
+   * ETP-6359: an assessed rejection adds {@code bounceAiAssessments} to {@code response.data} and
+   * nothing else changes; with the flag off, or on an MCP call, the layer is not even asked.
+   */
+  @Test
+  public void autoMatchAddsOnlyTheAiAssessmentsAndOnlyWhenTheLayerRuns() throws Exception {
+    stubAutoMatchLines();
+    aiDecider.configured = true;
+    aiDecider.script = qs -> BankBounceAiTest.FakeDecider.exactly(qs, 0.9, 0.05, 0.05);
+    String baseline;
+    JSONObject assessed;
+    String flagOff;
+    String mcp;
+    int callsAfterAssessed;
+    try (MockedStatic<ReconciliationKpiTelemetry> telemetry =
+        mockStatic(ReconciliationKpiTelemetry.class);
+        MockedStatic<BankBounceDetector> detector =
+            mockStatic(BankBounceDetector.class, CALLS_REAL_METHODS)) {
+      List<Pair> pairs = Arrays.asList(HIGH, REVIEW, AMBIGUOUS);
+      aiDecider.configured = false;
+      baseline = data(runAutoMatch(true, pairs, detector)).toString();
+      aiDecider.configured = true;
+
+      assessed = data(runAutoMatch(true, pairs, detector));
+      callsAfterAssessed = aiDecider.calls.get();
+
+      BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+      flagOff = data(runAutoMatch(false, pairs, detector)).toString();
+
+      String previous = NeoWriteChannel.enter(NeoWriteChannel.MCP);
+      try {
+        mcp = data(runAutoMatch(true, pairs, detector)).toString();
+      } finally {
+        NeoWriteChannel.restore(previous);
+      }
+    }
+
+    // Only the ambiguous pair is asked: the high pair never, the plain one was taken by a movement.
+    assertEquals(1, callsAfterAssessed);
+    assertEquals(1, aiDecider.questions.get(0).size());
+    assertTrue(assessed.has("bounceAiAssessments"));
+    JSONObject entry = assessed.getJSONObject("bounceAiAssessments").getJSONObject("B3");
+    assertEquals(1, assessed.getJSONObject("bounceAiAssessments").length());
+    assertEquals(90, entry.getJSONObject("probabilities").getInt("C1"));
+    assertEquals(5, entry.getJSONObject("probabilities").getInt("C2"));
+    assertEquals(5, entry.getInt("none"));
+    assertEquals("C1", entry.getString("recommendedLineId"));
+    JSONObject without = new JSONObject(assessed.toString());
+    without.remove("bounceAiAssessments");
+    assertEquals(baseline, without.toString());
+
+    assertFalse(flagOff.contains("bounceAiAssessments"));
+    assertEquals("neither the flag off nor an MCP call asks the model", 1, aiDecider.calls.get());
+    assertEquals(baseline, mcp);
   }
 
   /**
@@ -1606,5 +1718,556 @@ public class ReconciliationHandlerBounceSuggestionsTest {
     assertEquals(BankBounceErrors.CODE_SUGGESTIONS_OFF,
         data(response).getJSONArray("results").getJSONObject(0).getString("code"));
     verify(kpiTelemetry, Mockito.after(300).never()).emit(anyString(), anyMap(), any());
+  }
+
+  // ---------------------------------------------------------------------------
+  // applySuggestions: the ai_* facts of the modal's decisions (ETP-6359)
+  // ---------------------------------------------------------------------------
+
+  private static final StatementLine C3 = model("C3", -20, DAY);
+  private static final StatementLine C4 = model("C4", -20, DAY.plusDays(1));
+  private static final StatementLine B4 = model("B4", 20, DAY.plusDays(3));
+  /** A second ambiguous review pair, apart from {@link #AMBIGUOUS}. */
+  private static final Pair AMBIGUOUS_2 = new Pair(null, B4,
+      List.of(new Candidate(C3, List.of(BankBounceDetector.SIGNAL_COUNTERPARTY)),
+          new Candidate(C4, Collections.emptyList())),
+      List.of(BankBounceDetector.SIGNAL_COUNTERPARTY), BankBounceDetector.CONFIDENCE_REVIEW);
+
+  /**
+   * Asks the fake model about the three review pairs as an {@code autoMatch} would, favouring the
+   * first option of every question: {@link #AMBIGUOUS} recommends C1, {@link #AMBIGUOUS_2}
+   * recommends C3 and the plain {@link #REVIEW} is assessed without a recommendation.
+   *
+   * @throws Exception when the answer cannot be built
+   */
+  private void seedAssessments() throws Exception {
+    aiDecider.configured = true;
+    aiDecider.script = qs -> BankBounceAiTest.FakeDecider.favoring(qs, 0, 0.9);
+    BankBounceSuggestions.Plan plan =
+        plan(REVIEW, AMBIGUOUS, AMBIGUOUS_2);
+    JSONArray groups = new JSONArray();
+    JSONObject kpis = new JSONObject();
+    BankBounceSuggestions.appendGroups(plan, groups, kpis);
+    JSONObject answer = new JSONObject().put("groups", groups).put("kpis", kpis);
+    BankBounceAi.annotate(plan, answer);
+    assertTrue(answer.has("bounceAiAssessments"));
+    assertEquals(3, answer.getJSONObject("bounceAiAssessments").length());
+  }
+
+  /**
+   * One {@code applySuggestions} of the modal: the ambiguous pair B3 discarded with C1, the plain
+   * review pair reported unchecked and the second ambiguous pair sent to the panel.
+   *
+   * @return the three decision events, in order
+   * @throws Exception when the call fails
+   */
+  private List<Map<String, Object>> applyThreeDecisions() throws Exception {
+    List<String> events = new ArrayList<>();
+    JSONObject body = applyBody(bounceGroup("C1", "B3")).put("bounceDecisions", new JSONArray()
+        .put(reported(REVIEW.groupKey(), "unchecked"))
+        .put(reported(AMBIGUOUS_2.groupKey(), "sent_to_panel")));
+    NeoResponse response;
+    try (MockedStatic<BankBounceSuggestionsFlag> flag = mockStatic(BankBounceSuggestionsFlag.class);
+        MockedStatic<OBDal> dal = mockStatic(OBDal.class);
+        MockedStatic<BankBounceDetector> detector =
+            mockStatic(BankBounceDetector.class, CALLS_REAL_METHODS);
+        MockedStatic<BankBouncePairService> service =
+            mockStatic(BankBouncePairService.class, CALLS_REAL_METHODS);
+        MockedStatic<OBMessageUtils> messages = mockStatic(OBMessageUtils.class);
+        MockedStatic<ReconciliationKpiTelemetry> telemetry =
+            mockStatic(ReconciliationKpiTelemetry.class)) {
+      flag.when(BankBounceSuggestionsFlag::isEnabled).thenReturn(true);
+      detectionAnswers(dal, detector, inv -> List.of(REVIEW, AMBIGUOUS, AMBIGUOUS_2));
+      discardsAsProposed(service, events, "C1", "B3");
+
+      response = handler.applySuggestions(body);
+    }
+    assertEquals(201, response.getHttpStatus());
+    List<Map<String, Object>> decided = decidedEvents(3);
+    assertEquals(Arrays.asList("discarded", "unchecked", "sent_to_panel"),
+        Arrays.asList(decided.get(0).get("decision"), decided.get(1).get("decision"),
+            decided.get(2).get("decision")));
+    return decided;
+  }
+
+  /** The keys of an event that start with {@code ai_}. */
+  private static Set<String> aiKeys(Map<String, Object> event) {
+    Set<String> out = new HashSet<>();
+    for (String key : event.keySet()) {
+      if (key.startsWith("ai_")) {
+        out.add(key);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * With an assessment in the cache each modal decision carries the AI facts that fit it: the
+   * discard of the recommended outflow is accepted with its percentage, an unchecked plain pair is
+   * assessed without a recommendation, a pair sent to the panel is recommended and not accepted
+   * and has no percentage (no outflow was chosen).
+   */
+  @Test
+  public void modalDecisionsCarryTheAiFactsOfTheAssessedRejections() throws Exception {
+    seedAssessments();
+
+    List<Map<String, Object>> decided = applyThreeDecisions();
+
+    Map<String, Object> discarded = decided.get(0);
+    assertEquals(Boolean.TRUE, discarded.get("ai_assessed"));
+    assertEquals(90, discarded.get("ai_probability"));
+    assertEquals(Boolean.TRUE, discarded.get("ai_recommended"));
+    assertEquals(Boolean.TRUE, discarded.get("ai_recommendation_accepted"));
+    Map<String, Object> unchecked = decided.get(1);
+    assertEquals(Boolean.TRUE, unchecked.get("ai_assessed"));
+    assertFalse(unchecked.containsKey("ai_probability"));
+    assertEquals(Boolean.FALSE, unchecked.get("ai_recommended"));
+    assertFalse("only a recommendation can be accepted",
+        unchecked.containsKey("ai_recommendation_accepted"));
+    Map<String, Object> panel = decided.get(2);
+    assertEquals(Boolean.TRUE, panel.get("ai_assessed"));
+    assertFalse(panel.containsKey("ai_probability"));
+    assertEquals(Boolean.TRUE, panel.get("ai_recommended"));
+    assertEquals(Boolean.FALSE, panel.get("ai_recommendation_accepted"));
+  }
+
+  /**
+   * Without an assessment — nothing cached, or the call is on the MCP channel — the three events
+   * have no {@code ai_*} key and are exactly the ones the same decisions produce with the layer
+   * assessed, minus those keys.
+   */
+  @Test
+  public void withoutAnAssessmentTheModalEventsAreTheOldOnes() throws Exception {
+    List<Map<String, Object>> plain = applyThreeDecisions();
+    for (Map<String, Object> event : plain) {
+      assertTrue(event.toString(), aiKeys(event).isEmpty());
+    }
+    assertEquals(0, aiDecider.calls.get());
+
+    Mockito.clearInvocations(kpiTelemetry);
+    seedAssessments();
+    String previous = NeoWriteChannel.enter(NeoWriteChannel.MCP);
+    List<Map<String, Object>> mcp;
+    try {
+      mcp = applyThreeDecisions();
+    } finally {
+      NeoWriteChannel.restore(previous);
+    }
+    for (int i = 0; i < 3; i++) {
+      assertTrue("mcp: no ai_* whatever the cache holds", aiKeys(mcp.get(i)).isEmpty());
+      Map<String, Object> expected = new java.util.LinkedHashMap<>(plain.get(i));
+      expected.put("channel", "mcp");
+      assertEquals(expected, mcp.get(i));
+    }
+
+    Mockito.clearInvocations(kpiTelemetry);
+    List<Map<String, Object>> assessed = applyThreeDecisions();
+    for (int i = 0; i < 3; i++) {
+      Map<String, Object> stripped = new java.util.LinkedHashMap<>(assessed.get(i));
+      stripped.keySet().removeAll(aiKeys(assessed.get(i)));
+      assertEquals("only the ai_* keys differ", plain.get(i), stripped);
+      assertFalse(aiKeys(assessed.get(i)).isEmpty());
+    }
+  }
+
+  /**
+   * An assessment that expired (or never existed for that rejection) leaves its decision without
+   * {@code ai_*} keys even when the cache holds the others.
+   */
+  @Test
+  public void anExpiredAssessmentLeavesTheDecisionWithoutAiFacts() throws Exception {
+    java.util.concurrent.atomic.AtomicLong now = new java.util.concurrent.atomic.AtomicLong(1000L);
+    BankBounceAi.setSeams(aiDecider, () -> { }, new Ticker() {
+      @Override
+      public long read() {
+        return now.get();
+      }
+    }, Clock.systemUTC());
+    seedAssessments();
+    now.addAndGet(java.time.Duration.ofHours(25).toNanos());
+
+    List<Map<String, Object>> decided = applyThreeDecisions();
+
+    for (Map<String, Object> event : decided) {
+      assertTrue(event.toString(), aiKeys(event).isEmpty());
+    }
+  }
+
+  /**
+   * The nominal components the AI facts need are built once per call, however many decisions the
+   * modal reports: the references are one DAL read per line.
+   */
+  @Test
+  public void theNominalComponentsAreBuiltOncePerApplySuggestions() throws Exception {
+    seedAssessments();
+    List<Map<String, Object>> decided;
+    try (MockedStatic<BankBounceAiQuestions> questions =
+        mockStatic(BankBounceAiQuestions.class, CALLS_REAL_METHODS)) {
+      decided = applyThreeDecisions();
+
+      questions.verify(() -> BankBounceAiQuestions.components(any(), any(), any(), any(), any()),
+          times(1));
+    }
+    assertEquals(3, decided.size());
+    assertEquals(Boolean.TRUE, decided.get(2).get("ai_assessed"));
+  }
+
+  // ---------------------------------------------------------------------------
+  // applySuggestions: choiceSource "ai" groups (ETP-6359)
+  // ---------------------------------------------------------------------------
+
+  /** A second ambiguous pair over the same two outflows as {@link #AMBIGUOUS}. */
+  private static final StatementLine B5 = model("B5", 30, DAY.plusDays(3));
+  private static final Pair SHARING = new Pair(null, B5,
+      List.of(new Candidate(C1, List.of(BankBounceDetector.SIGNAL_COUNTERPARTY)),
+          new Candidate(C2, Collections.emptyList())),
+      List.of(BankBounceDetector.SIGNAL_COUNTERPARTY), BankBounceDetector.CONFIDENCE_REVIEW);
+
+  /**
+   * An {@code applySuggestions} bounce-pair group with an optional {@code choiceSource}.
+   *
+   * @param lineId        its {@code statementLineId} (the outflow picked)
+   * @param counterpartId its {@code counterpartLineId} (the rejection)
+   * @param source        the {@code choiceSource}, or {@code null} to leave it out
+   * @return the group
+   * @throws Exception when it cannot be written
+   */
+  private static JSONObject sourced(String lineId, String counterpartId, String source)
+      throws Exception {
+    JSONObject group = bounceGroup(lineId, counterpartId);
+    if (source != null) {
+      group.put("choiceSource", source);
+    }
+    return group;
+  }
+
+  /**
+   * Asks the fake model about {@code pairs} as an {@code autoMatch} would, favouring the first
+   * option of every question, so the cache holds their assessments.
+   *
+   * @param pairs the review pairs to assess
+   * @throws Exception when the answer cannot be built
+   */
+  private void seedAssessmentsOf(Pair... pairs) throws Exception {
+    aiDecider.configured = true;
+    aiDecider.script = qs -> BankBounceAiTest.FakeDecider.favoring(qs, 0, 0.9);
+    BankBounceSuggestions.Plan plan = plan(pairs);
+    JSONArray groups = new JSONArray();
+    JSONObject kpis = new JSONObject();
+    BankBounceSuggestions.appendGroups(plan, groups, kpis);
+    JSONObject answer = new JSONObject().put("groups", groups).put("kpis", kpis);
+    BankBounceAi.annotate(plan, answer);
+  }
+
+  /**
+   * One {@code applySuggestions} over the detected pairs; every {@code (original, bounce)} given
+   * validates as passing and each discard is recorded in {@code events}.
+   *
+   * @param detected   the pairs the call's detection answers
+   * @param body       the {@code applySuggestions} body
+   * @param events     receives one entry per discard of this call (cleared before the call)
+   * @param validPairs {@code (original, bounce)} id pairs, flattened, that validate as passing
+   * @return the answer
+   * @throws Exception when the call fails
+   */
+  private NeoResponse applyAi(List<Pair> detected, JSONObject body, List<String> events,
+      String... validPairs) throws Exception {
+    try (MockedStatic<BankBounceSuggestionsFlag> flag = mockStatic(BankBounceSuggestionsFlag.class);
+        MockedStatic<OBDal> dal = mockStatic(OBDal.class);
+        MockedStatic<BankBounceDetector> detector =
+            mockStatic(BankBounceDetector.class, CALLS_REAL_METHODS);
+        MockedStatic<BankBouncePairService> service =
+            mockStatic(BankBouncePairService.class, CALLS_REAL_METHODS);
+        MockedStatic<OBMessageUtils> messages = mockStatic(OBMessageUtils.class);
+        MockedStatic<ReconciliationKpiTelemetry> telemetry =
+            mockStatic(ReconciliationKpiTelemetry.class)) {
+      flag.when(BankBounceSuggestionsFlag::isEnabled).thenReturn(true);
+      detectionAnswers(dal, detector, inv -> detected);
+      for (int i = 0; i < validPairs.length; i += 2) {
+        discardsAsProposed(service, events, validPairs[i], validPairs[i + 1]);
+      }
+      // Re-stubbing discard() runs the previous answer: forget what the setup recorded.
+      events.clear();
+      return handler.applySuggestions(body);
+    }
+  }
+
+  /**
+   * One entry of the {@code results} of an answer.
+   *
+   * @param response the {@code applySuggestions} answer
+   * @param index    the position of the group
+   * @return its result
+   * @throws Exception when it is not there
+   */
+  private static JSONObject resultOf(NeoResponse response, int index) throws Exception {
+    return data(response).getJSONArray("results").getJSONObject(index);
+  }
+
+  /**
+   * Asserts a result is the {@code BOUNCE_AI_SUGGESTION_STALE} refusal, with its whole shape.
+   *
+   * @param refused the result of the group
+   * @param outflow the outflow the group picked
+   * @param bounce  the rejection of the group
+   * @throws Exception when a field is missing
+   */
+  private static void assertStale(JSONObject refused, String outflow, String bounce)
+      throws Exception {
+    assertEquals("bouncePair", refused.getString("kind"));
+    assertEquals(outflow, refused.getString("statementLineId"));
+    assertEquals(bounce, refused.getString("counterpartLineId"));
+    assertEquals("BOUNCE_AI_SUGGESTION_STALE", refused.getString("code"));
+    assertEquals("no AD_MESSAGE text in a unit test: the key is the fallback",
+        "ETGO_BounceAiSuggestionStale", refused.getString("message"));
+    JSONObject error = refused.getJSONObject("error");
+    assertEquals(409, error.getInt("status"));
+    assertEquals("BOUNCE_AI_SUGGESTION_STALE", error.getString("code"));
+    assertEquals("ETGO_BounceAiSuggestionStale", error.getJSONArray("messageKeys").getString(0));
+  }
+
+  /**
+   * One call, three groups: an "ai" pick that still holds, an "ai" pick the cache no longer
+   * recommends, and a "user" pick. Only the stale one is refused (409 with its shape); the others
+   * are applied, and the lines of the refused group are not taken.
+   */
+  @Test
+  public void aStaleAiGroupIsRefusedAndTheOtherGroupsAreApplied() throws Exception {
+    seedAssessmentsOf(REVIEW, AMBIGUOUS, AMBIGUOUS_2);
+    List<String> events = new ArrayList<>();
+    JSONObject body = applyBody(sourced("C1", "B3", "ai"), sourced("C4", "B4", "ai"),
+        sourced("O2", "B2", "user"));
+
+    NeoResponse response = applyAi(List.of(REVIEW, AMBIGUOUS, AMBIGUOUS_2), body, events,
+        "C1", "B3", "C4", "B4", "O2", "B2");
+
+    assertEquals(201, response.getHttpStatus());
+    assertEquals("two discards: the stale group wrote nothing", 2, events.size());
+    assertTrue(resultOf(response, 0).getBoolean("discarded"));
+    assertStale(resultOf(response, 1), "C4", "B4");
+    assertTrue(resultOf(response, 2).getBoolean("discarded"));
+    // KPI: discarded, failed (usual), discarded; the failed one is an assessed rejection the
+    // user did not follow, so it carries the facts of a decision that chose no outflow.
+    List<Map<String, Object>> decided = decidedEvents(3);
+    assertEquals(Arrays.asList("discarded", "failed", "discarded"),
+        Arrays.asList(decided.get(0).get("decision"), decided.get(1).get("decision"),
+            decided.get(2).get("decision")));
+    assertEquals(90, decided.get(0).get("ai_probability"));
+    assertEquals(Boolean.TRUE, decided.get(0).get("ai_recommendation_accepted"));
+    Map<String, Object> failed = decided.get(1);
+    assertFalse("a refusal chose no outflow: no percentage", failed.containsKey("ai_probability"));
+    assertEquals(Boolean.TRUE, failed.get("ai_recommended"));
+    assertEquals(Boolean.FALSE, failed.get("ai_recommendation_accepted"));
+  }
+
+  /** "ai" with the AI abstained (nothing cached / a conflict) or recommending ANOTHER outflow: stale. */
+  @Test
+  public void aiGroupsWithoutASupportingRecommendationAreStale() throws Exception {
+    // (a) nothing cached for the rejection
+    List<String> events = new ArrayList<>();
+    NeoResponse none = applyAi(List.of(AMBIGUOUS), applyBody(sourced("C1", "B3", "ai")), events,
+        "C1", "B3");
+    assertStale(resultOf(none, 0), "C1", "B3");
+    assertTrue("nothing discarded", events.isEmpty());
+    // (b) the AI recommends C1: picking C2 as "ai" is stale
+    seedAssessmentsOf(AMBIGUOUS);
+    NeoResponse other = applyAi(List.of(AMBIGUOUS), applyBody(sourced("C2", "B3", "ai")), events,
+        "C2", "B3");
+    assertStale(resultOf(other, 0), "C2", "B3");
+    assertTrue("nothing discarded", events.isEmpty());
+    // (c) two rejections over the same outflows recommended the same one: the AI abstains on both
+    BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+    seedAssessmentsOf(AMBIGUOUS, SHARING);
+    NeoResponse abstained = applyAi(List.of(AMBIGUOUS, SHARING),
+        applyBody(sourced("C1", "B3", "ai")), events, "C1", "B3");
+    assertStale(resultOf(abstained, 0), "C1", "B3");
+    assertTrue("nothing discarded", events.isEmpty());
+  }
+
+  /** "user", no choiceSource and an unknown value are not checked, whatever the cache says. */
+  @Test
+  public void otherChoiceSourcesAreAppliedAsBefore() throws Exception {
+    seedAssessmentsOf(AMBIGUOUS); // the AI recommends C1; C2 would be stale as "ai"
+    for (String source : new String[] { "user", null, "foo", "AI", "" }) {
+      List<String> events = new ArrayList<>();
+
+      NeoResponse response = applyAi(List.of(AMBIGUOUS), applyBody(sourced("C2", "B3", source)),
+          events, "C2", "B3");
+
+      assertEquals("source=" + source, 201, response.getHttpStatus());
+      assertTrue("source=" + source, resultOf(response, 0).getBoolean("discarded"));
+      assertEquals(Collections.singletonList("discard"), events);
+    }
+  }
+
+  /** The AI pick that still holds is applied. */
+  @Test
+  public void aValidAiGroupIsApplied() throws Exception {
+    seedAssessmentsOf(AMBIGUOUS);
+    List<String> events = new ArrayList<>();
+
+    NeoResponse response = applyAi(List.of(AMBIGUOUS), applyBody(sourced("C1", "B3", "ai")),
+        events, "C1", "B3");
+
+    assertTrue(resultOf(response, 0).getBoolean("discarded"));
+    assertEquals(Collections.singletonList("discard"), events);
+    assertEquals("the check reads the cache, it never asks the model", 1, aiDecider.calls.get());
+  }
+
+  /** An internal failure reading the cache is a server error, not a stale refusal; nothing written. */
+  @Test
+  public void anInternalErrorCheckingTheCacheIsNotAStaleRefusal() throws Exception {
+    seedAssessmentsOf(AMBIGUOUS);
+    BankBounceAi.setSeams(new BankBounceAi.Decider() {
+      @Override
+      public boolean configured() {
+        return true;
+      }
+
+      @Override
+      public String model() {
+        throw new IllegalStateException("configuration unreadable");
+      }
+
+      @Override
+      public com.etendoerp.go.llm.DecisionResult decide(com.etendoerp.go.llm.DecisionInput input,
+          List<com.etendoerp.go.llm.DecisionQuestion> questions) {
+        throw new AssertionError("never asked");
+      }
+    }, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+    List<String> events = new ArrayList<>();
+    NeoContext context = NeoContext.builder().httpMethod("POST")
+        .requestBody(applyBody(sourced("C1", "B3", "ai")))
+        .queryParams(Map.of("action", "applySuggestions")).build();
+
+    NeoResponse response;
+    try (MockedStatic<org.openbravo.dal.core.OBContext> ctx =
+        mockStatic(org.openbravo.dal.core.OBContext.class);
+        MockedStatic<BankBounceSuggestionsFlag> flag = mockStatic(BankBounceSuggestionsFlag.class);
+        MockedStatic<OBDal> dal = mockStatic(OBDal.class);
+        MockedStatic<BankBounceDetector> detector =
+            mockStatic(BankBounceDetector.class, CALLS_REAL_METHODS);
+        MockedStatic<BankBouncePairService> service =
+            mockStatic(BankBouncePairService.class, CALLS_REAL_METHODS);
+        MockedStatic<OBMessageUtils> messages = mockStatic(OBMessageUtils.class);
+        MockedStatic<ReconciliationKpiTelemetry> telemetry =
+            mockStatic(ReconciliationKpiTelemetry.class)) {
+      flag.when(BankBounceSuggestionsFlag::isEnabled).thenReturn(true);
+      detectionAnswers(dal, detector, inv -> List.of(AMBIGUOUS));
+      discardsAsProposed(service, events, "C1", "B3");
+
+      response = ReconciliationHandlerSupport.runPostAction(handler, context, "applySuggestions");
+    }
+
+    assertEquals(500, response.getHttpStatus());
+    assertFalse(response.getBody().toString().contains("BOUNCE_AI_SUGGESTION_STALE"));
+    assertTrue("nothing was discarded", events.isEmpty());
+    verify(kpiTelemetry, Mockito.after(300).never()).emit(anyString(), anyMap(), any());
+  }
+
+  /**
+   * MCP: a group without choiceSource is applied as always. A group WITH "ai" is checked too
+   * (the control is not channel-gated, only the assessments and the KPI facts are REST/UI):
+   * with no cached assessment it is refused stale.
+   */
+  @Test
+  public void onMcpAGroupWithoutChoiceSourceIsUnaffectedAndAnAiOneIsStillChecked()
+      throws Exception {
+    seedAssessmentsOf(AMBIGUOUS);
+    String previous = NeoWriteChannel.enter(NeoWriteChannel.MCP);
+    try {
+      List<String> events = new ArrayList<>();
+      NeoResponse plain = applyAi(List.of(AMBIGUOUS), applyBody(sourced("C2", "B3", null)), events,
+          "C2", "B3");
+      assertTrue(resultOf(plain, 0).getBoolean("discarded"));
+
+      NeoResponse valid = applyAi(List.of(AMBIGUOUS), applyBody(sourced("C1", "B3", "ai")), events,
+          "C1", "B3");
+      assertTrue("the cache recommends C1: applied on MCP as well",
+          resultOf(valid, 0).getBoolean("discarded"));
+
+      BankBounceAi.setSeams(aiDecider, () -> { }, Ticker.systemTicker(), Clock.systemUTC());
+      NeoResponse empty = applyAi(List.of(AMBIGUOUS), applyBody(sourced("C1", "B3", "ai")), events,
+          "C1", "B3");
+      assertStale(resultOf(empty, 0), "C1", "B3");
+      assertTrue("the stale one discarded nothing", events.isEmpty());
+    } finally {
+      NeoWriteChannel.restore(previous);
+    }
+  }
+
+  /** Two ambiguous pairs over the same outflow in one call: the second is LINE_NOT_PENDING. */
+  @Test
+  public void twoAmbiguousPairsSharingAnOutflowInOneCallRefuseTheSecond() throws Exception {
+    List<String> events = new ArrayList<>();
+
+    NeoResponse response = applyAi(List.of(AMBIGUOUS, SHARING),
+        applyBody(sourced("C1", "B3", null), sourced("C1", "B5", null)), events, "C1", "B3",
+        "C1", "B5");
+
+    assertEquals(Collections.singletonList("discard"), events);
+    assertTrue(resultOf(response, 0).getBoolean("discarded"));
+    JSONObject refused = resultOf(response, 1);
+    assertEquals(BankBounceErrors.CODE_LINE_NOT_PENDING, refused.getString("code"));
+    assertEquals(409, refused.getJSONObject("error").getInt("status"));
+    assertEquals("B5", refused.getString("counterpartLineId"));
+  }
+
+  /**
+   * A group that fails {@code validate} keeps its own refusal even with {@code choiceSource}
+   * "ai": the AI control runs only once validation passed, so an amount mismatch or a payment
+   * never turns into a stale suggestion.
+   */
+  @Test
+  public void aGroupThatFailsValidationKeepsItsCodeEvenWithAnAiSource() throws Exception {
+    seedAssessmentsOf(AMBIGUOUS, AMBIGUOUS_2); // C2 and C4 would be stale as "ai" if checked
+    List<String> events = new ArrayList<>();
+    JSONObject body = applyBody(sourced("C2", "B3", "ai"), sourced("C4", "B4", "ai"));
+
+    NeoResponse response;
+    try (MockedStatic<BankBounceSuggestionsFlag> flag = mockStatic(BankBounceSuggestionsFlag.class);
+        MockedStatic<OBDal> dal = mockStatic(OBDal.class);
+        MockedStatic<BankBounceDetector> detector =
+            mockStatic(BankBounceDetector.class, CALLS_REAL_METHODS);
+        MockedStatic<BankBouncePairService> service =
+            mockStatic(BankBouncePairService.class, CALLS_REAL_METHODS);
+        MockedStatic<OBMessageUtils> messages = mockStatic(OBMessageUtils.class);
+        MockedStatic<ReconciliationKpiTelemetry> telemetry =
+            mockStatic(ReconciliationKpiTelemetry.class)) {
+      flag.when(BankBounceSuggestionsFlag::isEnabled).thenReturn(true);
+      detectionAnswers(dal, detector, inv -> List.of(AMBIGUOUS, AMBIGUOUS_2));
+      BankBouncePairService.Validated amount = BankBouncePairService.Validated.failed(
+          BankBounceErrors.conflict(BankBounceErrors.CODE_AMOUNT_MISMATCH));
+      BankBouncePairService.Validated payment = BankBouncePairService.Validated.failed(
+          BankBounceErrors.conflict(BankBounceErrors.CODE_HAS_PAYMENT));
+      service.when(() -> BankBouncePairService.validate(any(), any(), eq("C2"), eq("B3"), any()))
+          .thenReturn(amount);
+      service.when(() -> BankBouncePairService.validate(any(), any(), eq("C4"), eq("B4"), any()))
+          .thenReturn(payment);
+
+      response = handler.applySuggestions(body);
+    }
+
+    assertEquals(BankBounceErrors.CODE_AMOUNT_MISMATCH, resultOf(response, 0).getString("code"));
+    assertEquals(BankBounceErrors.CODE_HAS_PAYMENT, resultOf(response, 1).getString("code"));
+    assertTrue("nothing was discarded", events.isEmpty());
+  }
+
+  /**
+   * A group refused as stale takes no lines: a later group of the same call that uses the SAME
+   * outflow is validated normally and applied.
+   */
+  @Test
+  public void aStaleGroupTakesNoLinesSoALaterGroupOnTheSameOutflowIsApplied() throws Exception {
+    seedAssessmentsOf(AMBIGUOUS); // the AI recommends C1; C2 as "ai" is stale
+    List<String> events = new ArrayList<>();
+    JSONObject body = applyBody(sourced("C2", "B3", "ai"), sourced("C2", "B5", null));
+
+    NeoResponse response = applyAi(List.of(AMBIGUOUS, SHARING), body, events, "C2", "B3", "C2",
+        "B5");
+
+    assertStale(resultOf(response, 0), "C2", "B3");
+    assertTrue("the later group on C2 was applied", resultOf(response, 1).getBoolean("discarded"));
+    assertEquals(Collections.singletonList("discard"), events);
   }
 }

@@ -17,6 +17,7 @@
 
 package com.etendoerp.go.schemaforge;
 
+import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_UNAVAILABLE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.A_MISSING;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_ADDRESS_STATE;
 import static com.etendoerp.go.schemaforge.ocr.InboxDocument.K_CURRENCY_ID;
@@ -106,7 +107,8 @@ final class InvoiceInboxLiveChecks {
       if (!vendorAddressUsable(header.optJSONObject(K_VENDOR))) {
         missing.add(VENDOR_ADDRESS);
       }
-      if (rateMissing(header, row)) {
+      if (StringUtils.isNotBlank(header.optString(K_CURRENCY_UNAVAILABLE, ""))
+          || rateMissing(header, row)) {
         missing.add(EXCHANGE_RATE);
       }
     } catch (RuntimeException e) {
@@ -178,8 +180,8 @@ final class InvoiceInboxLiveChecks {
   }
 
   /**
-   * The currency of the document: the one stored in the header, else the one derived now (vendor
-   * purchase price list, then organization, then client: what the worker, the SPA and
+   * The currency of the document: the one stored in the header, else the one derived now (organization,
+   * then client; the vendor and its price list infer nothing: what the worker, the SPA and
    * {@code PurchaseInvoiceOcrLookups#documentCurrency} agree on), so the column, the review answer and
    * the SPA banner use the same decimals. Total: {@code null} when it cannot be known.
    *

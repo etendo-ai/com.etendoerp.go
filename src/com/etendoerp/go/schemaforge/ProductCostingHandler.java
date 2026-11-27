@@ -163,6 +163,10 @@ public class ProductCostingHandler implements NeoHandler {
       return prepareCreate(context);
     }
     applyDefaultSort(context);
+    if (METHOD_GET.equals(context.getHttpMethod())) {
+      // A read never modifies the row: the engine-row guard is for PATCH/PUT/DELETE only.
+      return null;
+    }
     return guardEngineRow(context);
   }
 

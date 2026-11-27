@@ -602,6 +602,15 @@ public class ProductCostingHandlerTest {
         ProductCostingHandler.ERR_ENGINE_ROW);
   }
 
+  /**
+   * A read is not a modification: GET by id of an engine row must be served (REST and MCP
+   * {@code etendo_get} share this path), not refused with the engine-row 403.
+   */
+  @Test
+  public void testGuardLetsAGetByIdOfAnEngineRowThrough() {
+    assertNull(guard("GET", COSTING_ID, null, costingRow(Boolean.FALSE)));
+  }
+
   @Test
   public void testGuardAllowsDeletingAManualRow() throws Exception {
     assertNull(guard("DELETE", COSTING_ID, null, costingRow(Boolean.TRUE)));

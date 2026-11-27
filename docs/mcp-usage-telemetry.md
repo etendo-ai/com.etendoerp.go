@@ -160,11 +160,7 @@ Known limits, accepted: two parallel conversations of one user with one agent me
 and with several Tomcat nodes one task can be split across nodes (the map is per node). Every row
 still carries the user, the client name and its timestamp, so SQL can regroup them cluster-wide.
 
-The client name is read whatever the `mcp-modern-era-disabled` kill switch says: a client that cached
-the modern era keeps sending `_meta` after a rollback, and its rows keep their client name. The
-derived session is not: with the kill switch on such a request is legacy, keeps its `Mcp-Session-Id`
-(if any, else `session=none`) and logs no "modern session started", so a rollback adds nothing to
-that evidence. The feedback bucket is still keyed on the caller. The client
+The derived session is keyed on the caller (user, token client, role). The client
 name is deliberately not part of the key: it is client-controlled, so a client that changes it on every
 request would otherwise mint a session per request. For the same reason the `etendo_feedback`
 rate-limit bucket is keyed on the authenticated caller (user, token client, role), not on the session
@@ -413,7 +409,7 @@ The header matters: without it Tomcat reads the body as form data and the servle
   runs: HTTP 500 with `{"message": "Missing parameter: …"}`, not an `error` key.
 - Validated before anything is written; a failure answers `error` and writes nothing:
   `cell` `^Celula[A-Za-z]+$`, `assignee` a GitHub login `^[A-Za-z0-9-]{1,39}$`, `issue`
-  `^https://github\.com/etendosoftware/[A-Za-z0-9._-]+/issues/\d+$`, `task` (when sent)
+  `^https://github\.com/(etendo-ai|etendosoftware)/[A-Za-z0-9._-]+/issues/\d+$`, `task` (when sent)
   `^[A-Z][A-Z0-9]+-\d+$`, and each value within its column width.
 - One `UPDATE` sets the four `Triage_*` columns, `Triaged = now()`, `Updated = now()` and
   `UpdatedBy` = the bot's user, conditioned on `row_type = 'feedback' AND triaged IS NULL`. A

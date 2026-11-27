@@ -301,4 +301,55 @@ class OcrSanitizerTest {
     Object value = out.getJSONArray("line_items").getJSONObject(0).get("discount_percent");
     assertFalse(value instanceof Number && ((Number) value).doubleValue() == 10.0);
   }
+
+  // ── the printed currency pair (ETP-6051) ───
+
+  private static JSONObject currencySchema() throws JSONException {
+    return new JSONObject().put("properties", new JSONObject()
+        .put("currency", new JSONObject()).put("currency_raw", new JSONObject()));
+  }
+
+  private static JSONObject currencyOf(Object code, Object raw) throws JSONException {
+    return OcrSanitizer.sanitize(new JSONObject().put("currency", code).put("currency_raw", raw),
+        currencySchema());
+  }
+
+  @Test
+  @DisplayName("currency is three letters A-Z: lower case is upcased, anything else becomes null")
+  void currencyIsAnIsoCode() throws JSONException {
+    assertEquals("USD", currencyOf("usd", "US$").getString("currency"));
+    assertEquals("EUR", currencyOf(" Eur ", "EUR").getString("currency"));
+    for (Object bad : new Object[] { "US", "EURO", "€1", "U$D", "12 ", 123, JSONObject.NULL, "" }) {
+      assertTrue(currencyOf(bad, "x").isNull("currency"), String.valueOf(bad));
+    }
+    assertTrue(OcrSanitizer.sanitize(new JSONObject().put("currency_raw", "x"), currencySchema())
+        .isNull("currency"));
+  }
+
+  @Test
+  @DisplayName("currency_raw is trimmed and bounded to 20 characters; empty or not text is null")
+  void currencyRawIsTrimmedAndBounded() throws JSONException {
+    assertEquals("US$", currencyOf("USD", "  US$  ").getString("currency_raw"));
+    String longText = "x".repeat(50);
+    assertEquals(OcrSanitizer.MAX_CURRENCY_RAW, currencyOf("USD", longText)
+        .getString("currency_raw").length());
+    assertTrue(currencyOf("USD", "   ").isNull("currency_raw"));
+    assertTrue(currencyOf("USD", "").isNull("currency_raw"));
+    assertTrue(currencyOf("USD", JSONObject.NULL).isNull("currency_raw"));
+  }
+
+  @Test
+  @DisplayName("an object without both keys is untouched; a schema without the keys is unaffected")
+  void currencyNormalizationNeedsBothKeys() throws JSONException {
+    JSONObject onlyCode = new JSONObject().put("properties",
+        new JSONObject().put("currency", new JSONObject()));
+    JSONObject out = OcrSanitizer.sanitize(new JSONObject().put("currency", "usd"), onlyCode);
+    assertEquals("usd", out.getString("currency"));
+    assertFalse(out.has("currency_raw"));
+
+    JSONObject other = OcrSanitizer.sanitize(new JSONObject().put("vendor_name", "Acme"), schema());
+    assertEquals("Acme", other.getString("vendor_name"));
+    assertFalse(other.has("currency"));
+    assertFalse(other.has("currency_raw"));
+  }
 }
