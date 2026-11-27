@@ -372,7 +372,7 @@ class Fiscal303SubmissionSupport {
         : validateOrAnswer(service, attempted, new FiscalAeatSubmissionSupport.FileToPresent(
             AEAT303SubmissionRequestBuilder.MODELO_303, fileContent, data.getFiscalYear(),
             data.getPeriod(), idi), decl, data, response);
-    if (validation != null && !validation.proceed()) {
+    if (FiscalAeatSubmissionSupport.stopsPresentation(validation)) {
       return;
     }
     String endpoint = FiscalAeatAttemptLog.endpointOf(service, testMode);

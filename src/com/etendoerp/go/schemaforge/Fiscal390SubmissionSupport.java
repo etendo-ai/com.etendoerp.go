@@ -179,7 +179,7 @@ class Fiscal390SubmissionSupport {
         : validateOrAnswer(service, attempted, new FiscalAeatSubmissionSupport.FileToPresent(
             AEAT303SubmissionRequestBuilder.MODELO_390, fileContent, fiscalYear, period, idi),
             decl, response);
-    if (validation != null && !validation.proceed()) {
+    if (FiscalAeatSubmissionSupport.stopsPresentation(validation)) {
       return;
     }
     String endpoint = FiscalAeatAttemptLog.endpointOf(service, testMode);

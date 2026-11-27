@@ -62,6 +62,8 @@ import com.etendoerp.go.schemaforge.data.FiscalDecl;
 final class FiscalAeatSubmissionSupport {
 
   static final String PARAM_TEST_MODE = "testMode";
+  /** Key of the AEAT errors array in a submission answer. */
+  private static final String ERRORS_KEY = "errors";
 
   private FiscalAeatSubmissionSupport() {
   }
@@ -114,7 +116,7 @@ final class FiscalAeatSubmissionSupport {
     byte[] pdf = result.getPdfContent();
     o.put("pdfBase64", pdf != null ? Base64.getEncoder().encodeToString(pdf) : JSONObject.NULL);
     o.put("pdfDownloadFailed", result.isPdfDownloadFailed());
-    o.put("errors", new JSONArray(result.getErrors()));
+    o.put(ERRORS_KEY, new JSONArray(result.getErrors()));
     o.put("warnings", new JSONArray(result.getWarnings()));
     o.put("declarationData", declarationData);
     return o;
@@ -227,6 +229,14 @@ final class FiscalAeatSubmissionSupport {
   }
 
   /**
+   * True when the validation that precedes a real presentation stopped it (and already answered
+   * the request). A null validation — test mode, where nothing is validated first — never stops.
+   */
+  static boolean stopsPresentation(PreSubmissionValidation validation) {
+    return validation != null && !validation.proceed();
+  }
+
+  /**
    * Marks a real presentation's answer — success or failure — with
    * {@code preValidation: "NOT_VALIDATED"} when the validation that preceded it got no verdict, so
    * the user learns the file was presented without being validated first. An accepted validation
@@ -309,7 +319,7 @@ final class FiscalAeatSubmissionSupport {
     JSONObject o = failureJson(true, ERR_NOT_VALIDATED,
         "The AEAT could not validate the file: its validation service has no information about"
             + " this model and exercise yet.");
-    o.put("errors", new JSONArray(result.getErrors()));
+    o.put(ERRORS_KEY, new JSONArray(result.getErrors()));
     return o;
   }
 
@@ -344,7 +354,7 @@ final class FiscalAeatSubmissionSupport {
     o.put("errorCode", errorCode);
     JSONArray errors = new JSONArray();
     errors.put(StringUtils.defaultString(message));
-    o.put("errors", errors);
+    o.put(ERRORS_KEY, errors);
     o.put("warnings", new JSONArray());
     return o;
   }
