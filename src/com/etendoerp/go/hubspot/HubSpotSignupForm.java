@@ -30,11 +30,28 @@ import com.etendoerp.go.common.GoRuntimeProperties;
  * portal and its "Alta app – onboarding" form; {@code none} as the form disables it, and the
  * contact is then created through the CRM API as before.
  *
- * @param baseUrl  the Forms API root, without a trailing slash
- * @param portalId the HubSpot portal
- * @param formId   the form's {@code formGuid}, {@code null} when disabled
+ * <p>{@code etendo.go.hubspot.signup.subscription} ({@code ETGO_HUBSPOT_SIGNUP_SUBSCRIPTION}) is
+ * the id of the "Marketing Information" subscription type the promotional-mail checkbox subscribes
+ * to. Without it the consent is sent without the subscription.
+ *
+ * @param baseUrl            the Forms API root, without a trailing slash
+ * @param portalId           the HubSpot portal
+ * @param formId             the form's {@code formGuid}, {@code null} when disabled
+ * @param subscriptionTypeId the marketing subscription type, {@code null} when not configured
  */
-public record HubSpotSignupForm(String baseUrl, String portalId, String formId) {
+public record HubSpotSignupForm(String baseUrl, String portalId, String formId,
+    Long subscriptionTypeId) {
+
+  /**
+   * A form with no marketing subscription configured.
+   *
+   * @param baseUrl  the Forms API root, without a trailing slash
+   * @param portalId the HubSpot portal
+   * @param formId   the form's {@code formGuid}, {@code null} when disabled
+   */
+  public HubSpotSignupForm(String baseUrl, String portalId, String formId) {
+    this(baseUrl, portalId, formId, null);
+  }
 
   static final String DEFAULT_BASE_URL = "https://api.hsforms.com";
   /** Production's portal and form, from marketing (2026-11-17). */
@@ -61,7 +78,16 @@ public record HubSpotSignupForm(String baseUrl, String portalId, String formId) 
         StringUtils.removeEnd(read(settings, "forms.base.url", "FORMS_BASE_URL",
             DEFAULT_BASE_URL), "/"),
         read(settings, "portal", "PORTAL", DEFAULT_PORTAL),
-        DISABLED_VALUE.equalsIgnoreCase(form) ? null : form);
+        DISABLED_VALUE.equalsIgnoreCase(form) ? null : form,
+        subscriptionTypeIdOf(read(settings, "subscription", "SUBSCRIPTION", null)));
+  }
+
+  /** HubSpot's subscription type ids are numbers; anything else counts as not configured. */
+  static Long subscriptionTypeIdOf(String value) {
+    if (value == null || !value.matches("\\d{1,18}")) {
+      return null;
+    }
+    return Long.valueOf(value);
   }
 
   private static String read(HubSpotConfiguration.Settings settings, String suffix,

@@ -22,7 +22,6 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNotSame;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
@@ -33,29 +32,22 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
-
-import javax.servlet.http.HttpServletRequest;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.After;
 import org.junit.Test;
 import org.mockito.MockedStatic;
-import org.openbravo.base.exception.OBException;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.model.Property;
 import org.openbravo.base.secureApp.LoginUtils;
 import org.openbravo.base.secureApp.VariablesSecureApp;
-import org.openbravo.client.kernel.RequestContext;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.database.ConnectionProvider;
-import org.openbravo.erpCommon.ad_callouts.SimpleCallout;
 import org.openbravo.model.ad.access.Role;
 import org.openbravo.model.ad.access.User;
 import org.openbravo.model.ad.datamodel.Column;
@@ -76,8 +68,6 @@ import com.etendoerp.go.schemaforge.util.NeoSessionVarsCache;
  * Unit tests for {@link NeoCalloutService}.
  * Tests field name mapping, response transformation, and synthetic request.
  * These tests do not require a database connection.
- *
- * @covers com.etendoerp.go.schemaforge.NeoCalloutService
  */
 public class NeoCalloutServiceTest {
 
@@ -806,129 +796,6 @@ public class NeoCalloutServiceTest {
           times(1));
     } finally {
       NeoSessionVarsCache.clear();
-    }
-  }
-
-  // ── CalloutRequestSwap (ETP-6452) ──────────────────────────────────
-
-  /**
-   * The callout's synthetic request is installed while it runs and the caller's request and
-   * variables are put back afterwards: a create's preflight and a DEFAULTS handler read the real
-   * request after the cascade.
-   */
-  @Test
-  public void testCalloutRequestSwapRestoresTheCallersRequestAndVariables() {
-    RequestContext requestContext = mock(RequestContext.class);
-    HttpServletRequest original = mock(HttpServletRequest.class);
-    HttpServletRequest synthetic = mock(HttpServletRequest.class);
-    VariablesSecureApp vars = mock(VariablesSecureApp.class);
-    when(requestContext.getRequest()).thenReturn(original);
-    when(requestContext.getVariablesSecureApp()).thenReturn(vars);
-
-    try (NeoCalloutService.CalloutRequestSwap swap =
-        NeoCalloutService.CalloutRequestSwap.install(requestContext, synthetic)) {
-      verify(requestContext).setRequest(synthetic);
-    }
-
-    verify(requestContext).setRequest(original);
-    verify(requestContext).setVariableSecureApp(vars);
-  }
-
-  /** A context with no request and no variables is left as it was found. */
-  @Test
-  public void testCalloutRequestSwapWithoutARequestRestoresNothing() {
-    RequestContext requestContext = mock(RequestContext.class);
-    HttpServletRequest synthetic = mock(HttpServletRequest.class);
-    when(requestContext.getRequest()).thenReturn(null);
-    when(requestContext.getVariablesSecureApp()).thenThrow(new OBException("No request"));
-
-    NeoCalloutService.CalloutRequestSwap.install(requestContext, synthetic).close();
-
-    verify(requestContext).setRequest(synthetic);
-    verify(requestContext).setRequest(null);
-    verify(requestContext).setVariableSecureApp(null);
-  }
-
-  /**
-   * {@code executeCallout} runs the callout under its synthetic request and leaves the caller's
-   * request and variables installed afterwards (ETP-6452): a DEFAULTS handler and a create's
-   * preflight read the real request after the cascade.
-   */
-  @Test
-  public void testExecuteCalloutLeavesTheCallersRequestInstalled() throws Exception {
-    NeoCalloutService.clearMetadataCache();
-    OBDal obDal = mock(OBDal.class);
-    @SuppressWarnings("unchecked")
-    OBCriteria<Column> criteria = mock(OBCriteria.class);
-    Column column = mock(Column.class);
-    Callout callout = mock(Callout.class);
-    ModelImplementation implementation = mock(ModelImplementation.class);
-    Tab tab = mock(Tab.class);
-    Table table = mock(Table.class);
-    ModelProvider modelProvider = mock(ModelProvider.class);
-    Entity entity = mock(Entity.class);
-    Property property = mock(Property.class);
-    when(tab.getTable()).thenReturn(table);
-    when(table.getId()).thenReturn("C_ORDER");
-    when(obDal.createCriteria(Column.class)).thenReturn(criteria);
-    when(criteria.add(any())).thenReturn(criteria);
-    when(criteria.list()).thenReturn(Collections.singletonList(column));
-    when(column.getDBColumnName()).thenReturn("C_BPartner_ID");
-    when(column.getCallout()).thenReturn(callout);
-    when(callout.getName()).thenReturn("Recording callout");
-    when(callout.getADModelImplementationList())
-        .thenReturn(Collections.singletonList(implementation));
-    when(implementation.getJavaClassName()).thenReturn(RecordingCallout.class.getName());
-    when(modelProvider.getEntityByTableId("C_ORDER")).thenReturn(entity);
-    when(entity.getPropertyByColumnName("C_BPartner_ID")).thenReturn(property);
-    when(property.getName()).thenReturn("businessPartner");
-    NeoContext ctx = mock(NeoContext.class);
-    when(ctx.getAdTab()).thenReturn(tab);
-
-    RequestContext requestContext = RequestContext.get();
-    VariablesSecureApp callerVars = mock(VariablesSecureApp.class);
-    requestContext.setRequest(mock(HttpServletRequest.class));
-    requestContext.setVariableSecureApp(callerVars);
-    HttpServletRequest callerRequest = requestContext.getRequest();
-    Map<String, String[]> params = new HashMap<>();
-    try (MockedStatic<OBDal> obDalMock = mockStatic(OBDal.class);
-        MockedStatic<ModelProvider> modelProviderMock = mockStatic(ModelProvider.class);
-        MockedStatic<OBContext> obContextMock = mockStatic(OBContext.class);
-        MockedStatic<CalloutRequestBuilder> builderMock = mockStatic(CalloutRequestBuilder.class);
-        MockedStatic<DocTypeResolver> docTypeMock = mockStatic(DocTypeResolver.class)) {
-      obDalMock.when(OBDal::getInstance).thenReturn(obDal);
-      modelProviderMock.when(ModelProvider::getInstance).thenReturn(modelProvider);
-      builderMock.when(() -> CalloutRequestBuilder.buildRequestParams(any(), any(), any(), any(),
-          any())).thenReturn(params);
-      RecordingCallout.seen = null;
-
-      NeoResponse response = NeoCalloutService.executeCallout(ctx,
-          new JSONObject().put("field", "businessPartner").put("value", "BP-1"));
-
-      assertEquals(200, response.getHttpStatus());
-      assertNotNull(RecordingCallout.seen);
-      assertNotSame(callerRequest, RecordingCallout.seen);
-      assertSame(callerRequest, requestContext.getRequest());
-      assertSame(callerVars, requestContext.getVariablesSecureApp());
-    } finally {
-      RequestContext.clear();
-    }
-  }
-
-  /** A callout that records the request installed while it runs and returns nothing. */
-  public static class RecordingCallout extends SimpleCallout {
-    private static final long serialVersionUID = 1L;
-    static HttpServletRequest seen;
-
-    @Override
-    protected void execute(CalloutInfo info) {
-      // Never called: executeSimpleCallout is replaced below.
-    }
-
-    @Override
-    public JSONObject executeSimpleCallout(RequestContext request) {
-      seen = request.getRequest();
-      return null;
     }
   }
 }

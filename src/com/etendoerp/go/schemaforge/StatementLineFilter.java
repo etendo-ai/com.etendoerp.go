@@ -176,6 +176,23 @@ final class StatementLineFilter {
         counts.put(StatementLineDiscard.KEY_DISCARDED, discarded);
       }
     }
+
+    /**
+     * Puts {@code counts.discardedPairs} when honoured: how many discarded pairs the excluded
+     * rows hold, a line with no mutual partner among them counting as one
+     * ({@link BankBounceDiscardedPairs}). Same rows, so same scope and date range, as
+     * {@link #putCount}. Leaves {@code counts} untouched, and reads nothing, otherwise.
+     *
+     * @param counts        the answer's per-state counts
+     * @param discardedRows the rows split off ({@link #split}, second element)
+     * @throws JSONException when the count cannot be written
+     */
+    void putPairCount(JSONObject counts, JSONArray discardedRows) throws JSONException {
+      if (honoured) {
+        counts.put(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS,
+            BankBounceDiscardedPairs.count(discardedRows));
+      }
+    }
   }
 
   /**
@@ -391,8 +408,10 @@ final class StatementLineFilter {
    * The {@code pendingLines?status=discarded} data: only the excluded rows, each with
    * {@code state} and {@code status} {@value #STATUS_DISCARDED}, nothing reconciled, and the pair
    * it was discarded with ({@value #KEY_BOUNCE_LINK}, {@code null} when it was discarded on its
-   * own); their {@code total}; and {@code counts} carrying only {@code discarded} — the other
-   * filters keep the counts of the default request, so this one does not run the matching engine.
+   * own); their {@code total}; and {@code counts} carrying only {@code discarded} (lines) and
+   * {@code discardedPairs} ({@link BankBounceDiscardedPairs}, from the lines already read) — the
+   * other filters keep the counts of the default request, so this one does not run the matching
+   * engine.
    *
    * @param rows the excluded raw rows
    * @return the data body
@@ -415,6 +434,8 @@ final class StatementLineFilter {
     }
     JSONObject counts = new JSONObject();
     counts.put(STATUS_DISCARDED, rows.length());
+    counts.put(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS,
+        BankBounceDiscardedPairs.count(rows, linesById));
     JSONObject data = new JSONObject();
     data.put("lines", rows);
     data.put(ReconciliationHandler.KEY_TOTAL, total);

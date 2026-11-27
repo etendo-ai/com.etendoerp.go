@@ -1447,46 +1447,28 @@ On a create the order is: explicit `parentId`, then the link value of the body. 
 naming both parents), since persistence would keep one and the check would judge the other. Ids are
 compared ignoring case.
 
+**The link to the parent is not judged (ETP-6470).** On a child tab, the link-to-parent property
+(the first active column the AD flags `IsParent`, when its target is the parent tab's entity) is
+skipped by the selector check on a create, and on an update that keeps the stored parent, on every
+channel. The app never offers it in a
+picker: it fills it with the record the user is standing on. Its selector belongs to the header
+field and filters for that use, so judging the link refused legitimate parents: the Business Partner
+window is a sales window, so the merged context gets `isCustomer=Y` from the window direction, and
+the default business-partner selector (`ContextParamSelectorPolicy`) then lists customers only.
+Creating an address (`C_BPartner_Location`) under a vendor-only partner from the SPA Contacts
+window answered 422 `REFERENCE_NOT_ALLOWED`. The link still decides the parent of the merged context.
+Nothing about the parent goes unchecked: `NeoReferenceOwnership` refuses a link value or `parentId`
+of another tenant before this check (`NeoWritePreflight` for REST single and `/batch`, the MCP
+create/update router). A create naming two different parents is still refused, as described above.
+On an update the exemption holds only while the link keeps the stored parent: an update that sends
+a different link value moves the record (NEO does not enforce `IsUpdateable` on the link), and that
+changed link is judged by its selector like any other reference, besides the ownership check. Only a tab that has
+a parent tab qualifies: on a header tab a column flagged as a link stays a picker choice and keeps
+its selector.
+
 **`.id` spelling.** A body key `<reference>.id` is treated as `<reference>`, as
 `NeoReferenceOwnership` already does, so it cannot skip the selector check. A body sending both
 spellings with different ids (compared ignoring case) is refused, with a `detail` naming both.
-
-**Rule variables are read regardless of case (ETP-6452).** A selector whose validation rule is SQL
-runs through core's `ComboTableData`, which asks for each variable exactly as the rule spells it
-(`@FIN_Financial_Account_ID@`, `@FIN_PaymentMethod_ID@`, `@IsReceipt@`), while the context
-publishes a field under its AD column name (`Fin_Financial_Account_ID`, `Fin_Paymentmethod_ID`,
-`Isreceipt`). The lookup was exact, so the rule "Currency of Financial Account" resolved empty and
-the payment-out `currency` the form proposed (EUR for "Caja - EUR") was refused. The context now
-reaches `ComboTableData` through `ComboReferenceSelectorExecutor.contextFields`: exact name first,
-then any casing — what Classic does (the form sends `inp`+camelCase) and what the HQL route
-(`SelectorValidationResolver`) already did. Structural, no name is special; it applies to the
-selector endpoint (REST `…/selectors/{field}`, MCP `etendo_selectors`) and to this check alike. The
-window's direction no longer shadows a direction flag the record carries under another casing
-(`IsReceipt` is added only when no `isreceipt` of any casing is there), and each layer of the merged
-record (parent, stored row, request) drops the casings an earlier layer wrote for the same name, so a
-parent's `FIN_X` never competes with the record's `Fin_X`. Where two other casings still hold
-different values (a selector endpoint request), the first in natural order answers, never hash order.
-
-**What the base defaults propose is accepted on a create (ETP-6452).** A value the selector does
-not offer is still accepted on a **create** when it is exactly the value the **base defaults**
-propose for that field in the record's context — `NeoDefaultsService.resolveDefaults` with the
-other fields the request sets as the record context (`/defaults?field=value`, ETP-5852) and the parent, never the
-judged field itself (it would trivially "default" to what was sent). Case: purchase-order
-`salesRepresentative` defaults to the session user (`#SalesRep_ID`), whom the "AD_User SalesRep"
-selector does not list when that user has no business partner; a client echoing `/defaults` got a
-422. Narrow on purpose: computed only on the refusal path (an offered value pays nothing), exact id
-equality, updates unchanged, defaults that cannot be computed accept nothing. **Base defaults
-only:** a `DEFAULTS` customization (`handle`/`afterHandle`) is not consulted, so a value only such a
-customization proposes is still judged by the selector. REST (`NeoSubEndpointDispatcher` →
-`NeoHookDispatcher`) and MCP (`McpToolRouter` → `NeoExtensionDispatcher`) wire that dispatch
-separately, there is no shared entry point to call, and those handlers read the servlet request,
-which inside a write is the POST. Another request field's callout can derive the judged one, so two
-fields could vouch for each other; accepted, the form derives the same values from the same input.
-The callout cascade this runs puts the caller's `RequestContext` request and variables back when
-each callout ends (`NeoCalloutService.CalloutRequestSwap`); before, the synthetic callout request
-stayed installed for the rest of the request.
-It sits in `NeoReferenceSelectorValidation`, which REST single, `/batch` and MCP all reach, so the
-three channels behave the same; no divergence to declare in §4.12.9.
 
 **Stored-row reads are client-scoped.** The stored record and the parent are loaded only when they
 belong to a client the caller may read; otherwise they read as missing.
@@ -1533,9 +1515,7 @@ pick the currency from `currencyOptions` (`CurrencyRatePicker`, matched by the S
 selector, so the change is MCP-only and no screen changes.
 
 Tests: `NeoReferenceSelectorValidationTest` (including the customization answer that replaces or
-defers to the selector, and the echoed `/defaults` value on a create), `CurrencyOptionsHandlerTest`
-(`offersHeaderCurrency`), `ComboReferenceSelectorExecutorTest` (`contextFields`),
-`NeoCalloutServiceTest` (`CalloutRequestSwap`).
+defers to the selector), `CurrencyOptionsHandlerTest` (`offersHeaderCurrency`).
 
 #### 4.3.9 Document actions over REST: refusal and idempotency (ETP-5783)
 
@@ -2342,6 +2322,16 @@ Then the role needs write access to the Invoice Inbox window
 grant (`TemplateRoleWindowAccess`). The NEO built-in path runs in admin mode, so the DAL does not
 check the organization: the endpoint requires the current organization to be a real one (not `*`)
 and in the role's writable organizations, else `403 org_not_allowed`.
+
+**Menu node (ETP-6051).** The Invoice Inbox window ships an active `AD_MENU` node (action `W`,
+`AD_MENU_ID` `581A06FAE09540B58D316136EC023B3A`) and its `AD_TREENODE` row in tree `10` under
+`Transactions` (`800242`, Procurement Management), seqno 75, right after Purchase Invoice
+(`AD_MENU.xml` / `AD_TREENODE.xml`). `SFListMenu` therefore returns it for the roles that hold the
+window (Compras and Financiero by template grant, admins and client admins by the
+`hasWindowAccess` bypass), and the Schema Forge `menu.json` entry identifies the window by
+`windowId`. The node is also visible in the Classic menu, under Procurement Management > Transactions, for the roles that hold the window grant (`AD_Window_Access`), gated by the same grant as in GO. Do not deactivate or remove the node: the sidebar entry and the category of the window in the Roles
+screen depend on it. There is no `AD_MENU_TRL` row: the label is translated in the SPA by menu label
+("Bandeja de facturas").
 
 **Limits.** At most 20 files and 10 MB per file; the whole request at most 210 MB
 (`NeoServlet` `maxRequestSize` = 20 x 10 MB + 10 MB of multipart margin, derived in
@@ -4467,10 +4457,12 @@ stays retired (IMP-19: it is not a report generator); its actions are published 
 | `discardPair` | write | **`statementLineId`**, **`counterpartLineId`** | `POST ?action=discardPair` (ETP-5581, flag `bank-bounce-suggestions`) |
 | `restorePair` | write | **`lineId`** | `POST ?action=restorePair` (ETP-5581, flag `bank-bounce-suggestions`) |
 
-Not declared to agents on purpose (UI-only, ETP-5581): `dismissPair` (the panel's *No es un rebote*,
-KPI telemetry only) and the `applySuggestions` body key `bounceDecisions` (the modal's report of the
-pairs it showed and did not apply). An agent calling either gets the contract's 422 (unknown action
-/ undeclared key); see *Discarded lines and bounce pairs* and the declared exception below.
+Not declared to agents on purpose (UI-only, ETP-5581): `dismissPair` (the panel's *No es un
+rechazo*: marks the rejection line as not a rejection, plus the KPI decision), its undo
+`restoreBounceSuggestion`, and the `applySuggestions` body key `bounceDecisions` (the modal's report
+of the pairs it showed and did not apply). An agent calling any of them gets the contract's 422
+(unknown action / undeclared key); see *Discarded lines and bounce pairs* and the declared exception
+below.
 
 Notes: 1:1, 1:N and partial matches are all `reconcileGroup` (a shortfall beyond tolerance leaves
 a pending remainder, exactly as in the UI). `glItemId` is optional on `reconcileDifference`
@@ -4662,7 +4654,7 @@ with no reconciliation) is not reconciled, so a discarded one is still refused b
 
 | Where | Usage passed to the hook | Behaviour (flag on) |
 |---|---|---|
-| `pendingLines` | `MATCH_STATEMENT_GRID` | Excluded lines are left out of `lines`, `total` and every count, and counted in **`counts.discarded`**. `status=discarded` answers **only** them: each row has `state`/`status` `discarded`, `discarded:true`, nothing reconciled, and `bounceLink` (`{counterpartLineId, discardedAt, signal, confidence}`, or `null` for a line discarded on its own); `counts` then carries only `discarded` — the other filters keep the counts of the default request, so this call does not run the matching engine. `PENDING_LINES_SQL` is unchanged: the hooks answer HQL, so the excluded ids are read once through the hook and the rows are split in Java. |
+| `pendingLines` | `MATCH_STATEMENT_GRID` | Excluded lines are left out of `lines`, `total` and every count, and counted in **`counts.discarded`** (lines) and **`counts.discardedPairs`** (pairs — the panel's *Descartadas (N)*): over the same excluded lines (same scope and date range), two lines whose `EM_ETGO_Bounce_Pair_Line_ID` point at each other are ONE entry, and any other line — no link, partner not among them, one-sided link — is one on its own; the rule of the SPA's `buildDiscardedPairRows` (`BankBounceDiscardedPairs`, one OBQuery for the links; with the link column not mapped yet, every line counts alone). Both keys are absent with the flag off. `status=discarded` answers **only** them: each row has `state`/`status` `discarded`, `discarded:true`, nothing reconciled, and `bounceLink` (`{counterpartLineId, discardedAt, signal, confidence}`, or `null` for a line discarded on its own); `counts` then carries only `discarded` and `discardedPairs` (from the lines already read) — the other filters keep the counts of the default request, so this call does not run the matching engine. `PENDING_LINES_SQL` is unchanged: the hooks answer HQL, so the excluded ids are read once through the hook and the rows are split in Java. |
 | `autoMatch` candidates (`loadPendingLines`) | `AUTO_MATCH_CANDIDATES` | Excluded lines are never proposed (now an `OBQuery`, keeping the readable client/org filter). |
 | `bank-statements?action=lines` | `MATCH_STATEMENT_GRID` | Excluded lines are still listed, with **`discarded:true`** (every row carries `discarded`). |
 | Write paths | per path | 409 `LINE_DISCARDED`, see *Line targeting* above. |
@@ -4681,7 +4673,12 @@ date tolerance) or wording, `review` otherwise; an **ambiguous** pair (several e
 originals) is always `review`, names no original and carries its candidates. A pair is **never
 proposed** when either line is the bank movement of a real ERP payment (`BankBouncePaymentGuard`,
 answered `HAS_PAYMENT` on the write paths), including a line that may be one invoice of a larger
-multi-invoice payment.
+multi-invoice payment. A line the user marked **not a rejection** (*No es un rechazo*,
+`EM_ETGO_Bounce_Dismissed`, see `dismissPair` below) is **never the bounce of a pair**, with any
+original; it stays a candidate in every other way — it may still be the original of a later
+reversal — and the originals it was proposed with stay free to pair with another, real bounce. This
+holds for every reader of the detection: `autoMatch` groups, `pendingLines`, the AI second layer
+(its components are built from the detected pairs) and the KPI's pair lookup.
 
 **Statement adjacency.** Banks write a return next to the line it reverses, but the order of the
 lines **within a day is not taken as chronological**: PSD2 numbers a statement's lines by their
@@ -4733,14 +4730,29 @@ share 140.
   candidate line shared by several ambiguous pairs is annotated once, by the first of them; every
   pair's bounce line still carries its own `groupKey` and lists all its candidates, so the distinct
   `groupKey`s of the `bounce` rows still equal `kpis.bouncePairs`. Under a date or text filter, a
-  `review` pair is judged on its visible lines only.
+  `review` pair is judged on its visible lines only. Every row also carries **`bounceDismissedAt`**:
+  when the user said that line is not a rejection (the wire datetime of `EM_ETGO_Bounce_Dismissed`),
+  `null` otherwise — read from the auto-match candidate lines, so a line that is not one (reconciled,
+  in a split group) is always `null`. The panel shows it as *Marcada como no rechazo* with the undo
+  (`restoreBounceSuggestion`). With the flag off the key is absent.
 - **`applySuggestions`.** `{kind:"bouncePair", statementLineId, counterpartLineId}` groups are
   validated and discarded **first**, in the same request transaction; their lines join the set the
   transaction groups are prepared against, so a line checked in two groups is refused (409) the
   second time. Each pair succeeds or fails alone in `results[]` (`{kind, statementLineId,
   counterpartLineId, discarded:true}` or the coded refusal). A group of an unknown `kind` is refused
   (400); a group with no `kind` and no operations is refused as before. With the flag off every
-  bounce group answers 403 `BOUNCE_SUGGESTIONS_OFF`. The `reconciliation_match_evaluated`
+  bounce group answers 403 `BOUNCE_SUGGESTIONS_OFF`. **Optional per-group `choiceSource`** (ETP-6359,
+  the modal resolving an ambiguous pair: `statementLineId` is the picked outflow, `counterpartLineId`
+  the rejection): `"ai"` says the outflow is the untouched AI default; the group then runs the same
+  control as `discardPair` (after validation, before the discard): if the pair is no longer detected
+  or the cached assessment no longer recommends that outflow (stale, expired, abstained, not
+  recommended) **that group alone** is refused, and the others of the call proceed. Its `results[]`
+  entry is the usual coded refusal tagged like every other one:
+  `{kind:"bouncePair", statementLineId, counterpartLineId, code:"BOUNCE_AI_SUGGESTION_STALE",
+  message, error:{message, status:409, code, messageKeys:["ETGO_BounceAiSuggestionStale"]}}`;
+  it counts as a `failed` decision in the KPI. An internal failure of the lookup propagates (generic
+  server error, never a stale 409). `"user"`, absent or any other value is ignored: the group behaves
+  as before. The `reconciliation_match_evaluated`
   telemetry counts transaction groups only. **Optional `bounceDecisions: [{groupKey, decision}]`**
   (flag on only; read for the KPI, never validated, never an error): the SPA sends it whenever the
   modal showed at least one bounce pair (possibly `[]`), one entry per shown pair it did NOT check —
@@ -4750,20 +4762,48 @@ share 140.
   unknown key or decision, a repeated key and the key of a pair applied in the same call are
   ignored. It changes nothing in the answer and writes nothing. A call still needs at least one
   group (400 otherwise, as before).
-- **`discardPair {financialAccountId, statementLineId, counterpartLineId}`** (flag required, 403
-  `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's discard, also for an ambiguous pair once its
-  original is chosen. Same validation as the `applySuggestions` groups. Answers 200
-  `{discarded:true, statementLineId, counterpartLineId, signal, confidence}`.
+- **`discardPair {financialAccountId, statementLineId, counterpartLineId, choiceSource?}`** (flag
+  required, 403 `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's discard, also for an ambiguous pair
+  once its original is chosen. Same validation as the `applySuggestions` groups. Answers 200
+  `{discarded:true, statementLineId, counterpartLineId, signal, confidence}`. `choiceSource`
+  (ETP-6359, optional): `"ai"` says the outflow was taken from the AI recommendation (see *AI
+  second layer*), `"user"` or absent is a manual choice. With `"ai"` the server checks, before
+  writing, that the pair is still detected and that the cached assessment, rebuilt from the
+  current detection, still recommends that outflow; otherwise it answers 409
+  `BOUNCE_AI_SUGGESTION_STALE` and writes nothing. The 409 means the lookup completed and disagreed; an internal failure of the
+  lookup is logged (class only) and answers the generic server error. It never calls the model.
 - **`dismissPair {financialAccountId, statementLineId, counterpartLineId?}`** (flag required, 403
-  `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's *No es un rebote*. **Writes nothing**: the
-  rejection is not stored, so detection proposes the pair again on the next `autoMatch` /
-  `pendingLines`. It exists only to record the decision for the KPI. `statementLineId` is the line
-  selected in the panel, in any role (bounce, original or candidate); `counterpartLineId` is the
-  other line the card shows (the chosen original of an ambiguous pair), omitted while none is
-  chosen — the pair is resolved from either line, in either order, through the action's detection.
-  400 without `statementLineId` or with the same line twice; 404 / 400 for a line not found or of
-  another account. Answers 200 `{ok:true}` (in the usual `response.data` envelope), also for lines
-  detection does not pair (nothing is recorded then). UI-only: not in the MCP contracts.
+  `BOUNCE_SUGGESTIONS_OFF` otherwise): the panel's *No es un rechazo*. **Persisted on the rejection
+  line**: the pair is resolved from either line, in either order, through the action's detection
+  (`statementLineId` is the line selected in the panel, in any role — bounce, original or candidate;
+  `counterpartLineId` is the other line the card shows, the chosen original of an ambiguous pair,
+  omitted while none is chosen), and the pair's **bounce** line gets `EM_ETGO_Bounce_Dismissed` (now),
+  whichever line was selected (`BankBounceDismissal`). From then on detection never proposes that
+  line as a bounce (see the detection rules above); the original(s) stay ordinary pending lines and
+  may pair with another bounce. Nothing else is written: no discard, no link. The rejection line is
+  locked `FOR UPDATE` and re-read first; one that left the pending pool meanwhile (matched,
+  discarded, inactive, draft statement, split group) answers 409 `LINE_NOT_PENDING` and nothing is
+  written. **Idempotent**: the bounce of a dismissed pair is no longer detected, so a repeated call
+  finds no pair and answers the mark already stored (no write, no KPI event). A line that already
+  carries the mark is still looked up first: it is never a bounce, but it may be the original of
+  another detected pair (the panel omits `counterpartLineId` when that bounce is outside its date
+  range), and then that pair's bounce is marked. 400 without `statementLineId`
+  or with the same line twice; 404 / 400 for a line not found or of another account. Answers 200
+  `{ok:true, dismissedLineId, bounceDismissedAt}` (in the usual `response.data` envelope): the line
+  that carries the mark and when it was set, both `null` when the lines are not a detected pair
+  (nothing written, nothing recorded) or the column is not in the running model yet (the DAL was not
+  regenerated: the call then only records the KPI decision, as before). The KPI decision
+  (`unchecked`) is sent for a new dismissal only, not for a repeat. UI-only: not in the MCP
+  contracts.
+- **`restoreBounceSuggestion {financialAccountId, statementLineId}`** (flag required, 403
+  `BOUNCE_SUGGESTIONS_OFF` otherwise): the undo of *No es un rechazo*, from the line's own panel.
+  Clears `EM_ETGO_Bounce_Dismissed`, so detection may propose the line as a bounce again on the next
+  `autoMatch` / `pendingLines`. 400 without an account or `statementLineId`; 404 / 400 for a line
+  not found or of another account; the line is locked and re-read, and one that is not pending
+  (matched, discarded, inactive, draft statement, split group) answers 409 `LINE_NOT_PENDING`. A
+  pending line with no mark is left as it is. Answers 200 `{restored, statementLineId}`
+  (`restored:false` when there was no mark), so repeating the call is harmless. No KPI event.
+  UI-only: not in the MCP contracts.
 - **`restorePair {financialAccountId, lineId}`** (flag required, 403 `BOUNCE_SUGGESTIONS_OFF`
   otherwise, like `discardPair`: with the flag off Etendo does not honour discarded lines, so there
   is nothing to undo here; Classic's PSD2 Restore button still works): restores the line AND the
@@ -4796,6 +4836,10 @@ public service), plus this module's link columns on `FIN_BankStatementLine`:
 `EM_ETGO_Bounce_Pair_Line_ID` (the counterpart; `ON DELETE SET NULL`), `EM_ETGO_Bounce_Discarded`
 (when), `EM_ETGO_Bounce_Signal` (list `pis_link` / `return_text` / `counterparty`, null for a pair
 with no signal) and `EM_ETGO_Bounce_Confidence` (list `high` / `review`). Restoring clears all four.
+A hand discard whose **bounce** is a line marked *No es un rechazo* is accepted (the validation never
+looked at the mark) and **clears the mark** on that line: the user has now said it is a rejection.
+The mark of the original, if it has one, stays. Such a pair is not proposed by detection, so it is
+stored `review` and its KPI event is a pair detection did not propose.
 **The stored confidence records what the system suggested, not the user's final choice** (the KPI
 counts `high` pairs only): it is `high` ONLY when detection proposed exactly this pair (same bounce,
 same original, not ambiguous) as `high`. Any other pair is stored `review`, whatever its signals
@@ -4833,14 +4877,86 @@ identifiers keep `bounce` (message keys, codes such as `BOUNCE_SUGGESTIONS_OFF`,
 | `AMOUNT_MISMATCH` | 409 | `ETGO_BounceAmountMismatch` | the amounts differ |
 | `HAS_PAYMENT` | 409 | `ETGO_BounceHasPayment` | a line is the bank movement of a real ERP payment |
 | `BOUNCE_SUGGESTIONS_OFF` | 403 | `ETGO_BounceSuggestionsOff` | the flag is off for the account |
+| `BOUNCE_AI_SUGGESTION_STALE` | 409 | `ETGO_BounceAiSuggestionStale` | `discardPair` came with `choiceSource:"ai"` and the AI recommendation no longer holds (ETP-6359) |
 
 A pair the detection did not propose (no signal) is accepted when it passes all of the above: the
 user chose it, and its signal is stored as null.
 
+**AI second layer (ETP-6359).** After the deterministic detection, `autoMatch` asks the Decisions
+API (`LlmDecider`, target `bank-bounce-suggestions`) how likely each candidate outflow is the one a
+`review` rejection reverses. **No flag of its own**, by product decision (the ticket asked for a
+separate `bank-bounce-ai` flag; it was deliberately not created): it is part of
+`bank-bounce-suggestions`, so it runs whenever that flag is on for the account, on the REST channel
+outside a batch, with a Copilot key configured and at least one offered `review` pair. A `high` pair is never sent. The AI never
+adds a pair, never discards on its own and never changes a pair, its `groupKey`, its confidence or
+the order of `candidates[]`; `pendingLines` is not touched.
+
+When at least one rejection was assessed the `autoMatch` `data` gains a top-level field; otherwise
+it is **absent** and the answer is byte for byte the one without the AI (also when the call
+failed, timed out, was backed off, over the cap or the channel is MCP):
+
+```json
+"bounceAiAssessments": {
+  "<bounceLineId>": {
+    "probabilities": { "<outflowLineId>": 85, "<outflowLineId2>": 10 },
+    "none": 5,
+    "recommendedLineId": "<outflowLineId>" | null
+  }
+}
+```
+
+The percentages are integers (round half up), raw (never renormalized) and only of the candidates
+the offered pair carries; `none` is "none of these outflows is the one". `recommendedLineId` is set
+only for a pair offered as ambiguous, when the best option is an outflow, reaches 80 % and leads
+the second option (`none` counts as an option) by 30 points, judged on the rounded integers; an
+outflow recommended to two or more rejections is a conflict (two rejections never reverse the same
+outflow): the AI **abstains** on every rejection involved, which gets **no entry** in
+`bounceAiAssessments` at all (the SPA renders it as without the AI; if no rejection of the answer
+keeps an entry the field is absent), with no fallback to a second option. Only the rejections in the
+conflict abstain. The abstention is computed on every read from the cached raw answers, so when a
+sibling is discarded or taken and the conflict disappears the assessment reappears; a
+`choiceSource:"ai"` discard for an abstaining rejection is stale (409) and its decision event has no
+`ai_*`. A pair with a single outflow gets the percentage and never a recommendation.
+
+How a call is made (all in `BankBounceAi` / `BankBounceAiQuestions`):
+
+- One `choice` question per rejection, over the components of rejections that share a candidate
+  outflow; a component with a question of more than 8 candidates, or with more than 20 questions,
+  is not asked. The prompt names rejections `r1..rk` and outflows `o1..om` in chronological order,
+  never a database id; description, date, amount, reference and counterparty travel as the bank
+  printed them (sanitized of control, zero-width and bidi characters, whitespace collapsed, 500
+  characters per field as a cost cap), under a guidance that says those fields are untrusted data.
+- The answer is valid only if it is not refused, its options are exactly the asked ones, every
+  value is finite in [0, 1] and they add up to 1 +/- 0.02; otherwise the component has "no
+  assessment" (cached as such for 1 hour).
+- Cache: in memory per JVM, **one entry per rejection**, key SHA-256 of prompt version, model,
+  tenant and every field the prompt carries about that rejection and its own candidates (never a
+  serialized JSON, never a sibling). The prompt is still one call per component; the answer is stored
+  per rejection as raw percentages. The recommendation (80/30 rule) and the conflict check are
+  computed on every read over the component the current detection builds, so discarding or taking a
+  sibling does not make an untouched rejection stale, and a rejection the AI abstained on because of
+  a conflict gets its assessment back once the sibling is gone. A component is
+  a cache hit only when all its rejections are present. At most 5000 entries, 24 hours, single flight
+  per component (a lost race re-checks the cache before calling); an unexpected failure of our own
+  side is remembered as "no assessment" for 5 minutes. A
+  restart or a second node costs one more call.
+- Guardrails: timeout 8 s (`LlmConfig.withTimeout`); at most 4 calls in flight JVM-wide (no slot,
+  no AI this time); one call of at most 20 questions per request; at most 200 calls per tenant per
+  day; a retryable failure (408, 429, 5xx, network) pauses every call for 5 minutes, any other
+  failure for 30. Any exception only logs its class and whether it was retryable, never a message,
+  an id or the prompt.
+- The call runs in the request thread (so `ETGO_USAGE_EVENT` carries the right `OBContext`, target
+  `bank-bounce-suggestions`, `COST_USD`), but **the DAL connection is released first**
+  (`flush` + `commitAndClose`, as `Fiscal349BoxesHandler.releaseDalConnection`), and the answer is
+  annotated with no DAL access. Because of that the call is skipped inside a batch (REST or MCP).
+- The panel does not call the AI: it reuses what the `autoMatch` brought. The KPI keys are in
+  `docs/backend-observability.md`.
+
 **Editing a statement keeps the discard (`bank-statements?action=update`).** The update deletes and
 recreates the unmatched lines; a body line that carries the `id` of the line it replaces keeps the
-PSD2 transaction id, the PSD2 discard flag and button and the bounce-pair link
-(`BankStatementLineSet.bankIdentitiesOfUnmatched` / `restoreBankIdentity` / `relinkBouncePairs`).
+PSD2 transaction id, the PSD2 discard flag and button, the bounce-pair link and the *No es un
+rechazo* mark (`BankStatementLineSet.bankIdentitiesOfUnmatched` / `restoreBankIdentity` /
+`relinkBouncePairs`).
 A body line without `id` is a new line, as before — the SPA's statement editor does not send it
 yet, so until it does an edit still loses them.
 
@@ -7347,13 +7463,27 @@ filtered per request.
 | `discardPair`, `restorePair` | 403 `BOUNCE_SUGGESTIONS_OFF`; the SPA never offers them (it renders what the backend sends) | listed, and answer the same 403 (their descriptions say "only available when bank rejection suggestions are enabled") |
 | `pendingLines` `status=discarded` | ignored like any status the panel filters client-side | `discarded` listed as the option's only value; ignored the same way (the description says so) |
 
-Also declared (any flag value): `dismissPair` and the `applySuggestions` key `bounceDecisions` are
-**REST-only**. They feed the bounce-pair KPI from the SPA's modal and panel, which an agent does
-not have; the MCP refuses them with the contract's 422 (unknown action / undeclared key). An agent's
+Also declared (any flag value): `dismissPair`, its undo `restoreBounceSuggestion` and the
+`applySuggestions` key `bounceDecisions` are **REST-only**. They serve the SPA's modal and panel
+(the KPI report, and the *No es un rechazo* mark and its undo), which an agent does not have; the
+MCP refuses them with the contract's 422 (unknown action / undeclared key). An agent is still
+affected by a mark the panel stored: the detection behind its `autoMatch` / `pendingLines` never
+proposes a marked line as a bounce, on both channels alike. An agent's
 `applySuggestions` and `discardPair` still emit their decision events, with `channel: "mcp"`; in
 place of `bounceDecisions`, an agent's `applySuggestions` that applied at least one `bouncePair`
 group reports the preselected pairs it left out as `unchecked` (inferred by the backend), and one
 with no `bouncePair` group reports nothing for bounces.
+
+##### REST and MCP on the AI second layer of the bounce pairs (ETP-6359, declared exception)
+
+The AI second layer of `autoMatch` (see *AI second layer* in §4.12.1.1) is **REST-only**. On the MCP
+channel, and inside any batch, `autoMatch` never calls the model, never adds `bounceAiAssessments`
+and the decision events carry no `ai_*` property (nor do they on the UI channel for a rejection the AI did not assess): an agent's `autoMatch` is byte for byte the one
+without the AI. `discardPair` and the `bouncePair` groups of `applySuggestions` accept `choiceSource`
+on both channels, but only the SPA sends it
+(it is not declared in the agent contract); absent, the behaviour is the pre-ETP-6359 one. The
+reason is mechanical, not a policy: the call releases the DAL connection, which a batch cannot
+allow, and an agent already sees the signals and the candidates and decides on them.
 
 ##### REST and MCP on statement deletion with `psd2-statement-import-settings` off (ETP-6151, declared exception)
 
