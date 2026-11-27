@@ -301,6 +301,20 @@ public final class NeoButtonActionHelper {
    * @return the matching {@link org.openbravo.model.ad.datamodel.Column}, or {@code null} if not found
    */
   public static Column findButtonColumn(String entityId, String actionName) {
+    SFField field = findButtonField(entityId, actionName);
+    return field == null ? null : field.getADColumn();
+  }
+
+  /**
+   * The included field whose column {@link #findButtonColumn} resolves for an action name, with the
+   * same matching and precedence, for callers that also need the field's curation (ETP-5812: the
+   * MCP judges a button by the catalogue's verdict, which reads the field's visibility).
+   *
+   * @param entityId   the ID of the entity to search within
+   * @param actionName the action identifier (DB column name, Java qualifier or DAL property)
+   * @return the matching field (its column is never {@code null}), or {@code null} if not found
+   */
+  public static SFField findButtonField(String entityId, String actionName) {
     List<SFField> fields = loadEntityFields(entityId);
     for (SFField field : fields) {
       Column column = field.getADColumn();
@@ -308,7 +322,7 @@ public final class NeoButtonActionHelper {
       // Match by DB column name (e.g. "Processing") or by camelCase field name (e.g. "processNow")
       if (actionName.equals(column.getDBColumnName())
           || actionName.equals(field.getJavaQualifier())) {
-        return column;
+        return field;
       }
     }
     for (SFField field : fields) {
@@ -316,7 +330,7 @@ public final class NeoButtonActionHelper {
       if (column != null && column.getReference() != null
           && "28".equals((String) column.getReference().getId())
           && actionName.equals(propertyNameOf(column))) {
-        return column;
+        return field;
       }
     }
     return null;

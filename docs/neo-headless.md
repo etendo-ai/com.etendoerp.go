@@ -1470,6 +1470,43 @@ its selector.
 `NeoReferenceOwnership` already does, so it cannot skip the selector check. A body sending both
 spellings with different ids (compared ignoring case) is refused, with a `detail` naming both.
 
+**Rule variables are read regardless of case (ETP-6452).** A selector whose validation rule is SQL
+runs through core's `ComboTableData`, which asks for each variable exactly as the rule spells it
+(`@FIN_Financial_Account_ID@`, `@FIN_PaymentMethod_ID@`, `@IsReceipt@`), while the context
+publishes a field under its AD column name (`Fin_Financial_Account_ID`, `Fin_Paymentmethod_ID`,
+`Isreceipt`). The lookup was exact, so the rule "Currency of Financial Account" resolved empty and
+the payment-out `currency` the form proposed (EUR for "Caja - EUR") was refused. The context now
+reaches `ComboTableData` through `ComboReferenceSelectorExecutor.contextFields`: exact name first,
+then any casing — what Classic does (the form sends `inp`+camelCase) and what the HQL route
+(`SelectorValidationResolver`) already did. Structural, no name is special; it applies to the
+selector endpoint (REST `…/selectors/{field}`, MCP `etendo_selectors`) and to this check alike. The
+window's direction no longer shadows a direction flag the record carries under another casing
+(`IsReceipt` is added only when no `isreceipt` of any casing is there), and each layer of the merged
+record (parent, stored row, request) drops the casings an earlier layer wrote for the same name, so a
+parent's `FIN_X` never competes with the record's `Fin_X`. Where two other casings still hold
+different values (a selector endpoint request), the first in natural order answers, never hash order.
+
+**What the base defaults propose is accepted on a create (ETP-6452).** A value the selector does
+not offer is still accepted on a **create** when it is exactly the value the **base defaults**
+propose for that field in the record's context — `NeoDefaultsService.resolveDefaults` with the
+other fields the request sets as the record context (`/defaults?field=value`, ETP-5852) and the parent, never the
+judged field itself (it would trivially "default" to what was sent). Case: purchase-order
+`salesRepresentative` defaults to the session user (`#SalesRep_ID`), whom the "AD_User SalesRep"
+selector does not list when that user has no business partner; a client echoing `/defaults` got a
+422. Narrow on purpose: computed only on the refusal path (an offered value pays nothing), exact id
+equality, updates unchanged, defaults that cannot be computed accept nothing. **Base defaults
+only:** a `DEFAULTS` customization (`handle`/`afterHandle`) is not consulted, so a value only such a
+customization proposes is still judged by the selector. REST (`NeoSubEndpointDispatcher` →
+`NeoHookDispatcher`) and MCP (`McpToolRouter` → `NeoExtensionDispatcher`) wire that dispatch
+separately, there is no shared entry point to call, and those handlers read the servlet request,
+which inside a write is the POST. Another request field's callout can derive the judged one, so two
+fields could vouch for each other; accepted, the form derives the same values from the same input.
+The callout cascade this runs puts the caller's `RequestContext` request and variables back when
+each callout ends (`NeoCalloutService.CalloutRequestSwap`); before, the synthetic callout request
+stayed installed for the rest of the request.
+It sits in `NeoReferenceSelectorValidation`, which REST single, `/batch` and MCP all reach, so the
+three channels behave the same; no divergence to declare in §4.12.9.
+
 **Stored-row reads are client-scoped.** The stored record and the parent are loaded only when they
 belong to a client the caller may read; otherwise they read as missing.
 With no session (no `OBContext`) the stored-row reads are unscoped, the same contract as
@@ -1515,7 +1552,9 @@ pick the currency from `currencyOptions` (`CurrencyRatePicker`, matched by the S
 selector, so the change is MCP-only and no screen changes.
 
 Tests: `NeoReferenceSelectorValidationTest` (including the customization answer that replaces or
-defers to the selector), `CurrencyOptionsHandlerTest` (`offersHeaderCurrency`).
+defers to the selector, and the echoed `/defaults` value on a create), `CurrencyOptionsHandlerTest`
+(`offersHeaderCurrency`), `ComboReferenceSelectorExecutorTest` (`contextFields`),
+`NeoCalloutServiceTest` (`CalloutRequestSwap`).
 
 #### 4.3.9 Document actions over REST: refusal and idempotency (ETP-5783)
 
@@ -5244,12 +5283,21 @@ payments by hand through the route BUG-1 corrupted data with (FR-1 of the ETP-55
   call, aliases included. Both invoice headers return the five PIS actions and the
   `psd2GenerateBankPayment` button (`PaymentActionHandlerSupport.AGENT_EXCLUDED_ACTIONS`); the
   `MCP_CONFIG.actions` row is a second guard. Any other undeclared action stays callable, as the UI
-  offers it.
+  offers it — except an AD button the catalogue reports `invokable:false` (next item).
 - **Validation before dispatch.** `McpToolRouter.handleAction` calls `McpDeclaredActions.precheck`
   before `NeoExtensionDispatcher`: hidden/redirected → 405; a declared action whose parameters do
   not match its contract → **422 `validation_error`** with the contract's correction keys
   (`unknownParameters` + `acceptedParameters` + `idDescription` when declared, `missingParameters`, `field` + `expectedType` /
-  `allowedValues`). An AD button is not judged there. Each contract also names its HTTP method
+  `allowedValues`). An AD button that no declared contract describes is refused **405 `method_not_allowed`** when
+  `etendo_schema(view:"actions")` reports it `invokable:false` (ETP-5812): the field `etendo_action` fires it through
+  (`NeoButtonActionHelper#findButtonField`) is curated `discarded`, the entity's AD tab does not display it, or no
+  process is wired behind it. The verdict is the catalogue's own — `McpSchemaActionFields#notInvokableReason`, over the
+  same process resolution (`processOf`) and display flag (`McpSchemaFieldBuilder#isHiddenButtonField`) and the field's
+  effective curation (`McpFieldView`) — so the two cannot drift; the refusal carries its `notInvokableReason`, says
+  "Nothing was run" and points at `etendo_schema(view:"actions")`. It runs after the customization's exclusions and
+  `MCP_CONFIG.actions` `hidden`/`redirect` (which keep their own, better reasons) and never for a name a declared
+  contract describes (`documentAction` on the goods receipt and shipment headers is judged by its contract although
+  Classic hides `DocAction` there). MCP-only: REST and the SPA do not run the precheck. Each contract also names its HTTP method
   (`NeoActionContract#withHttpMethod`, default `POST`), and the handler context is built with it:
   `currencyOptions` answers only `GET`.
 - **`number`** is a new parameter type: a JSON number or a numeric string, because the SPA sends
@@ -17645,12 +17693,16 @@ is unchanged. Executions are kept indefinitely for now.
 
 #### Classic process buttons with a scheduling bundle — verdict per button (ETP-5812)
 
-With the scheduling-bundle connection (ETP-5809) these five Classic buttons can run. `etendo_action` refuses a button
-only when it is not included, the role lacks access to its process, or `MCP_CONFIG.actions` hides or redirects it: a
-button the catalogue lists as `invokable:false` because Classic does not display its field is still callable by name.
-So every button below that has an agent route of its own is hidden or redirected in `MCP_CONFIG.actions` (405 with
-the reason; a hidden one is listed under `withheldActions`, a redirected one keeps `useInstead`). The domain owners
-(returns, finance) still have to validate the behaviour.
+With the scheduling-bundle connection (ETP-5809) these five Classic buttons can run. Each button below that has an agent
+route of its own is hidden or redirected in `MCP_CONFIG.actions` (405 with the reason; a hidden one is listed under
+`withheldActions`, a redirected one keeps `useInstead`). Those per-entity entries stay because their reasons name the
+route; the generic safety net is the precheck rule above (§ "Validation before dispatch"): since the ETP-5812 follow-up,
+`etendo_action` refuses (405) every AD button the catalogue lists as `invokable:false` — not displayed by Classic,
+curated `discarded` or with no process — unless a declared contract describes it, so a button nobody configured can no
+longer be fired by name. A sweep of the sourcedata found 34 such buttons that were callable before (all
+`Processing`/`Posted`-style internal flags or undisplayed Classic buttons such as `GenerateTo`, `CopyFrom`,
+`Generatetemplate`, `RM_ReceiveMaterials`, the SII monitor's `CreateFrom`/`EM_Aeatsii_Unsubscribe`); none was named by
+an agent prompt. The domain owners (returns, finance) still have to validate the behaviour.
 
 | Button (AD process) | Where (entity, button) | Verdict | Reason |
 |---|---|---|---|
