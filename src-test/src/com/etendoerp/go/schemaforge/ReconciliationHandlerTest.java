@@ -150,6 +150,7 @@ import org.openbravo.model.financialmgmt.payment.MatchingAlgorithm;
  *
  * @covers com.etendoerp.go.schemaforge.ReconciliationHandler
  * @covers com.etendoerp.go.schemaforge.StatementLineFilter
+ * @covers com.etendoerp.go.schemaforge.BankBounceDiscardedPairs
  * @covers com.etendoerp.go.schemaforge.ReactivationSupport
  * @covers com.etendoerp.go.schemaforge.ReconciliationFlowSupport
  */
@@ -1176,6 +1177,11 @@ public class ReconciliationHandlerTest {
 
   // ── buildPendingLines: discarded lines (ETP-5581, gated by bank-bounce-suggestions) ──
 
+  /** The {@code [lineId, counterpartId]} rows the link query of the discarded lines answers. */
+  private final List<Object[]> pairLinkRows = new ArrayList<>();
+  /** The statement-line query of the last {@link #runPendingLinesWithDiscarded} run. */
+  private org.openbravo.dal.service.OBQuery<FIN_BankStatementLine> lastLinesQuery;
+
   /** DAL property names the mocked model answers for the bounce link columns. */
   private static final String PROP_PAIR_LINE = "etgoBouncePairLine";
   private static final String PROP_DISCARDED_AT = "etgoBounceDiscarded";
@@ -1253,6 +1259,12 @@ public class ReconciliationHandlerTest {
           mock(org.openbravo.dal.service.OBQuery.class);
       when(linesQuery.list()).thenReturn(dalLines);
       when(dal.createQuery(eq(FIN_BankStatementLine.class), anyString())).thenReturn(linesQuery);
+      // counts.discardedPairs reads the links of the excluded lines in one projection query.
+      @SuppressWarnings("unchecked")
+      org.hibernate.query.Query<Object[]> linkRows = mock(org.hibernate.query.Query.class);
+      when(linesQuery.createQuery(Object[].class)).thenReturn(linkRows);
+      when(linkRows.list()).thenReturn(pairLinkRows);
+      lastLinesQuery = linesQuery;
 
       NeoResponse response = handler.buildPendingLines(ACC_ID, CLIENT_ID,
           new HashSet<>(Arrays.asList(ORG_ID)), filters);
@@ -1319,6 +1331,7 @@ public class ReconciliationHandlerTest {
     assertEquals(3, counts.getInt("all"));
     assertEquals(3, counts.getInt("pending"));
     assertFalse(counts.has(StatementLineDiscard.KEY_DISCARDED));
+    assertFalse(counts.has(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
     for (int i = 0; i < lines.length(); i++) {
       assertEquals("pending", lines.getJSONObject(i).getString("state"));
       assertFalse(lines.getJSONObject(i).has(StatementLineDiscard.KEY_DISCARDED));
@@ -1366,8 +1379,58 @@ public class ReconciliationHandlerTest {
     assertEquals(2, counts.getInt("all"));
     assertEquals(2, counts.getInt("pending"));
     assertEquals(1, counts.getInt(StatementLineDiscard.KEY_DISCARDED));
+    assertEquals("one excluded line is one entry", 1,
+        counts.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
     assertEquals("no pair was detected", 0, counts.getInt(BankBounceSuggestions.STATE_BOUNCE));
     verify(handler).loadPendingLines(eq(ACC_ID), eq(true));
+    verify(lastLinesQuery, never()).createQuery(Object[].class);
+    JSONArray lines = data.getJSONArray("lines");
+    for (int i = 0; i < lines.length(); i++) {
+      assertTrue("no line carries the not-a-rejection mark",
+          lines.getJSONObject(i).isNull(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
+    }
+  }
+
+  /**
+   * With the flag on, {@code counts.discardedPairs} counts the excluded lines by pair: {@code l1}
+   * and {@code l2} point at each other and are one entry, {@code l3} is alone, so three discarded
+   * lines are two entries; the links are read in one query over the excluded ids.
+   *
+   * @throws Exception if the mocked JDBC interaction fails
+   */
+  @Test
+  public void testPendingLinesCountsTheDiscardedLinesByPair() throws Exception {
+    pairLinkRows.add(new Object[] { "l1", "l2" });
+    pairLinkRows.add(new Object[] { "l2", "l1" });
+
+    JSONObject data = runPendingLinesWithDiscarded(new HashSet<>(Arrays.asList("l1", "l2", "l3")),
+        true, Collections.emptyMap(), Collections.emptyMap());
+
+    JSONObject counts = data.getJSONObject("counts");
+    assertEquals(3, counts.getInt(StatementLineDiscard.KEY_DISCARDED));
+    assertEquals(2, counts.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+    assertEquals(0, data.getJSONArray("lines").length());
+    verify(lastLinesQuery).setFilterOnActive(false);
+  }
+
+  /**
+   * A discarded line whose partner is outside the answer (another date range, not among the
+   * excluded rows) counts on its own: {@code l2} links to a line that is not listed, so {@code l2}
+   * and {@code l3} are two entries, and only the listed ids are asked for.
+   *
+   * @throws Exception if the mocked JDBC interaction fails
+   */
+  @Test
+  public void testPendingLinesCountsADiscardedLineWhosePartnerIsNotListedAlone() throws Exception {
+    pairLinkRows.add(new Object[] { "l2", "l-out-of-range" });
+
+    JSONObject data = runPendingLinesWithDiscarded(new HashSet<>(Arrays.asList("l2", "l3")), true,
+        Collections.emptyMap(), Collections.emptyMap());
+
+    JSONObject counts = data.getJSONObject("counts");
+    assertEquals(2, counts.getInt(StatementLineDiscard.KEY_DISCARDED));
+    assertEquals(2, counts.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+    verify(lastLinesQuery).setNamedParameter("etgoLineIds", Arrays.asList("l2", "l3"));
   }
 
   /**
@@ -1393,6 +1456,7 @@ public class ReconciliationHandlerTest {
       assertFalse(row.has(BankBounceSuggestions.KEY_BOUNCE_PAIR));
       assertFalse(row.has(BankBounceSuggestions.KEY_KIND));
       assertFalse(row.has(StatementLineDiscard.KEY_DISCARDED));
+      assertFalse(row.has(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT));
       assertEquals("pending", row.getString("state"));
     }
     assertEquals(0, new BigDecimal("50.00").compareTo(new BigDecimal(data.getString("total"))));
@@ -1429,7 +1493,9 @@ public class ReconciliationHandlerTest {
     assertEquals(0, new BigDecimal("-50.00").compareTo(new BigDecimal(data.getString("total"))));
     JSONObject counts = data.getJSONObject("counts");
     assertEquals(2, counts.getInt(StatementLineFilter.STATUS_DISCARDED));
-    assertEquals("only the discarded count", 1, counts.length());
+    assertEquals("l2 links to a line that is not discarded here: two entries", 2,
+        counts.getInt(BankBounceDiscardedPairs.KEY_DISCARDED_PAIRS));
+    assertEquals("only the discarded counts", 2, counts.length());
     assertEquals(1, data.getInt("draftReconciliationCount"));
     for (int i = 0; i < lines.length(); i++) {
       JSONObject row = lines.getJSONObject(i);

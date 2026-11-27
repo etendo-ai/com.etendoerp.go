@@ -126,8 +126,9 @@ final class BankStatementLineSet {
   /**
    * What an unmatched line carries that a delete-and-recreate must not lose (ETP-5581): the bank's
    * transaction id (without it the next PSD2 synchronization imports the movement a second time),
-   * the PSD2 discard flag and button, and the bounce-pair link of this module. Plain values only:
-   * the line it was read from is deleted before they are written back.
+   * the PSD2 discard flag and button, the bounce-pair link of this module and the user's "No es un
+   * rechazo" ({@link BankBounceDismissal}). Plain values only: the line it was read from is deleted
+   * before they are written back.
    *
    * @param transactionIdentifier the PSD2 transaction id, or {@code null}
    * @param discarded             the PSD2 discard flag
@@ -136,17 +137,21 @@ final class BankStatementLineSet {
    * @param bounceDiscardedAt     when the pair was discarded, or {@code null}
    * @param bounceSignal          the pair's primary signal, or {@code null}
    * @param bounceConfidence      the pair's confidence, or {@code null}
+   * @param bounceDismissedAt     when the user said the line is not a bank rejection, or
+   *                              {@code null}
    */
   record BankIdentity(String transactionIdentifier, boolean discarded, String discardButton,
-      String pairLineId, Date bounceDiscardedAt, String bounceSignal, String bounceConfidence) {
+      String pairLineId, Date bounceDiscardedAt, String bounceSignal, String bounceConfidence,
+      Date bounceDismissedAt) {
 
     /**
      * Whether there is nothing to keep.
      *
-     * @return {@code true} for a line with no bank id, no discard and no pair
+     * @return {@code true} for a line with no bank id, no discard, no pair and no dismissal
      */
     boolean isEmpty() {
-      return transactionIdentifier == null && !discarded && pairLineId == null;
+      return transactionIdentifier == null && !discarded && pairLineId == null
+          && bounceDismissedAt == null;
     }
   }
 
@@ -172,7 +177,8 @@ final class BankStatementLineSet {
           pair instanceof FIN_BankStatementLine ? ((FIN_BankStatementLine) pair).getId() : null,
           (Date) StatementLineDiscard.get(line, BankBouncePairService.COL_DISCARDED_AT),
           (String) StatementLineDiscard.get(line, BankBouncePairService.COL_SIGNAL),
-          (String) StatementLineDiscard.get(line, BankBouncePairService.COL_CONFIDENCE));
+          (String) StatementLineDiscard.get(line, BankBouncePairService.COL_CONFIDENCE),
+          BankBounceDismissal.dismissedAt(line));
       if (!identity.isEmpty()) {
         identities.put(line.getId(), identity);
       }
@@ -182,10 +188,11 @@ final class BankStatementLineSet {
 
   /**
    * Gives a rebuilt line back what the line it replaces carried: the PSD2 transaction id, the
-   * discard flag and button (written as captured, so they stay in sync as PSD2 keeps them) and the
-   * bounce signal, confidence and discard time. The pair link itself is restored afterwards by
-   * {@link #relinkBouncePairs}, once every line has its new id. No-op when {@code identity} is
-   * {@code null} (the body line is new, or its old line had nothing to keep). Not saved.
+   * discard flag and button (written as captured, so they stay in sync as PSD2 keeps them), the
+   * bounce signal, confidence and discard time, and the "No es un rechazo" mark. The pair link
+   * itself is restored afterwards by {@link #relinkBouncePairs}, once every line has its new id.
+   * No-op when {@code identity} is {@code null} (the body line is new, or its old line had nothing
+   * to keep). Not saved.
    *
    * @param line     the rebuilt line
    * @param identity what its old line carried, or {@code null}
@@ -210,6 +217,10 @@ final class BankStatementLineSet {
       StatementLineDiscard.set(line, BankBouncePairService.COL_SIGNAL, identity.bounceSignal());
       StatementLineDiscard.set(line, BankBouncePairService.COL_CONFIDENCE,
           identity.bounceConfidence());
+    }
+    if (identity.bounceDismissedAt() != null) {
+      StatementLineDiscard.set(line, BankBounceDismissal.COL_DISMISSED_AT,
+          identity.bounceDismissedAt());
     }
   }
 

@@ -87,6 +87,11 @@ import com.etendoerp.psd2.bank.integration.data.PisPayment;
  * {@code adjacent}; it is neither a signal nor a reason for confidence, so the signals and the
  * confidence of the pair are the ones above.
  *
+ * <p><b>Never a rejection the user said is not one.</b> A line marked "No es un rechazo"
+ * ({@link BankBounceDismissal}) is never taken as the bounce of a pair, with any original. It
+ * stays a candidate in every other way: it may be the original of a later reversal, and the
+ * outflows it was proposed with stay free for another bounce.
+ *
  * <p><b>Never a real payment.</b> A pair is not proposed when either line has a payment in the ERP
  * ({@link BankBouncePaymentGuard#blocker}): discarding it would leave that payment, and the invoice
  * it settles, without the bank movement that proves it.
@@ -296,6 +301,8 @@ final class BankBounceDetector {
     final List<StatementLine> lines = new ArrayList<>();
     final Map<String, String> pisPaymentByEndToEnd = new HashMap<>();
     final List<OpenTransaction> openTransactions = new ArrayList<>();
+    /** The lines the user said are not a bank rejection: never the bounce of a pair. */
+    final Set<String> dismissedBounces = new HashSet<>();
     private final Map<String, Boolean> wordingByLine = new HashMap<>();
     private final Map<String, BankBouncePaymentGuard.Attribution> attributionByLine =
         new HashMap<>();
@@ -378,13 +385,17 @@ final class BankBounceDetector {
    * @param account      the financial account
    * @param pendingLines the auto-match candidate lines of the account (hook already applied)
    * @param dateTolDays  the account's date tolerance, in days
-   * @return the loaded data; with no candidate line, no query runs
+   * @return the loaded data, with the lines the user said are not a bank rejection; with no
+   *     candidate line, no query runs
    */
   static AccountData load(FIN_FinancialAccount account, List<FIN_BankStatementLine> pendingLines,
       int dateTolDays) {
     AccountData data = new AccountData(account, dateTolDays);
     for (FIN_BankStatementLine line : pendingLines) {
       data.lines.add(toStatementLine(line));
+      if (BankBounceDismissal.isDismissed(line)) {
+        data.dismissedBounces.add(line.getId());
+      }
     }
     LocalDate[] range = candidateRange(data);
     if (range.length == 0) {
@@ -797,8 +808,9 @@ final class BankBounceDetector {
 
   /**
    * For every candidate line, the candidate lines that can be its original with at least one
-   * signal. Lines are indexed by magnitude first — only those can pair — which keeps this linear in
-   * the number of lines instead of quadratic.
+   * signal. A line the user said is not a bank rejection is never a bounce here, so it has no
+   * entry; it can still be the original of another line. Lines are indexed by magnitude first —
+   * only those can pair — which keeps this linear in the number of lines instead of quadratic.
    *
    * @param data the loaded data
    * @return the eligible originals by bounce line id, in statement order
@@ -812,7 +824,7 @@ final class BankBounceDetector {
     }
     Map<String, List<StatementLine>> eligibleByBounce = new LinkedHashMap<>();
     for (StatementLine r : data.lines) {
-      if (!r.candidate()) {
+      if (!r.candidate() || data.dismissedBounces.contains(r.id())) {
         continue;
       }
       List<StatementLine> originals = new ArrayList<>();

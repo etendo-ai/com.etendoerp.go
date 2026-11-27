@@ -127,6 +127,25 @@ final class BankBounceSuggestions {
     }
 
     /**
+     * The detected pairs, in detection order (nominal: nothing taken by other groups).
+     *
+     * @return the pairs; do not modify
+     */
+    List<Pair> pairs() {
+      return pairs;
+    }
+
+    /**
+     * The auto-match candidate line behind a line id.
+     *
+     * @param lineId the line id
+     * @return the DAL line, or {@code null} when it is not among the candidates
+     */
+    FIN_BankStatementLine line(String lineId) {
+      return linesById.get(lineId);
+    }
+
+    /**
      * Whether the flag is on for this request, i.e. whether the answers carry bounce data.
      *
      * @return {@code true} when bounce data is added
@@ -401,7 +420,9 @@ final class BankBounceSuggestions {
      * After classification: a line classified anything but {@code pending} counts as taken by a
      * transaction group, exactly as in the auto-match loop; the review pairs left untouched become
      * {@code bounce} too. Every row of an offered pair gets {@code bouncePair}, and
-     * {@code counts.bounce} is set.
+     * {@code counts.bounce} is set. Every row also gets {@code bounceDismissedAt}: when the user
+     * said that line is not a bank rejection ({@link BankBounceDismissal}), {@code null} otherwise,
+     * so the panel can offer to undo it.
      *
      * <p>Only the rows of this answer are seen: under a date or text filter a review pair whose
      * other line is outside the filter is judged on its visible lines alone.
@@ -420,6 +441,8 @@ final class BankBounceSuggestions {
         }
         String id = row.optString(KEY_ID, "");
         rowsById.put(id, row);
+        row.put(BankBounceDismissal.KEY_BOUNCE_DISMISSED_AT,
+            BankBounceDismissal.dismissedAtJson(plan.line(id)));
         String state = row.optString(KEY_STATE, "");
         if (!reserved(id) && !AutoMatchSupport.STATE_PENDING.equals(state)
             && !STATE_BOUNCE.equals(state)) {
