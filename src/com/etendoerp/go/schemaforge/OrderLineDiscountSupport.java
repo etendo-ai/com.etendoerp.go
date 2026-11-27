@@ -517,6 +517,19 @@ final class OrderLineDiscountSupport {
     // One lazy read of the stored line for the whole update: each step that needs it asks, the
     // first one reads, and a request no step needs it for reads nothing.
     StoredLine storedLine = new StoredLine(ctx);
+    dropZeroGrossOnUpdate(ctx);
+    if (storedLine.changesProduct()) {
+      // ETP-6107: the stored prices and tax belong to the previous product, so nothing is derived
+      // from them nor carried. The new product is priced from the order's price list, as a new
+      // line is (OrderLineProductChangePrice); its tax and unit come from the callout re-fire. Only
+      // the quantity is the line's own: without it the gross cannot be derived. On MCP the re-fire
+      // already ran, so the gross derived here is final; on REST lineGrossAmount is read-only, so
+      // this write is dropped and derived again after the re-fire.
+      OrderLineProductChangePrice.reprice(ctx);
+      storedLine.carryQuantityInto(ctx);
+      deriveAmountsOnUpdate(ctx, storedLine);
+      return;
+    }
     // Judged on what the caller sent: the steps below write lineGrossAmount into the body, which
     // changesAmountInput would then read as the caller's own gross.
     boolean sentAmountInput = ctx != null && changesAmountInput(ctx.getRequestBody());
@@ -530,6 +543,24 @@ final class OrderLineDiscountSupport {
     deriveAmountsOnCreate(ctx);
   }
 
+
+  /**
+   * ETP-6107: on an update, a {@code lineGrossAmount} of 0 in the body is the callout re-fire's,
+   * not the caller's. On MCP the re-fire runs before the pre-hook, and {@code SL_Order_Amt}
+   * publishes {@code grossUnitPrice × qty}, 0 on a net list, so a new tax or product left the line
+   * with a gross of 0 that the derivation below kept as sent. 0 is server-derived, as on create
+   * ({@link #dropStaleGrossAfterRefire}); the derivation computes it again (0 when quantity or
+   * price is 0). On REST the gross is read-only and never in the body here.
+   */
+  static void dropZeroGrossOnUpdate(NeoContext ctx) {
+    if (ctx == null || !isUpdate(ctx.getHttpMethod()) || ctx.getRequestBody() == null) {
+      return;
+    }
+    JSONObject body = ctx.getRequestBody();
+    if (body.has(FIELD_LINE_GROSS_AMOUNT) && isZero(body.opt(FIELD_LINE_GROSS_AMOUNT))) {
+      body.remove(FIELD_LINE_GROSS_AMOUNT);
+    }
+  }
 
   /**
    * Carries into a sparse update the amount inputs it does not send — quantity, price, gross price
@@ -551,8 +582,16 @@ final class OrderLineDiscountSupport {
    * @param ctx the pre-hook context; its request body is mutated in place
    */
   static void completeAmountInputsOnUpdate(NeoContext ctx) {
-    if (ctx != null && changesAmountInput(ctx.getRequestBody())) {
-      new StoredLine(ctx).carryAmountInputsInto(ctx);
+    if (ctx == null) {
+      return;
+    }
+    StoredLine storedLine = new StoredLine(ctx);
+    // ETP-6107: the stored tax and prices belong to the previous product (see applyLineRules).
+    if (storedLine.changesProduct()) {
+      OrderLineProductChangePrice.reprice(ctx);
+      storedLine.carryQuantityInto(ctx);
+    } else if (changesAmountInput(ctx.getRequestBody())) {
+      storedLine.carryAmountInputsInto(ctx);
     }
   }
 
@@ -815,6 +854,18 @@ final class OrderLineDiscountSupport {
 
     /** Writes into an update's body the stored line's amount inputs it lacks. Never throws. */
     void carryAmountInputsInto(NeoContext ctx) {
+      carryInto(ctx, AMOUNT_INPUTS);
+    }
+
+    /**
+     * Carries only the stored quantity (ETP-6107): on a product change the stored prices and tax
+     * are the previous product's, but the gross of the new one is derived over the quantity.
+     */
+    void carryQuantityInto(NeoContext ctx) {
+      carryInto(ctx, Collections.singletonList(FIELD_ORDERED_QTY));
+    }
+
+    private void carryInto(NeoContext ctx, List<String> inputs) {
       if (ctx == null || !NeoEndpointType.CRUD.equals(ctx.getEndpointType())
           || !isUpdate(ctx.getHttpMethod())) {
         return;
@@ -831,7 +882,7 @@ final class OrderLineDiscountSupport {
         // A new net price makes the stored gross price stale, and the gross derivation prefers it.
         // Read before the loop: the loop itself carries the stored unitPrice into the body.
         boolean sentUnitPrice = body.has(FIELD_UNIT_PRICE);
-        for (String input : AMOUNT_INPUTS) {
+        for (String input : inputs) {
           boolean staleGrossPrice = sentUnitPrice && FIELD_GROSS_UNIT_PRICE.equals(input);
           if (!staleGrossPrice && !body.has(input) && stored.has(input)
               && !stored.isNull(input)) {
@@ -841,6 +892,26 @@ final class OrderLineDiscountSupport {
       } catch (Exception e) {
         log.warn("[ORDER-LINE-AMOUNTS] Could not complete the amount inputs on {} {}: {}",
             ctx.getSpecName(), ctx.getEntityName(), e.getMessage());
+      }
+    }
+
+    /**
+     * Whether an update sets a product other than the stored one. Read from the line itself:
+     * {@link #get} already overlays the patch, so it shows the new product.
+     */
+    boolean changesProduct() {
+      String sent = patch == null ? null : patch.optString(FIELD_PRODUCT, null);
+      if (StringUtils.isBlank(recordId) || StringUtils.isBlank(sent)) {
+        return false;
+      }
+      try {
+        OrderLine line = OBDal.getInstance().get(OrderLine.class, recordId);
+        return line != null
+            && (line.getProduct() == null || !sent.equals(line.getProduct().getId()));
+      } catch (Exception e) {
+        log.warn("[ORDER-LINE-PRICE] Could not read the stored product of {}: {}", recordId,
+            e.getMessage());
+        return false;
       }
     }
 

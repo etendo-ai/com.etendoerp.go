@@ -104,6 +104,14 @@ public class NeoContext {
    */
   public static final String ATTR_CLIENT_PROVIDED_FIELDS = "neo.clientProvidedFields";
 
+  /**
+   * The values the caller sent on an MCP update, as a {@code JSONObject} snapshot taken before the
+   * callout re-fire and the shared write compensations rewrote the body (ETP-6107). On MCP those
+   * run before the pre-hook, so the body no longer says what the caller sent. Absent on REST, where
+   * the pre-hook runs first and the body IS what the caller sent.
+   */
+  public static final String ATTR_CLIENT_SENT_VALUES = "neo.clientSentValues";
+
   private NeoContext(Builder builder) {
     this.specName = builder.specName;
     this.entityName = builder.entityName;

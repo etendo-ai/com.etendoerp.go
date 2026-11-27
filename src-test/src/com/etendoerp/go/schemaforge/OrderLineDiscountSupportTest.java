@@ -579,7 +579,12 @@ class OrderLineDiscountSupportTest {
    * its own line (no nested stubbing); the caller closes the returned mock.
    */
   private static MockedStatic<OBProvider> storedLine(OBDal dal, String stored) throws Exception {
-    OrderLine line = mock(OrderLine.class);
+    return storedLine(dal, stored, mock(OrderLine.class));
+  }
+
+  /** {@link #storedLine(OBDal, String)} over a given line mock (e.g. one with a stored product). */
+  private static MockedStatic<OBProvider> storedLine(OBDal dal, String stored, OrderLine line)
+      throws Exception {
     DataToJsonConverter converter = mock(DataToJsonConverter.class);
     OBProvider provider = mock(OBProvider.class);
     JSONObject storedJson = new JSONObject(stored);
@@ -1442,5 +1447,231 @@ class OrderLineDiscountSupportTest {
     when(currency.getId()).thenReturn(id);
     when(currency.getPricePrecision()).thenReturn(2L);
     return currency;
+  }
+
+  // ── ETP-6107: an update that changes the product ─────────────────────────────
+
+  private static OrderLine storedLineWithProduct(String productId) {
+    Product product = mock(Product.class);
+    when(product.getId()).thenReturn(productId);
+    OrderLine line = mock(OrderLine.class);
+    when(line.getProduct()).thenReturn(product);
+    return line;
+  }
+
+  private static boolean changesProduct(String sentProduct, OrderLine stored) throws Exception {
+    JSONObject body = new JSONObject().put("unitPrice", 40);
+    if (sentProduct != null) {
+      body.put("product", sentProduct);
+    }
+    try (MockedStatic<OBDal> dalMock = mockStatic(OBDal.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      when(dal.get(OrderLine.class, LINE_ID)).thenReturn(stored);
+      return new OrderLineDiscountSupport.StoredLine(updateCtx("PATCH", body, mock(Tab.class)))
+          .changesProduct();
+    }
+  }
+
+  @Test
+  void aNewProductIsAProductChange() throws Exception {
+    assertTrue(changesProduct("NEW", storedLineWithProduct("OLD")));
+  }
+
+  @Test
+  void theStoredProductSentBackIsNoChange() throws Exception {
+    assertFalse(changesProduct("OLD", storedLineWithProduct("OLD")));
+  }
+
+  @Test
+  void anUpdateWithoutAProductIsNoChange() throws Exception {
+    assertFalse(changesProduct(null, storedLineWithProduct("OLD")));
+  }
+
+  @Test
+  void aLineThatCannotBeReadIsNoChange() throws Exception {
+    assertFalse(changesProduct("NEW", null));
+  }
+
+  @Test
+  void aLineWithoutAStoredProductGetsOne() throws Exception {
+    assertTrue(changesProduct("NEW", mock(OrderLine.class)));
+  }
+
+  /**
+   * ETP-6107, MCP: the re-fire ran before the pre-hook, so the body already carries the new
+   * product's tax and its SL_Order_Amt gross of 0. A price sent with the new product is the
+   * caller's: no discount is derived from the PREVIOUS list price (300 here; 0.83 gave -4719.28 in
+   * the field). Only the stored quantity is carried, and the gross is derived over the new price.
+   */
+  @Test
+  void aPriceSentWithANewProductIsNotDerivedFromTheStoredLine() throws Exception {
+    JSONObject body = new JSONObject().put("product", "NEW").put("unitPrice", 40)
+        .put("tax", TAX_ID).put("lineGrossAmount", 0);
+    OBDal dal = mock(OBDal.class);
+
+    try (MockedStatic<OBDal> dalMock = LineAmountTestSupport.taxRate(21.0, dal);
+        MockedStatic<OBProvider> provider = storedLine(dal, STORED_MONITOR_LINE,
+            storedLineWithProduct("OLD"))) {
+      OrderLineDiscountSupport.applyLineRules(updateCtx("PATCH", body, mock(Tab.class)));
+    }
+
+    assertEquals(40, body.getInt(OrderLineDiscountSupport.FIELD_UNIT_PRICE), "the caller's price");
+    assertFalse(body.has("discount"), "no discount from the previous list price: " + body);
+    assertFalse(body.has("listPrice"), "no previous list price: " + body);
+    assertEquals(10, body.getInt(OrderLineDiscountSupport.FIELD_ORDERED_QTY), "stored quantity");
+    assertAmount("gross of the new price", "484", body,
+        OrderLineDiscountSupport.FIELD_LINE_GROSS_AMOUNT);
+  }
+
+  /**
+   * ETP-6107, REST: the pre-hook runs before the re-fire, so the stored tax and prices must stay
+   * out of the body (the re-fire keeps what the body carries). The quantity is carried: the save
+   * derives the gross over the body alone.
+   */
+  @Test
+  void onlyTheQuantityIsCarriedOntoANewProduct() throws Exception {
+    JSONObject body = new JSONObject().put("product", "NEW");
+    OBDal dal = mock(OBDal.class);
+
+    try (MockedStatic<OBDal> dalMock = LineAmountTestSupport.taxRate(21.0, dal);
+        MockedStatic<OBProvider> provider = storedLine(dal, STORED_MONITOR_LINE,
+            storedLineWithProduct("OLD"))) {
+      OrderLineDiscountSupport.applyLineRules(updateCtx("PATCH", body, mock(Tab.class)));
+    }
+
+    assertEquals(10, body.getInt(OrderLineDiscountSupport.FIELD_ORDERED_QTY), "stored quantity");
+    assertFalse(body.has(OrderLineDiscountSupport.FIELD_TAX), "no previous tax: " + body);
+    assertFalse(body.has(OrderLineDiscountSupport.FIELD_UNIT_PRICE), "no previous price: " + body);
+  }
+
+  /**
+   * ETP-6107, MCP: a new tax re-fires SL_Order_Amt before the pre-hook, which leaves a gross of 0
+   * in the body. It is server-derived: the gross is derived again over the line.
+   */
+  @Test
+  void aZeroGrossLeftByTheRefireIsDerivedAgain() throws Exception {
+    JSONObject body = new JSONObject().put("tax", TAX_ID).put("lineGrossAmount", 0);
+    OBDal dal = mock(OBDal.class);
+
+    try (MockedStatic<OBDal> dalMock = LineAmountTestSupport.taxRate(21.0, dal);
+        MockedStatic<OBProvider> provider = storedLine(dal, STORED_MONITOR_LINE)) {
+      OrderLineDiscountSupport.applyLineRules(updateCtx("PATCH", body, null));
+    }
+
+    assertAmount("gross of the stored line", "2904", body,
+        OrderLineDiscountSupport.FIELD_LINE_GROSS_AMOUNT);
+  }
+
+  /** ETP-6107: only a gross of 0 is the re-fire's; a non-zero gross the caller sent is kept. */
+  @Test
+  void aNonZeroGrossIsKeptOnUpdate() throws Exception {
+    JSONObject body = new JSONObject().put("lineGrossAmount", 121);
+
+    OrderLineDiscountSupport.dropZeroGrossOnUpdate(updateCtx("PATCH", body, null));
+
+    assertAmount("the sent gross", "121", body, OrderLineDiscountSupport.FIELD_LINE_GROSS_AMOUNT);
+  }
+
+  /** ETP-6107: the zero-gross rule is for updates; a create leaves the body untouched. */
+  @Test
+  void aZeroGrossIsNotDroppedOnPost() throws Exception {
+    JSONObject body = new JSONObject().put("lineGrossAmount", 0);
+
+    OrderLineDiscountSupport.dropZeroGrossOnUpdate(updateCtx("POST", body, null));
+
+    assertTrue(body.has(OrderLineDiscountSupport.FIELD_LINE_GROSS_AMOUNT), body.toString());
+  }
+
+  /**
+   * ETP-6107: on a product change the stored quantity is carried only when the caller did not send
+   * one; a quantity sent with the new product (3) is the line's, not the stored 10.
+   */
+  @Test
+  void aQuantitySentWithANewProductIsNotOverwrittenByTheStoredOne() throws Exception {
+    JSONObject body = new JSONObject().put("product", "NEW").put("orderedQuantity", 3);
+    OBDal dal = mock(OBDal.class);
+
+    try (MockedStatic<OBDal> dalMock = LineAmountTestSupport.taxRate(21.0, dal);
+        MockedStatic<OBProvider> provider = storedLine(dal, STORED_MONITOR_LINE,
+            storedLineWithProduct("OLD"))) {
+      OrderLineDiscountSupport.completeAmountInputsOnUpdate(
+          updateCtx("PATCH", body, mock(Tab.class)));
+    }
+
+    assertEquals(3, body.getInt(OrderLineDiscountSupport.FIELD_ORDERED_QTY), body.toString());
+  }
+
+  /** ETP-6107, purchase lines over REST: the same rule through the purchase path. */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("purchaseProductChange")
+  void purchaseLinesCarryOnlyTheQuantityOntoANewProduct(String label, String patch)
+      throws Exception {
+    JSONObject body = new JSONObject(patch);
+    JSONObject sent = new JSONObject(patch);
+    OBDal dal = mock(OBDal.class);
+
+    try (MockedStatic<OBDal> dalMock = LineAmountTestSupport.taxRate(21.0, dal);
+        MockedStatic<OBProvider> provider = storedLine(dal, STORED_MONITOR_LINE,
+            storedLineWithProduct("OLD"))) {
+      OrderLineDiscountSupport.completeAmountInputsOnUpdate(
+          updateCtx("PATCH", body, mock(Tab.class)));
+    }
+
+    assertEquals(10, body.getInt(OrderLineDiscountSupport.FIELD_ORDERED_QTY), label);
+    assertFalse(body.has(OrderLineDiscountSupport.FIELD_TAX), label + ": no previous tax");
+    assertEquals(sent.length() + 1, body.length(), label + ": only the quantity added " + body);
+  }
+
+  /**
+   * ETP-6107: both product-change paths price the line from the order's price list (44), not
+   * from the stored line nor the selector (the public API e2e got the previous list price, 33).
+   */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("productChangePaths")
+  void aNewProductIsPricedFromTheOrdersPriceList(String label, boolean salesPath)
+      throws Exception {
+    JSONObject body = new JSONObject().put("product", "NEW");
+    OBDal dal = mock(OBDal.class);
+    PriceList priceList = mock(PriceList.class);
+    Order order = mock(Order.class);
+    when(order.getOrderDate()).thenReturn(new Date());
+    when(order.getPriceList()).thenReturn(priceList);
+    OrderLine stored = storedLineWithProduct("OLD");
+    when(stored.getSalesOrder()).thenReturn(order);
+    Product product = mock(Product.class);
+    when(dal.get(Product.class, "NEW")).thenReturn(product);
+    ProductPrice price = mock(ProductPrice.class);
+    when(price.getStandardPrice()).thenReturn(new BigDecimal("44"));
+    when(price.getListPrice()).thenReturn(new BigDecimal("44"));
+
+    try (MockedStatic<OBDal> dalMock = LineAmountTestSupport.taxRate(21.0, dal);
+        MockedStatic<OBProvider> provider = storedLine(dal, STORED_MONITOR_LINE, stored);
+        MockedStatic<FinancialUtils> financial = mockStatic(FinancialUtils.class)) {
+      financial.when(() -> FinancialUtils.getProductPrice(eq(product), any(), anyBoolean(),
+          eq(priceList), eq(false))).thenReturn(price);
+      NeoContext ctx = updateCtx("PATCH", body, mock(Tab.class));
+      if (salesPath) {
+        OrderLineDiscountSupport.applyLineRules(ctx);
+      } else {
+        OrderLineDiscountSupport.completeAmountInputsOnUpdate(ctx);
+      }
+    }
+
+    assertAmount(label + ": list", "44", body, OrderLineDiscountSupport.FIELD_LIST_PRICE);
+    assertAmount(label + ": unit", "44", body, OrderLineDiscountSupport.FIELD_UNIT_PRICE);
+    assertAmount(label + ": discount", "0", body, OrderLineDiscountSupport.FIELD_DISCOUNT);
+    assertEquals(10, body.getInt(OrderLineDiscountSupport.FIELD_ORDERED_QTY), label);
+  }
+
+  static Stream<Arguments> productChangePaths() {
+    return Stream.of(Arguments.of("sales (applyLineRules)", true),
+        Arguments.of("purchase (completeAmountInputsOnUpdate)", false));
+  }
+
+  static Stream<Arguments> purchaseProductChange() {
+    return Stream.of(
+        Arguments.of("product alone", "{\"product\":\"NEW\"}"),
+        Arguments.of("product and price", "{\"product\":\"NEW\",\"unitPrice\":40}"));
   }
 }
