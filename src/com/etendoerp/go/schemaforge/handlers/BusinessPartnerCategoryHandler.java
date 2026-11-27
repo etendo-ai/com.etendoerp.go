@@ -21,6 +21,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.base.exception.OBException;
 
+import com.etendoerp.go.schemaforge.ContactCategoryRequiredFields;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoExtension;
 import com.etendoerp.go.schemaforge.NeoHandler;
@@ -38,8 +39,12 @@ import com.etendoerp.go.schemaforge.NeoResponse;
  * <p>What the flags drive — inheritance of the type by a new contact — lives in the contact's own
  * customization, see {@link ContactTypeRules}.</p>
  *
- * <p>Behind the {@code contact-category-type} feature flag: off, this pre-hook returns
- * {@code null} and the category is saved by the default CRUD with no type check.</p>
+ * <p>Independently of the flag (ETP-6469), a create without a search key or name, or an update
+ * that blanks one, is refused with {@code MISSING_REQUIRED_FIELDS} before any SQL, see
+ * {@link ContactCategoryRequiredFields}.</p>
+ *
+ * <p>The type check is behind the {@code contact-category-type} feature flag: off, the category is
+ * saved by the default CRUD with no type check.</p>
  */
 @NeoExtension(spec = "business-partner-category", entity = "businessPartnerCategory")
 public class BusinessPartnerCategoryHandler implements NeoHandler {
@@ -48,6 +53,10 @@ public class BusinessPartnerCategoryHandler implements NeoHandler {
 
   @Override
   public NeoResponse handle(NeoContext ctx) {
+    NeoResponse missing = ContactCategoryRequiredFields.validate(ctx);
+    if (missing != null) {
+      return missing;
+    }
     if (!ContactTypeRules.isEnabled() || !ContactTypeRules.isCrudWrite(ctx)) {
       return null;
     }
