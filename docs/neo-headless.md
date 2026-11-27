@@ -10825,6 +10825,19 @@ should a configuration push open the flags again, by the customization itself (4
 `com.etendoerp.go.template`'s `configScript.xml`; NEO serialises them as server-local wall clock
 `yyyy-MM-dd'T'HH:mm:ss` (ETP-5100).
 
+**Behind the per-account flag `currency-conversion-v2`** (`CurrencyConversionV2Flag`, see
+`feature-flags-and-tenant-upgrade.md`). Off — the default — the window is the one before ETP-6365
+(the SPA renders the generated read-only window) and every write of this entity is refused **before
+anything else** with 403 `feature_disabled` (`ETGO_CurrencyConversionV2Disabled`, "La carga manual de
+tasas de conversión no está habilitada para este usuario: las tasas solo se pueden consultar.") on
+every channel: `createManualCurrency`, `createManualRate`, `updateManualRate`, `previewManualRate`,
+`DELETE` (including the System-row delete worded by `refusalForReadOnlyTarget`) and a generic
+`POST`/`PUT`/`PATCH`. `actionContracts()` then declares only `manualCurrencyOptions`, `currentRates`
+and `serverClock`, so the MCP does not advertise the writes. Reads, `serverClock`, `currentRates`,
+`manualCurrencyOptions` and `etgoRateStatus` are never gated. What is gated is listed once, in
+`ConversionRateFlagGate`. Known gap: `etendo_delete` still lists the spec (its `DELETE` method is
+configuration), and the call answers the 403. Everything below describes the flag **on**.
+
 **Every write is served by the customization itself** — the three write actions and the delete,
 on REST and MCP alike — no channel divergence.
 It validates everything first, then writes on the request's session and only flushes: the channel
@@ -10902,11 +10915,11 @@ for `InvalidRate`, `validFromDate` for `InvalidValidFrom`/`FutureStart`/`Overlap
 | `ETGO_ConvRateAutoCurrency` | 400 | the currency is downloaded automatically |
 | `ETGO_ConvRateInvalidRate` | 400 | rate missing, not a number, or ≤ 0 |
 | `ETGO_ConvRateInvalidValidFrom` | 400 | start missing or not a date |
-| `ETGO_ConvRateCurrencyHasRates` | 409 | `createManualCurrency` (or preview `mode: newCurrency`) for a currency that already has rates — "CHF ya tiene tasas. Use Nueva tasa para cargar una tasa nueva." |
-| `ETGO_ConvRateCurrencyNoRates` | 409 | `createManualRate` (or preview `mode: newRate`) for a currency without rates — "CHF todavía no tiene tasas. Use Nueva divisa para darla de alta con su primera tasa." |
+| `ETGO_ConvRateCurrencyHasRates` | 409 | `createManualCurrency` (or preview `mode: newCurrency`) for a currency that already has rates — "CHF ya tiene tasas. Use Nueva tasa para cargar una tasa nueva." The text names the window's button; the refusal also carries `error.hint` (`errorHint` in the preview), key `ETGO_ConvRateCurrencyHasRatesHint`, naming the action for an agent: "CHF ya tiene tasas: carga la tasa nueva con la acción createManualRate (mismos parámetros). …" |
+| `ETGO_ConvRateCurrencyNoRates` | 409 | `createManualRate` (or preview `mode: newRate`) for a currency without rates — "CHF todavía no tiene tasas. Use Nueva divisa para darla de alta con su primera tasa." Also `error.hint` / `errorHint` (`ETGO_ConvRateCurrencyNoRatesHint`): "CHF todavía no tiene tasas: dala de alta con su primera tasa mediante la acción createManualCurrency (mismos parámetros). …" |
 | `ETGO_ConvRateUseActions` | 405 | a generic create or update reached the customization (only if the flags were opened again) |
 | `ETGO_ConvRateFutureStart` | 400 | start later than the server's current minute — "La fecha y hora de inicio no puede ser posterior al momento actual." |
-| `ETGO_ConvRateOverlap` | 409 | the new range falls inside a closed range, or does not start after the start of the range in force — "Ya existe una tasa de conversión para EUR → CHF en las fechas indicadas (01/11/2026 09:00 – 18/11/2026 14:29). Elija una fecha de inicio posterior al 18/11/2026 14:30." `{2}`–`{3}` is the colliding range (`dd/MM/yyyy HH:mm` in every language; an open end reads "sin fecha de fin" / "no end date", key `ETGO_ConvRateNoEndDate`); `{4}` is the start of the pair's open range, or, with none, the latest end of the colliding ranges. Also the translation of core's 20504 (the ranges are read again after the rollback to fill the dates) |
+| `ETGO_ConvRateOverlap` | 409 | the new range falls inside a closed range, or does not start after the start of the range in force — "Ya existe una tasa de conversión para EUR → CHF en las fechas indicadas (01/11/2026 09:00 – 18/11/2026 14:29). Elija una fecha de inicio posterior al 18/11/2026 14:30. Las horas están en la zona horaria del servidor (UTC)." `{2}`–`{3}` is the colliding range (`dd/MM/yyyy HH:mm` in every language; an open end reads "sin fecha de fin" / "no end date", key `ETGO_ConvRateNoEndDate`); `{4}` is the start of the pair's open range, or, with none, the latest end of the colliding ranges; `{5}` is the server's zone id, the zone of `{2}`–`{4}` (QA CP-13: the text alone read as the viewer's time). The same instants travel structured in `error.details` (and `errorDetails` of `previewManualRate`): `{conflictFrom, conflictTo (null when open), conflictOpen, suggestedFrom, timeZone}`, server wall clock `yyyy-MM-dd'T'HH:mm:ss` — the SPA words the message itself from them, in the browser's zone. Also the translation of core's 20504 (the ranges are read again after the rollback to fill the dates) |
 | `ETGO_ConvRateSyncedLocked` | 409 | update/delete of a downloaded row — the tenant's own or a System (`0`) one, where the downloader writes (also the translation of `SMFCR_CannotDeleteSyncedRate`) |
 | `ETGO_ConvRateNoOrgCurrency` | 422 | the organization has no currency |
 
@@ -10925,14 +10938,15 @@ the Spanish meaning travels in the catalog.
 **Why virtual (`Computation_Mode = 'V'`):** it depends on `now()`, the case a stored column cannot
 follow. The function is total (every edge case answers `HISTORIC`).
 
-**Actions** (`actionContracts`, read-only, not tied to a record — REST
+**Actions** (`actionContracts`, read-only, not tied to a record; `previewManualRate` only while
+`currency-conversion-v2` is on — REST
 `POST /sws/neo/conversion-rates/conversionRate/new/action/<name>`, MCP `etendo_action` with
 `id: "_"`):
 
 | Action | Parameters | Answer (`response.data`) |
 |---|---|---|
 | `manualCurrencyOptions` | optional `withoutRates` (boolean, default `false`; `"true"`/`"false"` accepted on the query string) | `[{id, isoCode, name, symbol}]`: active currencies minus the organization currency and the automatic ones; with `withoutRates: true` also minus every currency that already has an active `C_Conversion_Rate` row of the client (or of System) with the organization currency, in either direction and on any date — the list of the "Nueva divisa" popup (a currency that already has rates gets a new range from its own "Nueva tasa · ISO" entry). `name`/`symbol` in the request language |
-| `previewManualRate` | `toCurrency`, `multipleRateBy`, optional `validFromDate` (default now), optional `mode` (`newCurrency` = the checks of `createManualCurrency`, `newRate` = those of `createManualRate`; absent = no check on existing rates) | `{creates:[{fromIso, toIso, rate, validFrom}], closes:[{id, fromIso, toIso, validFrom, newValidTo}]}` — or `{creates:[], closes:[], error, errorKey, errorField}` with the refusal a create would get (same text as the create; `errorField` as `error.field` above, absent for refusals bound to no field). Writes nothing |
+| `previewManualRate` | `toCurrency`, `multipleRateBy`, optional `validFromDate` (default now), optional `mode` (`newCurrency` = the checks of `createManualCurrency`, `newRate` = those of `createManualRate`; absent = no check on existing rates) | `{creates:[{fromIso, toIso, rate, validFrom}], closes:[{id, fromIso, toIso, validFrom, newValidTo}]}` — or `{creates:[], closes:[], error, errorKey, errorField, errorDetails, errorHint}` with the refusal a create would get (same text as the create; `errorField` as `error.field` above, absent for refusals bound to no field; `errorDetails` as `error.details`, only on the overlap; `errorHint` as `error.hint`, only on the two currency refusals). Writes nothing |
 | `serverClock` | — | `{now: "yyyy-MM-dd'T'HH:mm:00", timeZone: "<zone id>"}` — the server's current minute, server-local wall clock, and the id of that zone (JVM default, e.g. `UTC`; the zone `validFromDate` and every range datetime are read in); the default start of a new rate |
 | `currentRates` | — | `[{currencyId, isoCode, name, symbol, origin: AUTO\|MANUAL, rate, validFrom, lastDownloadAt}]` — one per currency with a range in force now, of the client or of System (the downloader's rows): the client's row wins over the System one, as in `ConversionRateLookup`, then the latest start; `rate` is always "1 organization currency = rate"; `lastDownloadAt` (AUTO only) is the latest `SUCCESS` run in `SMFCR_SYNC_LOG` of the client or of System, or the row's `updated` when that is newer or there is no run (the log is per run, not per pair) |
 
