@@ -1713,7 +1713,7 @@
 <!--D7C7BF6D63524054BE461F7981D647A9-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--D7C7BF6D63524054BE461F7981D647A9-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--D7C7BF6D63524054BE461F7981D647A9-->  <VALUE><![CDATA[ETGO_CostCalculationStalled]]></VALUE>
-<!--D7C7BF6D63524054BE461F7981D647A9-->  <MSGTEXT><![CDATA[Cost calculation looks stalled: transactions have been waiting for their cost for a long time, so repeating the post will not help. An administrator must check the Costing Background process and the pending transactions.]]></MSGTEXT>
+<!--D7C7BF6D63524054BE461F7981D647A9-->  <MSGTEXT><![CDATA[Cost has been pending for more than 10 minutes, usually because a product has no cost set. Fix the missing costs and post the document again.]]></MSGTEXT>
 <!--D7C7BF6D63524054BE461F7981D647A9-->  <MSGTYPE><![CDATA[E]]></MSGTYPE>
 <!--D7C7BF6D63524054BE461F7981D647A9-->  <AD_MODULE_ID><![CDATA[94E1B433CF55451EABB764750AC5902A]]></AD_MODULE_ID>
 <!--D7C7BF6D63524054BE461F7981D647A9-->  <ISINCLUDEINI18N><![CDATA[N]]></ISINCLUDEINI18N>

@@ -31,6 +31,7 @@ import org.hibernate.criterion.Restrictions;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.model.Property;
+import org.openbravo.base.structure.BaseOBObject;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.datamodel.Column;
@@ -818,19 +819,16 @@ final class McpSchemaFieldBuilder {
     // ETP-5669: the field (DAL property) name, which customizations see; "column" keeps the DB name.
     fieldObj.put("action", fieldObj.optString("name", col.getDBColumnName()));
     McpSchemaActionFields.addActionValues(fieldObj, col);
-    // Resolve process info — mirror NeoButtonActionHelper / NeoProcessService logic
-    Process classicProcess = col.getProcess();
-    org.openbravo.client.application.Process obuiappProcess = col.getOBUIAPPProcess();
-    if (classicProcess == null && obuiappProcess == null) {
-      obuiappProcess = NeoAccessHelper.resolveFallbackObuiappProcess(col);
-    }
+    // Resolve process info — the same resolution the invokability verdict reads
+    // (McpSchemaActionFields.processOf), mirroring NeoButtonActionHelper / NeoProcessService.
+    BaseOBObject process = McpSchemaActionFields.processOf(col);
     String processName = null;
-    if (obuiappProcess != null) {
+    if (process instanceof org.openbravo.client.application.Process obuiappProcess) {
       fieldObj.put("processType", "OBUIAPP");
       processName = obuiappProcess.getName();
       fieldObj.put("processName", processName != null ? processName : "");
       fieldObj.put("processId", obuiappProcess.getId());
-    } else if (classicProcess != null) {
+    } else if (process instanceof Process classicProcess) {
       fieldObj.put("processType", "Classic");
       processName = classicProcess.getName();
       fieldObj.put("processName", processName != null ? processName : "");
@@ -838,7 +836,7 @@ final class McpSchemaFieldBuilder {
       McpSchemaActionFields.addProcessParameters(fieldObj, classicProcess);
     }
     applyActionLabelFallback(fieldObj, col, processName);
-    McpSchemaActionFields.addInvokability(fieldObj, visibility, processName != null, hiddenInTab);
+    McpSchemaActionFields.addInvokability(fieldObj, visibility, process != null, hiddenInTab);
   }
 
   /**
@@ -866,7 +864,7 @@ final class McpSchemaFieldBuilder {
    * silently retire those actions. Only an explicit {@code isDisplayed = 'N'} blocks. Mirrors
    * {@link #loadFieldLabels}: first active field for the column wins.</p>
    */
-  private static boolean isHiddenButtonField(Tab adTab, Column col) {
+  static boolean isHiddenButtonField(Tab adTab, Column col) {
     if (adTab == null) {
       return false;
     }

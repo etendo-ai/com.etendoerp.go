@@ -75,7 +75,12 @@ dependencies {
     implementation('com.etendoerp:localization.spain.extensions:4.5.1')
     implementation('com.etendoerp:bulk.posting.es_es:1.4.0')
     implementation('com.etendoerp:bulk.posting:3.0.0')
-    implementation('com.etendoerp:psd2.bank.integration:[2.0.0,)')
+    // ETP-6463 — 2.3.1 is the first PSD2 release whose BankIntegrationUrlUtils.buildBaseUrl() adds
+    // context.name only when context.url does not already end with it (Issue #151). PisPaymentBridge
+    // relies on it for the PIS return URL fallback and no longer collapses a repeated context path
+    // itself, so an older PSD2 would send the bank to /etendo/etendo/sws/pis-return again.
+    // Declared only here, with no AD_MODULE_DEPENDENCY row (see the remittance note below).
+    implementation('com.etendoerp:psd2.bank.integration:[2.3.1,)')
     implementation('io.modelcontextprotocol.sdk:mcp:1.1.1')
     implementation('com.etendoerp:docker:3.3.0')
     implementation('com.etendoerp:accounting.dimensions.assets:3.2.0')

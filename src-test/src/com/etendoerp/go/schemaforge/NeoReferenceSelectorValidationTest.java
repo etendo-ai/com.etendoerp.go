@@ -29,8 +29,12 @@ import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.when;
 
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 
 import org.codehaus.jettison.json.JSONObject;
 import org.junit.After;
@@ -51,9 +55,15 @@ import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.datamodel.Column;
 import org.openbravo.model.ad.datamodel.Table;
+import org.openbravo.model.ad.domain.Validation;
+import org.openbravo.model.ad.ui.AuxiliaryInput;
 import org.openbravo.model.ad.ui.Tab;
+import org.openbravo.model.ad.ui.Window;
 import org.openbravo.service.json.DataResolvingMode;
 import org.openbravo.service.json.DataToJsonConverter;
+
+import com.etendoerp.go.schemaforge.data.SFEntity;
+import com.etendoerp.go.schemaforge.util.NeoHandlerLookup;
 
 /**
  * Unit tests for {@link NeoReferenceSelectorValidation} (ETP-6176): a reference a write sets is
@@ -99,14 +109,14 @@ public class NeoReferenceSelectorValidationTest {
     Property bp = reference("C_BPartner_ID", partner, PARTNER);
     when(order.getProperty(ADDRESS, false)).thenReturn(address);
     when(order.getProperty(PARTNER, false)).thenReturn(bp);
-    when(order.getProperties()).thenReturn(java.util.Arrays.asList(bp, address));
+    when(order.getProperties()).thenReturn(Arrays.asList(bp, address));
     when(location.getName()).thenReturn("BusinessPartnerLocation");
 
     ModelProvider modelProvider = mock(ModelProvider.class);
     modelProviderStatic.when(ModelProvider::getInstance).thenReturn(modelProvider);
     Table table = mock(Table.class);
     when(table.getId()).thenReturn("T-ORDER");
-    List<Column> columns = java.util.Arrays.asList(column(ADDRESS_COLUMN),
+    List<Column> columns = Arrays.asList(column(ADDRESS_COLUMN),
         column("C_BPartner_ID"));
     when(table.getADColumnList()).thenReturn(columns);
     tab = mock(Tab.class);
@@ -132,7 +142,7 @@ public class NeoReferenceSelectorValidationTest {
   public void testRefusesAReferenceTheSelectorDoesNotOffer() throws Exception {
     offers(Boolean.TRUE);
     selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), eq(ADDRESS),
-        anyString(), any())).thenReturn(java.util.Optional.of(Boolean.FALSE));
+        anyString(), any())).thenReturn(Optional.of(Boolean.FALSE));
 
     NeoReferenceSelectorValidation.RefusedReference refused = check(
         new JSONObject().put(PARTNER, PARTNER_ID).put(ADDRESS, ADDRESS_ID));
@@ -184,12 +194,12 @@ public class NeoReferenceSelectorValidationTest {
     BaseOBObject oldPartner = mock(BaseOBObject.class);
     when(oldPartner.getId()).thenReturn("BP-OLD");
     when(stored.get(PARTNER)).thenReturn(oldPartner);
-    org.openbravo.model.ad.domain.Validation rule = validation(
+    Validation rule = validation(
         "C_BPartner_Location.C_BPartner_ID=@C_BPartner_ID@");
     when(columnOf(ADDRESS_COLUMN).getValidation()).thenReturn(rule);
     offers(Boolean.TRUE);
     selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), eq(ADDRESS),
-        anyString(), any())).thenReturn(java.util.Optional.of(Boolean.FALSE));
+        anyString(), any())).thenReturn(Optional.of(Boolean.FALSE));
 
     NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
         .findRefusedReference(null, tab, ORDER_ID, null, new JSONObject().put(PARTNER, PARTNER_ID));
@@ -203,7 +213,7 @@ public class NeoReferenceSelectorValidationTest {
   public void testUnrelatedChangeDoesNotRevalidateTheStoredDependent() throws Exception {
     BaseOBObject stored = storedOrder();
     when(stored.get(DESCRIPTION)).thenReturn("old");
-    org.openbravo.model.ad.domain.Validation rule = validation(
+    Validation rule = validation(
         "C_BPartner_Location.C_BPartner_ID=@C_BPartner_ID@");
     when(columnOf(ADDRESS_COLUMN).getValidation()).thenReturn(rule);
     when(order.getProperty(DESCRIPTION, false)).thenReturn(mock(Property.class));
@@ -262,21 +272,21 @@ public class NeoReferenceSelectorValidationTest {
         { "customization defers, generic selector refuses", null, Boolean.FALSE, true },
         { "customization defers, generic selector offers", null, Boolean.TRUE, false },
     };
-    com.etendoerp.go.schemaforge.data.SFEntity sfEntity =
-        mock(com.etendoerp.go.schemaforge.data.SFEntity.class);
+    SFEntity sfEntity =
+        mock(SFEntity.class);
     for (Object[] c : cases) {
       String name = (String) c[0];
-      java.util.Optional<Boolean> customizationAnswer =
-          java.util.Optional.ofNullable((Boolean) c[1]);
+      Optional<Boolean> customizationAnswer =
+          Optional.ofNullable((Boolean) c[1]);
       NeoHandler customization = mock(NeoHandler.class);
       when(customization.offersReference(eq(ADDRESS), eq(ADDRESS_ID), any()))
           .thenReturn(customizationAnswer);
       offers((Boolean) c[2]);
 
       NeoReferenceSelectorValidation.RefusedReference refused;
-      try (MockedStatic<com.etendoerp.go.schemaforge.util.NeoHandlerLookup> lookup =
-          mockStatic(com.etendoerp.go.schemaforge.util.NeoHandlerLookup.class)) {
-        lookup.when(() -> com.etendoerp.go.schemaforge.util.NeoHandlerLookup
+      try (MockedStatic<NeoHandlerLookup> lookup =
+          mockStatic(NeoHandlerLookup.class)) {
+        lookup.when(() -> NeoHandlerLookup
             .forEntityQuietly(sfEntity)).thenReturn(customization);
         refused = NeoReferenceSelectorValidation.findRefusedReference(sfEntity, tab, null, null,
             new JSONObject().put(ADDRESS, ADDRESS_ID));
@@ -477,7 +487,7 @@ public class NeoReferenceSelectorValidationTest {
 
       assertNull(NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
           LineFixture.HEADER_ID, new JSONObject().put(LineFixture.LINK,
-              LineFixture.HEADER_ID.toLowerCase(java.util.Locale.ROOT))
+              LineFixture.HEADER_ID.toLowerCase(Locale.ROOT))
               .put(LineFixture.BIN, LineFixture.BIN_ID)));
     }
   }
@@ -537,7 +547,7 @@ public class NeoReferenceSelectorValidationTest {
     offers(Boolean.TRUE);
     assertNull(check(new JSONObject().put(PARTNER, PARTNER_ID).put(PARTNER + ".id", PARTNER_ID)));
     assertNull(check(new JSONObject().put(PARTNER, PARTNER_ID)
-        .put(PARTNER + ".id", PARTNER_ID.toLowerCase(java.util.Locale.ROOT))));
+        .put(PARTNER + ".id", PARTNER_ID.toLowerCase(Locale.ROOT))));
   }
 
   /** Object-wrapped ids are compared by their id: different ones conflict, the same one does not. */
@@ -623,12 +633,12 @@ public class NeoReferenceSelectorValidationTest {
     BaseOBObject oldPartner = mock(BaseOBObject.class);
     when(oldPartner.getId()).thenReturn("BP-OLD");
     when(stored.get(PARTNER)).thenReturn(oldPartner);
-    org.openbravo.model.ad.domain.Validation rule = validation(
+    Validation rule = validation(
         "C_BPartner_Location.C_BPartner_ID=@C_BPartner_ID@");
     when(columnOf(ADDRESS_COLUMN).getValidation()).thenReturn(rule);
     offers(Boolean.TRUE);
     selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), eq(ADDRESS),
-        anyString(), any())).thenReturn(java.util.Optional.of(Boolean.FALSE));
+        anyString(), any())).thenReturn(Optional.of(Boolean.FALSE));
 
     try (MockedStatic<TenantOwnership> tenancy = mockStatic(TenantOwnership.class)) {
       tenancy.when(() -> TenantOwnership.belongsToReadableClient(any())).thenReturn(false);
@@ -698,7 +708,7 @@ public class NeoReferenceSelectorValidationTest {
    */
   @Test
   public void testAuxiliaryInputWinsOverTheWindowDirection() throws Exception {
-    org.openbravo.model.ad.ui.Window window = mock(org.openbravo.model.ad.ui.Window.class);
+    Window window = mock(Window.class);
     when(window.isSalesTransaction()).thenReturn(Boolean.TRUE);
     when(tab.getWindow()).thenReturn(window);
     givenAuxiliaryInput("IsSOTrx", "N");
@@ -707,6 +717,186 @@ public class NeoReferenceSelectorValidationTest {
     check(new JSONObject().put(ADDRESS, ADDRESS_ID));
 
     assertEquals("N", contextFor(ADDRESS).get("IsSOTrx"));
+  }
+
+  /**
+   * ETP-6452 repro: a create that echoes what {@code /defaults} proposes for the field passes even
+   * when the selector does not list it (a sales representative defaulted from the session user,
+   * who has no business partner). The defaults are computed in the record's context: the other
+   * fields the request sets, never the judged one.
+   */
+  @Test
+  public void testACreateEchoingTheServerDefaultIsAccepted() throws Exception {
+    offers(Boolean.TRUE);
+    selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), eq(ADDRESS),
+        anyString(), any())).thenReturn(Optional.of(Boolean.FALSE));
+    SFEntity sfEntity = sfEntity();
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults(ADDRESS_ID)) {
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(sfEntity, tab, null, null,
+          new JSONObject().put(PARTNER, PARTNER_ID).put(ADDRESS, ADDRESS_ID)));
+
+      ArgumentCaptor<NeoContext> ctx = ArgumentCaptor.forClass(NeoContext.class);
+      defaults.verify(() -> NeoDefaultsService.resolveDefaults(ctx.capture(), any()));
+      assertEquals(PARTNER_ID, ctx.getValue().getQueryParams().get(PARTNER));
+      assertFalse(ctx.getValue().getQueryParams().containsKey(ADDRESS));
+      assertEquals(sfEntity, ctx.getValue().getSfEntity());
+    }
+  }
+
+  /** A non-offered value that is not the server default is still refused, verified. */
+  @Test
+  public void testANonOfferedValueOtherThanTheDefaultIsRefused() throws Exception {
+    offers(Boolean.FALSE);
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults("OTHER-ADDR")) {
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(sfEntity(), tab, null, null,
+              new JSONObject().put(ADDRESS, ADDRESS_ID));
+
+      assertEquals(ADDRESS, refused.fieldName());
+      assertEquals(ADDRESS_ID, refused.value());
+      assertTrue(refused.isVerified());
+    }
+  }
+
+  /** Defaults that cannot be computed accept nothing: the refusal stands. */
+  @Test
+  public void testDefaultsThatFailKeepTheRefusal() throws Exception {
+    offers(Boolean.FALSE);
+    try (MockedStatic<NeoDefaultsService> defaults = mockStatic(NeoDefaultsService.class)) {
+      defaults.when(() -> NeoDefaultsService.resolveDefaults(any(), any()))
+          .thenReturn(NeoResponse.error(500, "boom"));
+
+      assertEquals(ADDRESS, NeoReferenceSelectorValidation.findRefusedReference(sfEntity(), tab,
+          null, null, new JSONObject().put(ADDRESS, ADDRESS_ID)).fieldName());
+    }
+  }
+
+  /** Defaults that throw accept nothing either: the refusal stands, verified. */
+  @Test
+  public void testDefaultsThatThrowKeepTheRefusal() throws Exception {
+    offers(Boolean.FALSE);
+    try (MockedStatic<NeoDefaultsService> defaults = mockStatic(NeoDefaultsService.class)) {
+      defaults.when(() -> NeoDefaultsService.resolveDefaults(any(), any()))
+          .thenThrow(new IllegalStateException("boom"));
+
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(sfEntity(), tab, null, null,
+              new JSONObject().put(ADDRESS, ADDRESS_ID));
+
+      assertEquals(ADDRESS, refused.fieldName());
+      assertTrue(refused.isVerified());
+    }
+  }
+
+  /**
+   * A record value wins over its parent's under another casing of the same column name: the
+   * parent's {@code M_Warehouse_ID} is dropped when the line publishes {@code M_WAREHOUSE_ID}, so
+   * the case-insensitive selector lookup can only find the record's (ETP-6452).
+   */
+  @Test
+  public void testTheRecordValueReplacesAParentValueUnderAnotherCasing() throws Exception {
+    try (LineFixture line = new LineFixture()) {
+      Entity lineEntity = ModelProvider.getInstance().getEntityByTableId("T-LINE");
+      Property lineWarehouse = mock(Property.class);
+      when(lineWarehouse.getName()).thenReturn("lineWarehouse");
+      when(lineWarehouse.getColumnName()).thenReturn("M_WAREHOUSE_ID");
+      when(lineEntity.getProperty("lineWarehouse", false)).thenReturn(lineWarehouse);
+      offers(Boolean.TRUE);
+
+      NeoReferenceSelectorValidation.findRefusedReference(null, line.tab, null,
+          LineFixture.HEADER_ID, new JSONObject().put("lineWarehouse", "WH-2")
+              .put(LineFixture.BIN, LineFixture.BIN_ID));
+
+      Map<String, String> context = contextFor(LineFixture.BIN);
+      assertEquals("WH-2", context.get("M_WAREHOUSE_ID"));
+      assertNull(context.get("M_Warehouse_ID"));
+      assertEquals("WH-2",
+          ComboReferenceSelectorExecutor.contextFields(context).getField("M_Warehouse_ID"));
+    }
+  }
+
+  /** The DAL and column names differing only in case are both kept. */
+  @Test
+  public void testDalAndColumnNamesDifferingOnlyInCaseAreBothKept() throws Exception {
+    Property description = mock(Property.class);
+    when(description.getName()).thenReturn(DESCRIPTION);
+    when(description.getColumnName()).thenReturn("Description");
+    when(description.isPrimitive()).thenReturn(true);
+    when(order.getProperty(DESCRIPTION, false)).thenReturn(description);
+    offers(Boolean.TRUE);
+
+    check(new JSONObject().put(DESCRIPTION, "Note").put(ADDRESS, ADDRESS_ID));
+
+    Map<String, String> context = contextFor(ADDRESS);
+    assertEquals("Note", context.get(DESCRIPTION));
+    assertEquals("Note", context.get("Description"));
+  }
+
+  /** An update is unchanged: the default is never consulted, the refusal stands. */
+  @Test
+  public void testAnUpdateDoesNotConsultTheDefaults() throws Exception {
+    storedOrder();
+    offers(Boolean.FALSE);
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults("ADDR-NEW")) {
+      NeoReferenceSelectorValidation.RefusedReference refused = NeoReferenceSelectorValidation
+          .findRefusedReference(sfEntity(), tab, ORDER_ID, null,
+              new JSONObject().put(ADDRESS, "ADDR-NEW"));
+
+      assertEquals(ADDRESS, refused.fieldName());
+      defaults.verify(() -> NeoDefaultsService.resolveDefaults(any(), any()), never());
+    }
+  }
+
+  /** The happy path pays nothing: an offered value never computes the defaults. */
+  @Test
+  public void testAnOfferedValueDoesNotComputeTheDefaults() throws Exception {
+    offers(Boolean.TRUE);
+    try (MockedStatic<NeoDefaultsService> defaults = serverDefaults(ADDRESS_ID)) {
+      assertNull(NeoReferenceSelectorValidation.findRefusedReference(sfEntity(), tab, null, null,
+          new JSONObject().put(ADDRESS, ADDRESS_ID)));
+
+      defaults.verify(() -> NeoDefaultsService.resolveDefaults(any(), any()), never());
+    }
+  }
+
+  /**
+   * ETP-6452: the window direction does not shadow a direction flag the record carries under
+   * another casing. A payment publishes {@code Isreceipt}; adding {@code IsReceipt} from the window
+   * would be what a rule reading {@code @IsReceipt@} gets, not the record's value.
+   */
+  @Test
+  public void testTheRecordDirectionIsNotShadowedByTheWindowInAnotherCasing() throws Exception {
+    Window window = mock(Window.class);
+    when(window.isSalesTransaction()).thenReturn(Boolean.TRUE);
+    when(tab.getWindow()).thenReturn(window);
+    Property receipt = mock(Property.class);
+    when(receipt.getName()).thenReturn("receipt");
+    when(receipt.getColumnName()).thenReturn("Isreceipt");
+    when(receipt.isBoolean()).thenReturn(true);
+    when(receipt.isPrimitive()).thenReturn(true);
+    when(order.getProperty("receipt", false)).thenReturn(receipt);
+    offers(Boolean.TRUE);
+
+    check(new JSONObject().put("receipt", false).put(ADDRESS, ADDRESS_ID));
+
+    Map<String, String> context = contextFor(ADDRESS);
+    assertEquals("N", context.get("Isreceipt"));
+    assertNull(context.get("IsReceipt"));
+  }
+
+  private static SFEntity sfEntity() {
+    return mock(SFEntity.class);
+  }
+
+  /** {@code /defaults} proposes {@code addressId} for the address. */
+  private static MockedStatic<NeoDefaultsService> serverDefaults(String addressId)
+      throws Exception {
+    MockedStatic<NeoDefaultsService> defaults = mockStatic(NeoDefaultsService.class);
+    JSONObject body = new JSONObject().put("defaults", new JSONObject().put(ADDRESS, addressId)
+        .put(ADDRESS + "$_identifier", "Main street"));
+    defaults.when(() -> NeoDefaultsService.resolveDefaults(any(), any()))
+        .thenReturn(NeoResponse.ok(body));
+    return defaults;
   }
 
   private Map<String, String> contextFor(String field) {
@@ -719,12 +909,12 @@ public class NeoReferenceSelectorValidationTest {
 
   /** The written tab carries one active auxiliary input. */
   private void givenAuxiliaryInput(String name, String code) {
-    org.openbravo.model.ad.ui.AuxiliaryInput aux = mock(
-        org.openbravo.model.ad.ui.AuxiliaryInput.class);
+    AuxiliaryInput aux = mock(
+        AuxiliaryInput.class);
     when(aux.getName()).thenReturn(name);
     when(aux.getValidationCode()).thenReturn(code);
     when(aux.isActive()).thenReturn(true);
-    List<org.openbravo.model.ad.ui.AuxiliaryInput> auxInputs = java.util.Collections
+    List<AuxiliaryInput> auxInputs = Collections
         .singletonList(aux);
     when(tab.getADAuxiliaryInputList()).thenReturn(auxInputs);
   }
@@ -757,7 +947,7 @@ public class NeoReferenceSelectorValidationTest {
       when(line.getProperty(LINK, false)).thenReturn(link);
       when(line.getProperty(BIN, false)).thenReturn(bin);
       when(line.getPropertyByColumnName("M_InOut_ID")).thenReturn(link);
-      when(line.getProperties()).thenReturn(java.util.Arrays.asList(link, bin));
+      when(line.getProperties()).thenReturn(Arrays.asList(link, bin));
 
       Property warehouse = mock(Property.class);
       when(warehouse.getName()).thenReturn("warehouse");
@@ -769,7 +959,7 @@ public class NeoReferenceSelectorValidationTest {
       when(lineTable.getId()).thenReturn("T-LINE");
       Column linkColumn = column("M_InOut_ID");
       when(linkColumn.isLinkToParentColumn()).thenReturn(true);
-      List<Column> lineColumns = java.util.Arrays.asList(linkColumn, column("M_Locator_ID"));
+      List<Column> lineColumns = Arrays.asList(linkColumn, column("M_Locator_ID"));
       when(lineTable.getADColumnList()).thenReturn(lineColumns);
       when(tab.getTable()).thenReturn(lineTable);
       when(tab.getTabLevel()).thenReturn(1L);
@@ -842,9 +1032,9 @@ public class NeoReferenceSelectorValidationTest {
     throw new IllegalArgumentException(dbName);
   }
 
-  private static org.openbravo.model.ad.domain.Validation validation(String code) {
-    org.openbravo.model.ad.domain.Validation validation = mock(
-        org.openbravo.model.ad.domain.Validation.class);
+  private static Validation validation(String code) {
+    Validation validation = mock(
+        Validation.class);
     when(validation.getValidationCode()).thenReturn(code);
     return validation;
   }
@@ -905,7 +1095,7 @@ public class NeoReferenceSelectorValidationTest {
 
   private void offers(Boolean answer) {
     selectorStatic.when(() -> NeoSelectorService.offersValue(any(), any(Column.class), anyString(),
-        anyString(), any())).thenReturn(java.util.Optional.ofNullable(answer));
+        anyString(), any())).thenReturn(Optional.ofNullable(answer));
   }
 
   private void notOffered(String field) {
