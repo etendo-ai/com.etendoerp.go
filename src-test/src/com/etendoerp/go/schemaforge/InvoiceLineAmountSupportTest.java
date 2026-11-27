@@ -668,6 +668,67 @@ class InvoiceLineAmountSupportTest {
             null));
   }
 
+  // ── ETP-6107: an update to another product takes that product's price, not the callout's 0 ──
+
+  static Stream<Arguments> productChange() {
+    return Stream.of(
+        Arguments.of("new product alone → its catalog price", "PATCH",
+            "{\"product\":\"P2\"}", "12", "12", null),
+        Arguments.of("PUT behaves as PATCH", "PUT", "{\"product\":\"P2\"}", "12", "12", null),
+        Arguments.of("a price sent with it is the net, discounted from the new list", "PATCH",
+            "{\"product\":\"P2\",\"unitPrice\":9}", "9", "12", "25"),
+        Arguments.of("a sent discount is the caller's", "PATCH",
+            "{\"product\":\"P2\",\"unitPrice\":9,\"etgoDiscount\":5}", "9", "12", "5"),
+        Arguments.of("the stored product sent back → untouched", "PATCH",
+            "{\"product\":\"P1\"}", null, null, null),
+        Arguments.of("no product → untouched", "PATCH", "{\"invoicedQuantity\":3}", null, null,
+            null),
+        Arguments.of("a create is not a product change", "POST", "{\"product\":\"P2\"}", null,
+            null, null));
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("productChange")
+  void setPriceFromPriceListOnProductChange(String label, String method, String body,
+      String expectedUnit, String expectedList, String expectedDiscount) throws Exception {
+    JSONObject json = new JSONObject(body);
+    OBDal dal = mock(OBDal.class);
+    Product stored = mock(Product.class);
+    when(stored.getId()).thenReturn("P1");
+    Product product = mock(Product.class);
+    Invoice invoice = mock(Invoice.class);
+    InvoiceLine line = mock(InvoiceLine.class);
+    PriceList priceList = mock(PriceList.class);
+    ProductPrice price = mock(ProductPrice.class);
+    Date invoiceDate = new Date();
+    when(line.getProduct()).thenReturn(stored);
+    when(line.getInvoice()).thenReturn(invoice);
+    when(dal.get(InvoiceLine.class, "L1")).thenReturn(line);
+    when(dal.get(Product.class, "P2")).thenReturn(product);
+    when(invoice.getInvoiceDate()).thenReturn(invoiceDate);
+    when(invoice.getPriceList()).thenReturn(priceList);
+    when(invoice.isSalesTransaction()).thenReturn(Boolean.TRUE);
+    when(priceList.isPriceIncludesTax()).thenReturn(Boolean.FALSE);
+    when(price.getListPrice()).thenReturn(new BigDecimal("12"));
+    when(price.getStandardPrice()).thenReturn(new BigDecimal("12"));
+    NeoContext ctx = NeoContext.builder().specName("sales-invoice").entityName("lines")
+        .httpMethod(method).endpointType(NeoEndpointType.CRUD).recordId("L1").requestBody(json)
+        .build();
+
+    try (MockedStatic<OBDal> dalMock = mockStatic(OBDal.class);
+        MockedStatic<FinancialUtils> financial = mockStatic(FinancialUtils.class)) {
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      financial.when(() -> FinancialUtils.getProductPrice(eq(product), eq(invoiceDate),
+          anyBoolean(), eq(priceList), eq(false))).thenReturn(price);
+
+      InvoiceLineAmountSupport.setPriceFromPriceListOnProductChange(ctx);
+    }
+
+    assertAmount(label, expectedUnit, json, InvoiceLineAmountSupport.FIELD_UNIT_PRICE);
+    assertAmount(label, expectedList, json, InvoiceLineAmountSupport.FIELD_LIST_PRICE);
+    assertAmount(label, expectedDiscount, json, InvoiceLineAmountSupport.FIELD_DISCOUNT);
+  }
+
   // ── ETP-5710 point 2: taxableAmount (TaxBaseAmt) is the final net, after the discount ──
 
   static Stream<Arguments> taxableOnCreate() {

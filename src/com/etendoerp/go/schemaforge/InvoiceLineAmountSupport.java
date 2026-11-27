@@ -210,20 +210,80 @@ final class InvoiceLineAmountSupport {
       if (StringUtils.isBlank(productId) || StringUtils.isBlank(invoiceId)) {
         return;
       }
-      Product product = OBDal.getInstance().get(Product.class, productId);
-      Invoice invoice = OBDal.getInstance().get(Invoice.class, invoiceId);
-      if (product == null || invoice == null || invoice.getInvoiceDate() == null
-          || invoice.getPriceList() == null
-          || Boolean.TRUE.equals(invoice.getPriceList().isPriceIncludesTax())) {
-        return;
-      }
-      ProductPrice catalog = FinancialUtils.getProductPrice(product, invoice.getInvoiceDate(),
-          Boolean.TRUE.equals(invoice.isSalesTransaction()), invoice.getPriceList(), false);
+      ProductPrice catalog = catalogPrice(OBDal.getInstance().get(Product.class, productId),
+          OBDal.getInstance().get(Invoice.class, invoiceId));
       LinePriceListSupport.applyCatalogPrice(body, catalog, FIELD_UNIT_PRICE, FIELD_LIST_PRICE);
     } catch (Exception e) {
       log.warn("[INVOICE-LINE-PRICE] Could not price the line on {} {}: {}", ctx.getSpecName(),
           ctx.getEntityName(), e.getMessage());
     }
+  }
+
+  /**
+   * ETP-6107: an update that points the line at another product takes that product's price in the
+   * invoice's price list, as {@link #setPriceFromPriceListOnCreate} does for a new line. The invoice
+   * line's product selector carries no prices, so the product callout the update re-fires
+   * ({@code NeoUpdateCalloutRefire}) answers 0 and the line was priced at 0. A price the caller sent
+   * is kept as the net and the list price still follows the new product, as in the form when the
+   * user picks a product and then types the price. Total: never throws.
+   *
+   * @param ctx the pre-hook context; its request body is mutated in place
+   */
+  static void setPriceFromPriceListOnProductChange(NeoContext ctx) {
+    if (ctx == null || !NeoEndpointType.CRUD.equals(ctx.getEndpointType())
+        || !(METHOD_PATCH.equals(ctx.getHttpMethod()) || METHOD_PUT.equals(ctx.getHttpMethod()))
+        || ctx.getRequestBody() == null || StringUtils.isBlank(ctx.getRecordId())) {
+      return;
+    }
+    JSONObject body = ctx.getRequestBody();
+    try {
+      String productId = body.optString(FIELD_PRODUCT, null);
+      if (StringUtils.isBlank(productId)) {
+        return;
+      }
+      InvoiceLine line = OBDal.getInstance().get(InvoiceLine.class, ctx.getRecordId());
+      if (line == null
+          || (line.getProduct() != null && productId.equals(line.getProduct().getId()))
+          || LinePriceListSupport.applyClientListPrice(body, FIELD_UNIT_PRICE, FIELD_LIST_PRICE,
+              FIELD_DISCOUNT)) {
+        return;
+      }
+      ProductPrice catalog = catalogPrice(OBDal.getInstance().get(Product.class, productId),
+          line.getInvoice());
+      if (LinePriceListSupport.applyCatalogPrice(body, catalog, FIELD_UNIT_PRICE, FIELD_LIST_PRICE)
+          || catalog == null || catalog.getListPrice() == null
+          || catalog.getListPrice().signum() <= 0
+          || !LineAmountSupport.isZero(body.opt(FIELD_LIST_PRICE))) {
+        return;
+      }
+      BigDecimal list = catalog.getListPrice();
+      body.put(FIELD_LIST_PRICE, list);
+      BigDecimal unit = LineAmountSupport.decimal(body.opt(FIELD_UNIT_PRICE));
+      if (!body.has(FIELD_DISCOUNT) && unit != null && unit.signum() >= 0
+          && unit.compareTo(list) < 0) {
+        // The discount is the gap between the new list price and the sent net, as on an order.
+        body.put(FIELD_DISCOUNT, list.subtract(unit).multiply(HUNDRED)
+            .divide(list, 2, RoundingMode.HALF_UP));
+      }
+    } catch (Exception e) {
+      log.warn("[INVOICE-LINE-PRICE] Could not re-price the line on {} {}: {}",
+          ctx.getSpecName(), ctx.getEntityName(), e.getMessage());
+    }
+  }
+
+  /**
+   * The product's entry in the invoice's price list at the invoice date, or {@code null} when the
+   * product or invoice is missing, the invoice has no price list or its list includes tax
+   * (deriving the net side is the callout's job).
+   */
+  private static ProductPrice catalogPrice(Product product, Invoice invoice) {
+    if (product == null || invoice == null || invoice.getInvoiceDate() == null
+        || invoice.getPriceList() == null
+        || Boolean.TRUE.equals(invoice.getPriceList().isPriceIncludesTax())) {
+      return null;
+    }
+    return FinancialUtils.getProductPrice(product, invoice.getInvoiceDate(),
+        Boolean.TRUE.equals(invoice.isSalesTransaction()), invoice.getPriceList(), false);
   }
 
   /**
