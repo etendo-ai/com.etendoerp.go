@@ -66,6 +66,7 @@ import org.openbravo.model.ad.system.Client;
 
 import com.etendoerp.go.featureflags.FeatureFlagContext;
 import com.etendoerp.go.featureflags.GoFeatureFlags;
+import com.etendoerp.go.schemaforge.ContactCategoryRequiredFields;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoHandler;
@@ -383,7 +384,7 @@ class ContactTypeRulesTest {
   void categoryWriteIsRejectedOnlyWhenItEndsWithNoType(String method, String storedCustomer,
       String storedVendor, String sentCustomer, String sentVendor, boolean rejected)
       throws Exception {
-    JSONObject body = new JSONObject().put("name", "Clientes");
+    JSONObject body = new JSONObject().put("searchKey", "CLI").put("name", "Clientes");
     put(body, "etgoIscustomer", sentCustomer);
     put(body, "etgoIsvendor", sentVendor);
     if (!ABSENT.equals(storedCustomer)) {
@@ -430,11 +431,46 @@ class ContactTypeRulesTest {
   @CsvSource({"POST", "PATCH"})
   void categoryWriteIsNotJudgedWithTheFlagOff(String method) throws Exception {
     givenContactTypeFlag(false);
-    JSONObject body = new JSONObject().put("name", "Clientes")
+    JSONObject body = new JSONObject().put("searchKey", "CLI").put("name", "Clientes")
         .put("etgoIscustomer", false).put("etgoIsvendor", false);
 
     assertNull(new BusinessPartnerCategoryHandler().handle(crudContext(method, body, null)));
     verify(conn, never()).prepareStatement(anyString());
+  }
+
+  // ── A category always has a search key and a name, flag on or off (ETP-6469) ───────────────
+
+  /** A blank name is refused before any SQL, with the flag on or off, create or update. */
+  @ParameterizedTest(name = "flag {0}, {1}, name {2}")
+  @CsvSource({
+      "false, POST,  ''",
+      "false, PATCH, ''",
+      "false, PUT,   '   '",
+      "true,  POST,  ''",
+      "true,  PATCH, '   '",
+  })
+  void categoryWithBlankNameIsRefusedBeforeAnySql(boolean flag, String method, String name)
+      throws Exception {
+    givenContactTypeFlag(flag);
+    JSONObject body = new JSONObject().put("searchKey", "CLI").put("name", name)
+        .put("etgoIscustomer", true);
+
+    NeoResponse response =
+        new BusinessPartnerCategoryHandler().handle(crudContext(method, body, null));
+
+    assertRejected(response, ContactCategoryRequiredFields.MSG_NAME_REQUIRED);
+    verify(conn, never()).prepareStatement(anyString());
+  }
+
+  /** With the flag on and a valid name and key, the type rule still decides. */
+  @Test
+  void categoryWithNameAndKeyStillNeedsAContactTypeWhenTheFlagIsOn() throws Exception {
+    JSONObject body = new JSONObject().put("searchKey", "CLI").put("name", "Clientes");
+
+    NeoResponse response =
+        new BusinessPartnerCategoryHandler().handle(crudContext("POST", body, null));
+
+    assertRejected(response, ContactTypeRules.MSG_CATEGORY_TYPE_REQUIRED);
   }
 
   // ── Stored rows are read only within the caller's clients (ETP-6176) ─────────────────────────
