@@ -128,6 +128,15 @@ public class NeoTelemetryService {
   private static final String PROP_PAIRS_UNCHECKED = "pairs_unchecked";
   private static final String PROP_PAIRS_SENT_TO_PANEL = "pairs_sent_to_panel";
   private static final String PROP_PRESELECTION_CHANGED = "preselection_changed";
+  /**
+   * ETP-6359 — the AI second layer of the bounce-pair KPI: whether the rejection had an
+   * assessment, the probability (0-100) of the outflow the user chose, whether the AI recommended
+   * one and whether the user accepted it. Shape only, like the keys above.
+   */
+  private static final String PROP_AI_ASSESSED = "ai_assessed";
+  private static final String PROP_AI_PROBABILITY = "ai_probability";
+  private static final String PROP_AI_RECOMMENDED = "ai_recommended";
+  private static final String PROP_AI_RECOMMENDATION_ACCEPTED = "ai_recommendation_accepted";
   private static final String PROP_ADJUSTED = "adjusted";
   /**
    * Customer portal KPI property keys (ETP-6209, {@code PortalKpiTelemetry}). Shape only:
@@ -223,6 +232,10 @@ public class NeoTelemetryService {
       PROP_PAIRS_UNCHECKED,
       PROP_PAIRS_SENT_TO_PANEL,
       PROP_PRESELECTION_CHANGED,
+      PROP_AI_ASSESSED,
+      PROP_AI_PROBABILITY,
+      PROP_AI_RECOMMENDED,
+      PROP_AI_RECOMMENDATION_ACCEPTED,
       PROP_DIRECTION,
       PROP_INVOICE_COUNT,
       PROP_IS_REGENERATION,
@@ -280,6 +293,9 @@ public class NeoTelemetryService {
       PROP_PRESELECTED,
       PROP_CHOSEN_AMONG_ALTERNATIVES,
       PROP_PRESELECTION_CHANGED,
+      PROP_AI_ASSESSED,
+      PROP_AI_RECOMMENDED,
+      PROP_AI_RECOMMENDATION_ACCEPTED,
       PROP_IS_REGENERATION,
       PROP_ADJUSTED,
       PROP_IN_UNIVERSE,
@@ -599,6 +615,8 @@ public class NeoTelemetryService {
     bounds.put(PROP_PAIRS_DISCARDED, new NumericBounds(0, MAX_PAIRS));
     bounds.put(PROP_PAIRS_UNCHECKED, new NumericBounds(0, MAX_PAIRS));
     bounds.put(PROP_PAIRS_SENT_TO_PANEL, new NumericBounds(0, MAX_PAIRS));
+    // ETP-6359: an integer percentage.
+    bounds.put(PROP_AI_PROBABILITY, new NumericBounds(0, 100));
     // ETP-6247: distinct invoices of one remittance.
     bounds.put(PROP_INVOICE_COUNT, new NumericBounds(0, 1000000));
     bounds.put(PROP_HTTP_STATUS, new NumericBounds(100, 599));

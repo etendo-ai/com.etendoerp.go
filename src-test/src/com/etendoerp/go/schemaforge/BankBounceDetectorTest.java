@@ -34,7 +34,9 @@ import java.sql.Timestamp;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Date;
 import java.util.List;
+import java.util.Set;
 
 import org.hibernate.query.Query;
 import org.junit.jupiter.api.DisplayName;
@@ -61,7 +63,8 @@ import com.etendoerp.psd2.bank.integration.data.PisPayment;
  * Bounce-pair detection over the pending lines of one account: the signals, the confidence rules,
  * the date window, the same-day roles, ambiguous groups, statement adjacency (both neighbours of a
  * bounce in its statement, never a reason for confidence), which lines are candidates and the
- * preference for originals without an ERP payment.
+ * preference for originals without an ERP payment, and that a line marked "No es un rechazo" is
+ * never a bounce.
  *
  * <p>The pairing runs in memory over {@link AccountData}, so most cases build that data directly;
  * only {@link BankBounceDetector#load} and {@link BankBounceDetector#toStatementLine} touch the DAL,
@@ -1003,6 +1006,120 @@ class BankBounceDetectorTest {
       data.openTransactions.add(movement("T1", "PAY-1", 0, "-100"));
 
       assertTrue(BankBounceDetector.detect(data).isEmpty());
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+
+  /**
+   * "No es un rechazo": a line the user said is not a bank rejection is never the bounce of a pair,
+   * on any path, and stays a candidate in every other way.
+   */
+  @Nested
+  @DisplayName("a line marked as not a rejection")
+  class DismissedRejection {
+
+    @Test
+    @DisplayName("is never the bounce of a plain pair, and its outflow stays free for another rejection")
+    void neverABounceAndItsOutflowStaysFree() {
+      StatementLine o = line("O", 0, "Transferencia", "", "-100");
+      StatementLine dismissed = line("R1", 0, "Devolucion transferencia", "", "100");
+      AccountData marked = data(0, o, dismissed);
+      marked.dismissedBounces.add("R1");
+      assertTrue(BankBounceDetector.detect(marked).isEmpty());
+
+      StatementLine real = line("R2", 1, "Devolucion transferencia", "", "100");
+      AccountData withAnother = data(3, o, dismissed, real);
+      withAnother.dismissedBounces.add("R1");
+      List<Pair> pairs = BankBounceDetector.detect(withAnother);
+
+      assertEquals(1, pairs.size(), pairs.toString());
+      assertSame(o, pairs.get(0).original(), "the outflow pairs with the other rejection");
+      assertSame(real, pairs.get(0).bounce());
+    }
+
+    @Test
+    @DisplayName("stays eligible as an original: an inflow reversed later still pairs")
+    void staysEligibleAsAnOriginal() {
+      StatementLine inflow = line("I", 0, "Cobro cliente", ACME, "250");
+      StatementLine reversal = line("R", 4, "Retrocesion cobro", ACME, "-250");
+      AccountData data = data(0, inflow, reversal);
+      data.dismissedBounces.add("I");
+
+      List<Pair> pairs = BankBounceDetector.detect(data);
+
+      assertEquals(1, pairs.size());
+      assertSame(inflow, pairs.get(0).original());
+      assertSame(reversal, pairs.get(0).bounce());
+    }
+
+    @Test
+    @DisplayName("an ambiguous group loses its bounce; the other bounce keeps both candidates")
+    void ambiguousGroupWithoutTheMarkedBounce() {
+      StatementLine o1 = line("O1", 0, "Pago", ACME, "-100");
+      StatementLine o2 = line("O2", 3, "Pago", ACME, "-100");
+      StatementLine r1 = line("R1", 10, "Abono", ACME, "100");
+      AccountData alone = data(0, o1, o2, r1);
+      alone.dismissedBounces.add("R1");
+      assertTrue(BankBounceDetector.detect(alone).isEmpty());
+
+      StatementLine r2 = line("R2", 11, "Abono", ACME, "100");
+      AccountData two = data(0, o1, o2, r1, r2);
+      two.dismissedBounces.add("R1");
+      List<Pair> pairs = BankBounceDetector.detect(two);
+
+      assertEquals(1, pairs.size(), pairs.toString());
+      assertSame(r2, pairs.get(0).bounce());
+      assertTrue(pairs.get(0).ambiguous(), "two originals for one bounce left");
+      assertEquals(2, pairs.get(0).candidates().size());
+    }
+
+    @Test
+    @DisplayName("statement adjacency never takes it as the bounce of its neighbours")
+    void adjacencyNeverTakesIt() {
+      String st = "ST-1";
+      StatementLine before = new StatementLine("A", day(0), 10, "Transferencia", "",
+          new BigDecimal("-100"), true, st);
+      StatementLine dismissed = new StatementLine("R", day(0), 20, "Devolucion transferencia", "",
+          new BigDecimal("100"), true, st);
+      StatementLine after = new StatementLine("B", day(0), 30, "Transferencia", "",
+          new BigDecimal("-100"), true, st);
+      AccountData unmarked = data(0, before, dismissed, after);
+      assertEquals(1, BankBounceDetector.detect(unmarked).size(),
+          "precondition: unmarked, the neighbours make an adjacent pair");
+
+      AccountData marked = data(0, before, dismissed, after);
+      marked.dismissedBounces.add("R");
+
+      assertTrue(BankBounceDetector.detect(marked).isEmpty());
+    }
+
+    @Test
+    @DisplayName("load collects the marked lines, candidate or not")
+    void loadCollectsTheMarkedLines() {
+      FIN_BankStatementLine marked = mock(FIN_BankStatementLine.class);
+      when(marked.getId()).thenReturn("L1");
+      when(marked.getCramount()).thenReturn(new BigDecimal("40"));
+      when(marked.getDramount()).thenReturn(BigDecimal.ZERO);
+      when(marked.getTransactionDate()).thenReturn(Timestamp.valueOf(DAY0.atStartOfDay()));
+      FIN_BankStatementLine plain = mock(FIN_BankStatementLine.class);
+      when(plain.getId()).thenReturn("L2");
+      when(plain.getCramount()).thenReturn(BigDecimal.ZERO);
+      when(plain.getDramount()).thenReturn(new BigDecimal("40"));
+      when(plain.getTransactionDate()).thenReturn(Timestamp.valueOf(DAY0.atStartOfDay()));
+
+      try (MockedStatic<StatementLineDiscard> discard = mockStatic(StatementLineDiscard.class);
+          MockedStatic<ReactivationSupport> groups = mockStatic(ReactivationSupport.class);
+          MockedStatic<OBDal> dal = mockStatic(OBDal.class)) {
+        discard.when(() -> StatementLineDiscard.get(marked, BankBounceDismissal.COL_DISMISSED_AT))
+            .thenReturn(new Date());
+
+        AccountData data = BankBounceDetector.load(mock(FIN_FinancialAccount.class),
+            List.of(marked, plain), 1);
+
+        assertEquals(Set.of("L1"), data.dismissedBounces);
+        dal.verifyNoInteractions();
+      }
     }
   }
 

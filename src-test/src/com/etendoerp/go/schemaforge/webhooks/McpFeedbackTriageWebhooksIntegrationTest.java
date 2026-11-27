@@ -82,7 +82,7 @@ public class McpFeedbackTriageWebhooksIntegrationTest extends OBBaseTest {
   private static final String TOOL_CALL = "tool_call";
   private static final String PAYLOAD = "{\"summary\":\"etp5952 fixture\"}";
   private static final String CELL = "CelulaPlataforma";
-  private static final String ISSUE = "https://github.com/etendosoftware/etendo-ai/issues/42";
+  private static final String ISSUE = "https://github.com/etendo-ai/etendo-ai/issues/42";
   private static final String TASK = "ETP-5952";
   private static final String ASSIGNEE = "octo-cat";
   private static final String TRUE = "true";
@@ -261,6 +261,7 @@ public class McpFeedbackTriageWebhooksIntegrationTest extends OBBaseTest {
     Map<String, Object> first = readRow(id);
 
     Map<String, String> again = call(new McpFeedbackTriage(), params(id,
+        // An issue of the former organization is still valid: only already_triaged stops it.
         "CelulaVentas", "https://github.com/etendosoftware/etendo-ai/issues/43", "ETP-1", "other"));
 
     assertEquals(FALSE, again.get(McpFeedbackTriage.KEY_UPDATED));
@@ -297,8 +298,9 @@ public class McpFeedbackTriageWebhooksIntegrationTest extends OBBaseTest {
         { "CelulaPlataforma2", ISSUE, TASK, ASSIGNEE },
         { "Celula" + "x".repeat(60), ISSUE, TASK, ASSIGNEE },
         { CELL, "https://github.com/someone-else/etendo-ai/issues/42", TASK, ASSIGNEE },
-        { CELL, "https://github.com/etendosoftware/etendo-ai/pull/42", TASK, ASSIGNEE },
-        { CELL, "http://github.com/etendosoftware/etendo-ai/issues/42", TASK, ASSIGNEE },
+        { CELL, "https://github.com/etendo-ai-fork/etendo-ai/issues/42", TASK, ASSIGNEE },
+        { CELL, "https://github.com/etendo-ai/etendo-ai/pull/42", TASK, ASSIGNEE },
+        { CELL, "http://github.com/etendo-ai/etendo-ai/issues/42", TASK, ASSIGNEE },
         { CELL, ISSUE + "#comment", TASK, ASSIGNEE },
         { CELL, ISSUE, "etp-5952", ASSIGNEE },
         { CELL, ISSUE, "ETP5952", ASSIGNEE },

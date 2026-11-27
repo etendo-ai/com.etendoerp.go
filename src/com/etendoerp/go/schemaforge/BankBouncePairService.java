@@ -79,6 +79,15 @@ import com.etendoerp.go.schemaforge.BankBounceDetector.StatementLine;
  * {@value BankBounceDetector#WINDOW_DAYS} days of the earlier ({@code DISCARD_NOT_ALLOWED}); and no
  * real ERP payment on either line ({@code HAS_PAYMENT}, {@link BankBouncePaymentGuard}). A pair the
  * detection did not propose (no signal) is accepted when it passes all of this: the user chose it.
+ * After it, and before the discard, a request that carries {@code choiceSource: "ai"} (the body of
+ * {@code discardPair}, or one {@code bouncePair} group of {@code applySuggestions}, ETP-6359) runs
+ * {@link BankBounceAi#checkAiChoice}: a stale AI pick is refused with 409
+ * {@code BOUNCE_AI_SUGGESTION_STALE}, for a group that group alone while the others proceed. Any other
+ * {@code choiceSource}, or none, changes nothing.
+ *
+ * <p><b>"No es un rechazo".</b> {@code POST bank-reconciliation?action=dismissPair} discards
+ * nothing: it marks the pair's rejection line as not a rejection, and detection never proposes that
+ * line as one again; {@code restoreBounceSuggestion} clears the mark ({@link BankBounceDismissal}).
  *
  * <p><b>Concurrency.</b> Once both lines are known to belong to the account, they are locked
  * {@code FOR UPDATE} in id order and re-read before their state is checked ({@link #lockLines}),
@@ -90,7 +99,10 @@ final class BankBouncePairService {
 
   static final String ACTION_DISCARD_PAIR = "discardPair";
   static final String ACTION_RESTORE_PAIR = "restorePair";
-  /** "No es un rebote" from the panel: KPI telemetry only, nothing is written (UI-only). */
+  /**
+   * "No es un rechazo" from the panel (UI-only): marks the pair's rejection line as not a rejection
+   * ({@link BankBounceDismissal}) and records the KPI decision.
+   */
   static final String ACTION_DISMISS_PAIR = "dismissPair";
 
   static final String KEY_COUNTERPART_LINE_ID = "counterpartLineId";
@@ -200,14 +212,18 @@ final class BankBouncePairService {
   // ---------------------------------------------------------------------------
 
   /**
-   * {@code POST discardPair {financialAccountId, statementLineId, counterpartLineId}}: discards a
-   * pair from the reconciliation panel, also once the user picked the original of an ambiguous
-   * pair. Requires the flag.
+   * {@code POST discardPair {financialAccountId, statementLineId, counterpartLineId,
+   * choiceSource?}}: discards a pair from the reconciliation panel, also once the user picked the
+   * original of an ambiguous pair. Requires the flag. {@code choiceSource: "ai"} (ETP-6359) says
+   * the outflow was taken from the AI recommendation: the server then checks that the pair is
+   * still detected and that the cached assessment still recommends that outflow, and answers 409
+   * {@code BOUNCE_AI_SUGGESTION_STALE} otherwise. Absent (the MCP, a manual choice) or
+   * {@code "user"}, nothing is checked.
    *
    * @param handler the reconciliation handler, for its DAL seams
    * @param body    the request body
    * @return 200 with {@code {discarded:true, statementLineId, counterpartLineId, signal,
-   *         confidence}}, or the refusal
+   *         confidence}}, or the refusal (409 {@code BOUNCE_AI_SUGGESTION_STALE} included)
    * @throws Exception when the account data cannot be read
    */
   static NeoResponse discardPair(ReconciliationHandler handler, JSONObject body) throws Exception {
@@ -234,6 +250,12 @@ final class BankBouncePairService {
       BankBounceKpiTelemetry.panelFailed(detection, account, lineId, counterpartId, pair.error());
       return pair.error();
     }
+    // ETP-6359: an outflow taken from the AI recommendation is accepted only while it still holds.
+    NeoResponse stale = BankBounceAi.checkAiChoice(body, detection, pair);
+    if (stale != null) {
+      BankBounceKpiTelemetry.panelFailed(detection, account, lineId, counterpartId, stale);
+      return stale;
+    }
     discard(pair);
     BankBounceKpiTelemetry.panelDiscarded(detection, account, pair);
     return ReconciliationSupport.envelope(discardedJson(lineId, counterpartId, pair));
@@ -245,19 +267,23 @@ final class BankBouncePairService {
 
   /**
    * {@code POST dismissPair {financialAccountId, statementLineId, counterpartLineId?}}: the panel's
-   * "No es un rebote". <b>Writes nothing</b> — the rejection is not stored, so detection proposes
-   * the pair again next time — and exists only to record the decision for the bounce-pair KPI
-   * ({@link BankBounceKpiTelemetry#panelDismissed}). {@code statementLineId} is the line selected
-   * in the panel, in any role (bounce, original or candidate); {@code counterpartLineId} is the
-   * other line as the card shows it, omitted while no original of an ambiguous pair is chosen.
-   * Requires the flag (403 {@code BOUNCE_SUGGESTIONS_OFF}); the lines must belong to the account
-   * (400 / 404). A pair detection does not propose answers 200 too and records nothing. UI-only:
-   * not declared to agents ({@link ReconciliationAgentActions}), so the MCP refuses it.
+   * "No es un rechazo". Marks the rejection line of the pair as not a rejection, so detection never
+   * proposes it as one again ({@link BankBounceDismissal#dismiss}), and records the decision for
+   * the bounce-pair KPI ({@link BankBounceKpiTelemetry#panelDismissed}) unless it repeats one
+   * already stored. {@code statementLineId} is the line selected in the panel, in any role (bounce,
+   * original or candidate); {@code counterpartLineId} is the other line as the card shows it,
+   * omitted while no original of an ambiguous pair is chosen; the mark always goes on the pair's
+   * rejection line. Requires the flag (403 {@code BOUNCE_SUGGESTIONS_OFF}); the lines must belong
+   * to the account (400 / 404); a rejection line that left the pending pool meanwhile is refused
+   * (409 {@code LINE_NOT_PENDING}). A pair detection does not propose answers 200, marks nothing
+   * and records nothing. UI-only: not declared to agents ({@link ReconciliationAgentActions}), so
+   * the MCP refuses it.
    *
    * @param handler the reconciliation handler, for its DAL seams
    * @param body    the request body
-   * @return 200 with {@code {ok:true}}, or the refusal
-   * @throws Exception when the answer cannot be written
+   * @return 200 with {@code {ok:true, dismissedLineId, bounceDismissedAt}} (both {@code null}
+   *         when nothing is marked), or the refusal
+   * @throws Exception when the account data cannot be read or the answer cannot be written
    */
   static NeoResponse dismissPair(ReconciliationHandler handler, JSONObject body) throws Exception {
     if (!BankBounceSuggestionsFlag.isEnabled()) {
@@ -275,9 +301,16 @@ final class BankBouncePairService {
     if (invalid != null) {
       return invalid;
     }
-    BankBounceKpiTelemetry.panelDismissed(new Detection(handler, account, true), account, lineId,
-        counterpartId);
-    return ReconciliationSupport.envelope(new JSONObject().put("ok", true));
+    Detection detection = new Detection(handler, account, true);
+    BankBounceDismissal.Outcome outcome =
+        BankBounceDismissal.dismiss(handler, detection, lineId, counterpartId);
+    if (outcome.error() != null) {
+      return outcome.error();
+    }
+    if (outcome.report()) {
+      BankBounceKpiTelemetry.panelDismissed(detection, account, lineId, counterpartId);
+    }
+    return ReconciliationSupport.envelope(outcome.json());
   }
 
   /**
@@ -314,7 +347,7 @@ final class BankBouncePairService {
    * @param key  the key
    * @return the trimmed id, or {@code null}
    */
-  private static String optId(JSONObject body, String key) {
+  static String optId(JSONObject body, String key) {
     return body.isNull(key) ? null : StringUtils.trimToNull(body.optString(key, null));
   }
 
@@ -339,7 +372,9 @@ final class BankBouncePairService {
    * group is prepared and in the same request transaction. Every line it discards joins
    * {@code takenLineIds}, the set the transaction groups are then prepared against, so a line
    * checked in two groups is refused the second time (409). Each pair succeeds or fails on its own;
-   * a refusal is appended to {@code results} tagged with its lines and kind. With the flag off,
+   * a refusal is appended to {@code results} tagged with its lines and kind. A group may carry the
+   * optional {@code choiceSource}: {@code "ai"} adds the stale-AI control after the validation and
+   * before the discard, and a stale pick refuses that group only. With the flag off,
    * every such group is refused with the 403 and nothing is written. The account's detection is
    * read once, on the first pair that needs it, and shared by every pair of the call
    * ({@link Detection}).
@@ -392,7 +427,7 @@ final class BankBouncePairService {
       String lineId = group.optString(ReconciliationHandler.KEY_STATEMENT_LINE_ID, null);
       String counterpartId = group.optString(KEY_COUNTERPART_LINE_ID, null);
       Validated outcome = detection != null
-          ? applyOne(handler, account, lineId, counterpartId, takenLineIds, detection)
+          ? applyOne(handler, account, group, takenLineIds, detection)
           : Validated.failed(BankBounceErrors.suggestionsOff());
       if (detection != null && outcomes != null) {
         outcomes.accept(lineId, counterpartId, outcome);
@@ -408,16 +443,20 @@ final class BankBouncePairService {
    *
    * @param handler       the reconciliation handler
    * @param account       the account of the call
-   * @param lineId        the group's {@code statementLineId}
-   * @param counterpartId the group's {@code counterpartLineId}
+   * @param group         the submitted group: {@code statementLineId}, {@code counterpartLineId}
+   *                      and the optional {@code choiceSource} (ETP-6359: {@code "ai"} makes the
+   *                      same server-side control as {@code discardPair}; any other value or none
+   *                      changes nothing)
    * @param takenLineIds  the lines already taken in this call, updated on success
    * @param detection     the detection of the call, read once and shared by its pairs
-   * @return the discarded pair, or the refusal ({@link Validated#error()})
-   * @throws Exception when the account data cannot be read
+   * @return the discarded pair, or the refusal ({@link Validated#error()}); a stale AI pick is the
+   *         409 {@code BOUNCE_AI_SUGGESTION_STALE} of that group only
+   * @throws Exception when the account data cannot be read, or the AI lookup fails internally
    */
   private static Validated applyOne(ReconciliationHandler handler, FIN_FinancialAccount account,
-      String lineId, String counterpartId, Set<String> takenLineIds, Detection detection)
-      throws Exception {
+      JSONObject group, Set<String> takenLineIds, Detection detection) throws Exception {
+    String lineId = group.optString(ReconciliationHandler.KEY_STATEMENT_LINE_ID, null);
+    String counterpartId = group.optString(KEY_COUNTERPART_LINE_ID, null);
     NeoResponse missing = missingIds(lineId, counterpartId);
     if (missing != null) {
       return Validated.failed(missing);
@@ -428,6 +467,11 @@ final class BankBouncePairService {
     Validated pair = validate(handler, account, lineId, counterpartId, detection);
     if (pair.error() != null) {
       return pair;
+    }
+    // ETP-6359: an outflow taken from the AI default is accepted only while it still holds.
+    NeoResponse stale = BankBounceAi.checkAiChoice(group, detection, pair);
+    if (stale != null) {
+      return Validated.failed(stale);
     }
     discard(pair);
     takenLineIds.add(lineId);
@@ -683,6 +727,8 @@ final class BankBouncePairService {
     private final boolean honoured;
     private AccountData data;
     private List<Pair> pairs;
+    private List<BankBounceAiQuestions.Component> aiComponents;
+    private boolean aiComponentsComputed;
 
     /**
      * The detection of one action, not read yet.
@@ -696,6 +742,36 @@ final class BankBouncePairService {
       this.handler = handler;
       this.account = account;
       this.honoured = honoured;
+    }
+
+    /**
+     * The AI components of this detection's nominal pairs, memoised by {@code BankBounceAi} so a
+     * call with many decisions builds them once.
+     *
+     * @return the memo, or {@code null} when not built yet
+     */
+    List<BankBounceAiQuestions.Component> aiComponents() {
+      return aiComponents;
+    }
+
+    /**
+     * Memoises the AI components of this detection.
+     *
+     * @param components the components
+     */
+    void aiComponents(List<BankBounceAiQuestions.Component> components) {
+      this.aiComponents = components;
+      this.aiComponentsComputed = true;
+    }
+
+    /**
+     * Whether the AI components were already computed, so an empty memo ("computed, none") is told
+     * apart from "not computed yet".
+     *
+     * @return {@code true} once {@link #aiComponents(List)} was called
+     */
+    boolean aiComponentsComputed() {
+      return aiComponentsComputed;
     }
 
     /**
@@ -866,12 +942,16 @@ final class BankBouncePairService {
   }
 
   /**
-   * Discards both lines of a validated pair and links each to the other, then flushes.
+   * Discards both lines of a validated pair and links each to the other, then flushes. A rejection
+   * line the user had marked as not a rejection loses that mark ({@link BankBounceDismissal#clear}):
+   * discarding it as the rejection of a pair says the opposite. The mark of the original, if any,
+   * stays: being an original does not contradict it.
    *
    * @param pair the validated pair
    */
   static void discard(Validated pair) {
     Date now = new Date();
+    BankBounceDismissal.clear(pair.bounce());
     link(pair.original(), pair.bounce(), now, pair);
     link(pair.bounce(), pair.original(), now, pair);
     OBDal.getInstance().flush();
@@ -961,7 +1041,7 @@ final class BankBouncePairService {
    * @param account the account of the call
    * @return the refusal, or {@code null}
    */
-  private static NeoResponse ownedLineError(FIN_BankStatementLine line, String lineId,
+  static NeoResponse ownedLineError(FIN_BankStatementLine line, String lineId,
       FIN_FinancialAccount account) {
     if (line == null) {
       return NeoResponse.error(HttpServletResponse.SC_NOT_FOUND,
@@ -1000,7 +1080,7 @@ final class BankBouncePairService {
    * @param body    the request body
    * @return the account, or {@code null}
    */
-  private static FIN_FinancialAccount requireAccount(ReconciliationHandler handler,
+  static FIN_FinancialAccount requireAccount(ReconciliationHandler handler,
       JSONObject body) {
     String accountId = body.optString(ReconciliationHandler.KEY_FINANCIAL_ACCOUNT_ID, null);
     return StringUtils.isBlank(accountId) ? null : handler.loadAccount(accountId);

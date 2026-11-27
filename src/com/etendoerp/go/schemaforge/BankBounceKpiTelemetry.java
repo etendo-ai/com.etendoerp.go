@@ -126,6 +126,14 @@ final class BankBounceKpiTelemetry {
   static final String PROP_PAIRS_UNCHECKED = "pairs_unchecked";
   static final String PROP_PAIRS_SENT_TO_PANEL = "pairs_sent_to_panel";
   static final String PROP_PRESELECTION_CHANGED = "preselection_changed";
+  /** ETP-6359: the rejection had an assessment of the AI second layer. */
+  static final String PROP_AI_ASSESSED = "ai_assessed";
+  /** ETP-6359: the percentage (0-100) the AI gave the outflow chosen; absent when none was. */
+  static final String PROP_AI_PROBABILITY = "ai_probability";
+  /** ETP-6359: the AI recommended an outflow. */
+  static final String PROP_AI_RECOMMENDED = "ai_recommended";
+  /** ETP-6359: only when recommended: the recommended outflow was the one discarded. */
+  static final String PROP_AI_RECOMMENDATION_ACCEPTED = "ai_recommendation_accepted";
 
   private static final int QUEUE_CAPACITY = 1000;
   private static final ThreadPoolExecutor SENDER = buildSender();
@@ -204,7 +212,9 @@ final class BankBounceKpiTelemetry {
   /**
    * The detected pair a decision is about. With two lines: the pair whose bounce is one of them and
    * whose original, or one of whose candidates, is the other, in either order. With one line (a
-   * panel dismissal before an original is chosen): the first pair that touches it in any role.
+   * panel dismissal before an original is chosen): the pair whose bounce it is, and only when it is
+   * the bounce of none, the first pair that touches it as original or candidate. A line can be the
+   * bounce of one pair and a candidate of another; its own pair comes first whatever the order.
    *
    * @param detected the pairs detected for the action, may be {@code null}
    * @param lineId   one line of the pair
@@ -215,10 +225,32 @@ final class BankBounceKpiTelemetry {
     if (detected == null || StringUtils.isBlank(lineId)) {
       return null;
     }
+    if (otherId == null) {
+      Match own = bounceOf(detected, lineId);
+      if (own != null) {
+        return own;
+      }
+    }
     for (Pair p : detected) {
       Match match = otherId == null ? touching(p, lineId) : between(p, lineId, otherId);
       if (match != null) {
         return match;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * The pair whose bounce is {@code lineId}.
+   *
+   * @param detected the pairs detected for the action
+   * @param lineId   the line
+   * @return the match, or {@code null} when the line is the bounce of no pair
+   */
+  private static Match bounceOf(List<Pair> detected, String lineId) {
+    for (Pair p : detected) {
+      if (p.bounce().id().equals(lineId)) {
+        return new Match(p, Proposal.of(p));
       }
     }
     return null;
@@ -325,6 +357,22 @@ final class BankBounceKpiTelemetry {
    */
   static Map<String, Object> decidedProperties(Proposal proposal, String decision,
       String surface, String accountId, String channel) {
+    return decidedProperties(proposal, decision, surface, accountId, channel, null);
+  }
+
+  /**
+   * The properties of {@code backend_bank_bounce_pair_decided}, with the AI facts (ETP-6359).
+   *
+   * @param proposal  what detection proposed, or {@code null} when unknown
+   * @param decision  {@code discarded}, {@code unchecked}, {@code sent_to_panel} or {@code failed}
+   * @param surface   {@code modal} or {@code panel}
+   * @param accountId the tenant, or {@code null}
+   * @param channel   {@code ui} or {@code mcp}
+   * @param ai        the AI facts, or {@code null} for none: the event is then the one of ETP-5581
+   * @return the properties, in a stable order
+   */
+  static Map<String, Object> decidedProperties(Proposal proposal, String decision,
+      String surface, String accountId, String channel, BankBounceAi.Facts ai) {
     Map<String, Object> properties = base(accountId, channel);
     if (proposal != null) {
       properties.put(PROP_DETECTION_SIGNAL, proposal.signal());
@@ -337,7 +385,29 @@ final class BankBounceKpiTelemetry {
     }
     properties.put(PROP_DECISION, decision);
     properties.put(PROP_SURFACE, surface);
+    putAiFacts(properties, ai);
     return properties;
+  }
+
+  /**
+   * Adds the AI properties of a decision; nothing when there are no facts. Only booleans and one
+   * 0-100 percentage: never an id, an amount or a text.
+   *
+   * @param properties the event properties
+   * @param ai         the facts, or {@code null}
+   */
+  private static void putAiFacts(Map<String, Object> properties, BankBounceAi.Facts ai) {
+    if (ai == null) {
+      return;
+    }
+    properties.put(PROP_AI_ASSESSED, ai.assessed());
+    if (ai.probability() != null) {
+      properties.put(PROP_AI_PROBABILITY, ai.probability());
+    }
+    properties.put(PROP_AI_RECOMMENDED, ai.recommended());
+    if (ai.recommended()) {
+      properties.put(PROP_AI_RECOMMENDATION_ACCEPTED, ai.accepted());
+    }
   }
 
   /**
@@ -447,7 +517,9 @@ final class BankBounceKpiTelemetry {
       Match match = discardedMatch(detection, pair);
       schedule(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED,
           decidedProperties(match.proposal(), DECISION_DISCARDED, SURFACE_PANEL,
-              accountId(account), channel()), accountId(account));
+              accountId(account), channel(),
+              BankBounceAi.facts(detection, pair.bounce().getId(), pair.original().getId(), true)),
+          accountId(account));
     } catch (Exception e) {
       log.debug("Bounce KPI: could not build the panel discard event: {}", e.getMessage());
     }
@@ -475,7 +547,8 @@ final class BankBounceKpiTelemetry {
       Match match = find(detection.pairs(), lineId, counterpartId);
       sendNow(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED,
           decidedProperties(match != null ? match.proposal() : null, DECISION_FAILED, SURFACE_PANEL,
-              accountId(account), channel()), accountId(account));
+              accountId(account), channel(), aiFacts(detection, match, false)),
+          accountId(account));
     } catch (Exception e) {
       log.debug("Bounce KPI: could not build the panel failure event: {}", e.getMessage());
     }
@@ -500,7 +573,8 @@ final class BankBounceKpiTelemetry {
       }
       sendNow(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED,
           decidedProperties(match.proposal(), DECISION_UNCHECKED, SURFACE_PANEL,
-              accountId(account), channel()), accountId(account));
+              accountId(account), channel(), aiFacts(detection, match, false)),
+          accountId(account));
     } catch (Exception e) {
       log.debug("Bounce KPI: could not build the dismissal event: {}", e.getMessage());
     }
@@ -514,6 +588,20 @@ final class BankBounceKpiTelemetry {
    */
   static boolean isBusinessRefusal(NeoResponse refusal) {
     return refusal != null && refusal.getHttpStatus() == HttpServletResponse.SC_CONFLICT;
+  }
+
+  /**
+   * The AI facts of a decision about a detected pair that chose no outflow (a refusal, a dismissal,
+   * an unchecked or panel-bound pair).
+   *
+   * @param detection the action's detection
+   * @param match     the detected pair, or {@code null}
+   * @param discarded whether the decision is a discard
+   * @return the facts, or {@code null} (see {@link BankBounceAi#facts})
+   */
+  private static BankBounceAi.Facts aiFacts(Detection detection, Match match, boolean discarded) {
+    return match != null && match.pair() != null
+        ? BankBounceAi.facts(detection, match.pair().bounce().id(), null, discarded) : null;
   }
 
   // ---------------------------------------------------------------------------
@@ -668,10 +756,13 @@ final class BankBounceKpiTelemetry {
       appliedGroups++;
       try {
         if (outcome.error() == null) {
-          addDecision(discardedMatch(detection, outcome), DECISION_DISCARDED);
+          addDecision(discardedMatch(detection, outcome), DECISION_DISCARDED,
+              BankBounceAi.facts(detection, outcome.bounce().getId(), outcome.original().getId(),
+                  true));
         } else if (isBusinessRefusal(outcome.error())) {
           Match match = find(detection.pairs(), lineId, counterpartId);
-          addDecision(match != null ? match : new Match(null, null), DECISION_FAILED);
+          addDecision(match != null ? match : new Match(null, null), DECISION_FAILED,
+              aiFacts(detection, match, false));
         }
       } catch (Exception e) {
         log.debug("Bounce KPI: could not record an applied pair: {}", e.getMessage());
@@ -737,7 +828,8 @@ final class BankBounceKpiTelemetry {
         }
         Pair pair = byGroupKey(detection.pairs(), key);
         if (pair != null) {
-          addDecision(new Match(pair, Proposal.of(pair)), decision);
+          addDecision(new Match(pair, Proposal.of(pair)), decision,
+              BankBounceAi.facts(detection, pair.bounce().id(), null, false));
         }
       }
     }
@@ -763,7 +855,8 @@ final class BankBounceKpiTelemetry {
       for (Pair pair : detected) {
         if (pair.high() && !pair.ambiguous() && !decidedKeys.contains(pair.groupKey())
             && Collections.disjoint(pair.lineIds(), taken)) {
-          addDecision(new Match(pair, Proposal.of(pair)), DECISION_UNCHECKED);
+          addDecision(new Match(pair, Proposal.of(pair)), DECISION_UNCHECKED,
+              BankBounceAi.facts(detection, pair.bounce().id(), null, false));
         }
       }
     }
@@ -773,14 +866,15 @@ final class BankBounceKpiTelemetry {
      *
      * @param match    the pair and its proposal ({@code proposal} {@code null} when unknown)
      * @param decision the decision
+     * @param ai       the AI facts of the decision, or {@code null} for none
      */
-    private void addDecision(Match match, String decision) {
+    private void addDecision(Match match, String decision, BankBounceAi.Facts ai) {
       if (match.pair() != null) {
         decidedKeys.add(match.pair().groupKey());
       }
       Proposal proposal = match.proposal();
       decided.add(decidedProperties(proposal, decision, SURFACE_MODAL, accountId(account),
-          channel));
+          channel, ai));
       boolean applied = DECISION_DISCARDED.equals(decision) || DECISION_FAILED.equals(decision);
       if (DECISION_DISCARDED.equals(decision)) {
         discarded++;

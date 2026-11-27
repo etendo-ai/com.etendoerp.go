@@ -103,7 +103,8 @@ jobs:
           fetch-depth: 0
 
       # Same branch choice as moduleBranchUtils.groovy: the PR's branch when the module has it
-      # (never for develop, main, hotfix/* or mergeblock/*), otherwise the core's branch.
+      # (never for develop, main, hotfix/* or mergeblock/*), otherwise the one
+      # jenkinsExtraModulesBranches.txt gives it (module=branch per line), else the core's branch.
       - name: Clone the extra modules
         env:
           BITBUCKET_SSH_KEY: ${{ secrets.BITBUCKET_SSH_KEY }}
@@ -131,14 +132,16 @@ jobs:
           cd etendo_core/modules
           for url in $(tr ',' ' ' < com.etendoerp.go/jenkinsExtraModules.txt); do
             name="$(basename "$url" .git)"
+            base="$(sed -n "s/^${name}=//p" com.etendoerp.go/jenkinsExtraModulesBranches.txt 2>/dev/null | head -1)"
+            base="${base:-$CORE_BRANCH}"
             case "$url" in
               git@github.com:*) url="https://x-access-token:${ETENDOBOT_TOKEN}@github.com/${url#git@github.com:}" ;;
             esac
             if [ -n "$try_branch" ] && git clone -q --depth 1 --branch "$try_branch" "$url" "$name" 2>/dev/null; then
               echo "$name: $try_branch"
             else
-              git clone -q --depth 1 --branch "$CORE_BRANCH" "$url" "$name"
-              echo "$name: $CORE_BRANCH"
+              git clone -q --depth 1 --branch "$base" "$url" "$name"
+              echo "$name: $base"
             fi
           done
 

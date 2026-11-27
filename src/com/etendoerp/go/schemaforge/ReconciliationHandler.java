@@ -192,6 +192,8 @@ public class ReconciliationHandler implements NeoHandler {
   private static final String ACTION_DISCARD_PAIR = BankBouncePairService.ACTION_DISCARD_PAIR;
   private static final String ACTION_RESTORE_PAIR = BankBouncePairService.ACTION_RESTORE_PAIR;
   private static final String ACTION_DISMISS_PAIR = BankBouncePairService.ACTION_DISMISS_PAIR;
+  private static final String ACTION_RESTORE_BOUNCE_SUGGESTION =
+      BankBounceDismissal.ACTION_RESTORE_SUGGESTION;
 
   /** One route of the {@code ?action=} dispatcher. */
   @FunctionalInterface
@@ -231,8 +233,11 @@ public class ReconciliationHandler implements NeoHandler {
       // is Classic's PSD2 Restore button.
       Map.entry(METHOD_POST + " " + ACTION_DISCARD_PAIR, BankBouncePairService::handleDiscardPair),
       Map.entry(METHOD_POST + " " + ACTION_RESTORE_PAIR, BankBouncePairService::handleRestorePair),
-      // ETP-5581: "No es un rebote" — KPI telemetry only, UI-only (not declared to agents).
-      Map.entry(METHOD_POST + " " + ACTION_DISMISS_PAIR, BankBouncePairService::handleDismissPair));
+      // "No es un rechazo" marks the rejection line and its undo clears the mark; both UI-only
+      // (not declared to agents) and gated by bank-bounce-suggestions inside the service.
+      Map.entry(METHOD_POST + " " + ACTION_DISMISS_PAIR, BankBouncePairService::handleDismissPair),
+      Map.entry(METHOD_POST + " " + ACTION_RESTORE_BOUNCE_SUGGESTION,
+          BankBounceDismissal::handleRestoreSuggestion));
 
   /** Match level recorded on the reconciliation lines produced by this handler. */
   private static final String MATCH_LEVEL_MANUAL = "MANUALMATCH";
@@ -592,6 +597,7 @@ public class ReconciliationHandler implements NeoHandler {
     JSONObject data = ReconciliationHandlerSupport.summarizePendingLines(lines, account, rules,
         pendingDateTolDays, pendingAmtTolPct, BankBounceSuggestions.panelView(bounces));
     discards.putCount(data.getJSONObject(KEY_COUNTS), split[1].length());
+    discards.putPairCount(data.getJSONObject(KEY_COUNTS), split[1]);
     // How many reconciliations of this account are currently in draft. Core allows only ONE editable
     // reconciliation per account, so a non-zero value means a "Reactivar" will first CONFIRM that
     // draft — the UI warns about it up front, in the confirm dialog, instead of after the fact.
@@ -1182,6 +1188,9 @@ public class ReconciliationHandler implements NeoHandler {
     data.put("account", accountId);
     data.put("kpis", kpis);
     data.put(KEY_GROUPS, groups);
+    // ETP-6359: the AI second layer; adds bounceAiAssessments or leaves data as it is. May release
+    // the DAL connection, so nothing below uses it.
+    BankBounceAi.annotate(bounces, data);
     ReconciliationKpiTelemetry.emitBankMatchAttempted(
         pendingLines.size(), transactionGroups, opsToLink);
     return envelope(data);

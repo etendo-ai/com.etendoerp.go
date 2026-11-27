@@ -25,6 +25,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.List;
 
+import org.hibernate.Session;
 import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.openbravo.advpaymentmngt.ProcessInvoiceUtil;
@@ -43,6 +44,8 @@ import org.openbravo.model.common.invoice.Invoice;
  * without a CDI container or a database requires the same three stubs. Extracted here
  * (from {@code CreateDraftInvoiceHandlerTest}) once the return handlers needed them too — a
  * second copy would drift the moment {@link InvoiceCompletionService} gains another dependency.
+ *
+ * @covers com.etendoerp.go.schemaforge.InvoiceCompletionService
  */
 final class InvoiceCompletionTestSupport {
 
@@ -89,6 +92,12 @@ final class InvoiceCompletionTestSupport {
           anyString(), eq("CO"), anyString(), anyString(), anyString(), any(), any()))
           .thenReturn(processResult);
       when(dal.get(eq(Process.class), eq("111"))).thenReturn(mock(Process.class));
+      // The completion flushes and clears the session before the process (ETP-6414). A caller
+      // that stubbed its own session keeps it, so its session verifications still hold.
+      if (dal.getSession() == null) {
+        Session session = mock(Session.class);
+        when(dal.getSession()).thenReturn(session);
+      }
     }
 
     @Override
