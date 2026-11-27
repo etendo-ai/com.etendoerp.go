@@ -20,6 +20,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
@@ -64,7 +65,7 @@ class PisReturnCallbackServletFallbackBodyTest {
         OBDal obDal = mock(OBDal.class);
         @SuppressWarnings("unchecked")
         OBQuery<PisPayment> query = mock(OBQuery.class);
-        when(obDal.createQuery(org.mockito.ArgumentMatchers.eq(PisPayment.class), anyString()))
+        when(obDal.createQuery(eq(PisPayment.class), anyString()))
             .thenReturn(query);
         when(query.uniqueResult()).thenReturn(null);
         dal.when(OBDal::getInstance).thenReturn(obDal);
