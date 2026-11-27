@@ -23,6 +23,7 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONArray;
+import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.query.NativeQuery;
 import org.openbravo.dal.core.OBContext;
@@ -108,31 +109,7 @@ public class ProductStockWarehouseHandler implements NeoHandler {
         final boolean withUnit = !rows.isEmpty() && ProductMovementsPolicy.isEnabled();
         JSONArray data = new JSONArray();
         for (Object[] row : rows) {
-          JSONObject item = new JSONObject();
-          item.put("id",                      row[0]);
-          item.put("storageBin",              row[1]);
-          item.put("storageBin$_identifier",  row[2]);
-          item.put("warehouse",               row[3]);
-          item.put("warehouse$_identifier",   row[4]);
-          item.put("quantityOnHand",          ProductHandlerUtils.toBigDecimal(row[5]));
-          item.put("reservedQty",             ProductHandlerUtils.toBigDecimal(row[6]));
-          item.put("allocatedQuantity",       ProductHandlerUtils.toBigDecimal(row[7]));
-          item.put("attributeSetValue",       row[8]);
-          // ETP-5220: the generic write path requires `updated` echoed back on every PUT/PATCH
-          // (NeoCrudHandler#validateUpdateRequest); without it each edit 400s as missing_updated.
-          // toAuditToken keeps the offset, as in ProductPriceHandler (ETP-5245/ETP-5255).
-          String auditToken = NeoDateFormat.toAuditToken(row[9]);
-          String rawUpdated = row[9] != null ? String.valueOf(row[9]) : null;
-          String updatedValue = auditToken != null ? auditToken : rawUpdated;
-          item.put("updated", updatedValue != null ? updatedValue : JSONObject.NULL);
-          // ETP-5908 (PS-69): the unit symbol of the product's UOM, for the side panel. A row-level,
-          // display-only injection (the stock rows carry no UOM of their own), so it is behind the
-          // Movements policy like the other fields this feature adds; off, rows are exactly as before.
-          String symbol = row.length > 10 && row[10] != null ? String.valueOf(row[10]).trim() : "";
-          if (withUnit && !symbol.isEmpty()) {
-            item.put("etgoUomSymbol", symbol);
-          }
-          data.put(item);
+          data.put(toItem(row, withUnit));
         }
 
         return ProductHandlerUtils.buildListResponse(data);
@@ -144,6 +121,34 @@ public class ProductStockWarehouseHandler implements NeoHandler {
       log.error("Error fetching stock with warehouse info for product {}: {}", parentId, e.getMessage(), e);
       return NeoResponse.error(500, "Error fetching stock data");
     }
+  }
+
+  private static JSONObject toItem(Object[] row, boolean withUnit) throws JSONException {
+    JSONObject item = new JSONObject();
+    item.put("id",                      row[0]);
+    item.put("storageBin",              row[1]);
+    item.put("storageBin$_identifier",  row[2]);
+    item.put("warehouse",               row[3]);
+    item.put("warehouse$_identifier",   row[4]);
+    item.put("quantityOnHand",          ProductHandlerUtils.toBigDecimal(row[5]));
+    item.put("reservedQty",             ProductHandlerUtils.toBigDecimal(row[6]));
+    item.put("allocatedQuantity",       ProductHandlerUtils.toBigDecimal(row[7]));
+    item.put("attributeSetValue",       row[8]);
+    // ETP-5220: the generic write path requires `updated` echoed back on every PUT/PATCH
+    // (NeoCrudHandler#validateUpdateRequest); without it each edit 400s as missing_updated.
+    // toAuditToken keeps the offset, as in ProductPriceHandler (ETP-5245/ETP-5255).
+    String auditToken = NeoDateFormat.toAuditToken(row[9]);
+    String rawUpdated = row[9] != null ? String.valueOf(row[9]) : null;
+    String updatedValue = auditToken != null ? auditToken : rawUpdated;
+    item.put("updated", updatedValue != null ? updatedValue : JSONObject.NULL);
+    // ETP-5908 (PS-69): the unit symbol of the product's UOM, for the side panel. A row-level,
+    // display-only injection (the stock rows carry no UOM of their own), so it is behind the
+    // Movements policy like the other fields this feature adds; off, rows are exactly as before.
+    String symbol = row.length > 10 && row[10] != null ? String.valueOf(row[10]).trim() : "";
+    if (withUnit && !symbol.isEmpty()) {
+      item.put("etgoUomSymbol", symbol);
+    }
+    return item;
   }
 
 }

@@ -37,7 +37,11 @@ import org.mockito.MockedStatic;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 
-/** Tests for {@link ProductStockWarehouseHandler}. */
+/**
+ * Tests for {@link ProductStockWarehouseHandler}.
+ *
+ * @covers com.etendoerp.go.schemaforge.ProductStockWarehouseHandler
+ */
 public class ProductStockWarehouseHandlerTest {
 
   private final ProductStockWarehouseHandler handler = new ProductStockWarehouseHandler();
