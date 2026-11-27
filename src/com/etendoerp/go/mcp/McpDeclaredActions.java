@@ -42,6 +42,7 @@ import org.openbravo.model.ad.ui.Tab;
 import com.etendoerp.go.schemaforge.NeoHandler;
 import com.etendoerp.go.schemaforge.NeoResponse;
 import com.etendoerp.go.schemaforge.data.SFEntity;
+import com.etendoerp.go.schemaforge.data.SFField;
 import com.etendoerp.go.schemaforge.data.SFSpec;
 import com.etendoerp.go.schemaforge.util.NeoAccountingAccessPolicy;
 import com.etendoerp.go.schemaforge.util.NeoActionContract;
@@ -66,6 +67,7 @@ final class McpDeclaredActions {
   private static final Logger log = LogManager.getLogger(McpDeclaredActions.class);
 
   private static final String SPEC_TYPE_REPORT = "R";
+  private static final String LOG_BUTTON_LOOKUP_FAILED = "Button lookup failed for {} on {}: {}";
 
   private McpDeclaredActions() {
   }
@@ -175,8 +177,12 @@ final class McpDeclaredActions {
    *   <li>An action the customization excludes from agents
    *       ({@code NeoHandler#agentExcludedActions()}) is refused (405) in code, whatever the
    *       configuration says; {@code MCP_CONFIG.actions} is a second guard.</li>
-   *   <li>Anything else — an AD button, or an action the customization serves without declaring
-   *       it — is not judged here: it stays callable, as the UI offers it.</li>
+   *   <li>An AD button that no declared contract describes is refused (405) when the catalogue
+   *       reports it {@code invokable:false} — curated {@code discarded}, hidden by AD in the tab,
+   *       or with no process (ETP-5812, {@link McpSchemaActionFields#notInvokableReason}). The
+   *       verdict and its reason are the ones {@code etendo_schema(view:"actions")} publishes.</li>
+   *   <li>Anything else — an invokable AD button, or an action the customization serves without
+   *       declaring it — is not judged here: it stays callable, as the UI offers it.</li>
    * </ol>
    *
    * @param entity     the SchemaForge entity
@@ -200,11 +206,16 @@ final class McpDeclaredActions {
     NeoHandler customization = NeoHandlerLookup.forEntityQuietly(entity);
     Map<String, NeoActionContract> declared = declaredBy(customization);
     Set<String> excluded = excludedBy(customization, entity);
-    Column button = declared.containsKey(action) ? null : buttonOf(entity, action);
+    boolean isDeclared = declared.containsKey(action);
+    // The included field etendo_action fires the button through; only that one is judged by the
+    // catalogue's verdict below. A table button curation left out still meets the hidden/redirect
+    // check under its alias, but it is not fired, so it is not judged as a button.
+    SFField fired = isDeclared ? null : firedField(entity, action);
+    Column button = buttonOf(entity, action, isDeclared, fired);
     Set<String> names = namesOf(action, button);
     // ETP-5714: another spelling of a name the configuration hides or redirects is that name.
     // Never for a name the customization declares as an action: that one is judged by its contract.
-    String configured = declared.containsKey(action) ? null : config.configuredNameLike(action);
+    String configured = isDeclared ? null : config.configuredNameLike(action);
     if (configured != null) {
       names.add(configured);
     }
@@ -216,7 +227,33 @@ final class McpDeclaredActions {
       requireValidParameters(specName, entityName, action, declared, contract, parameters);
       return contract;
     }
+    refuseUnlessInvokable(specName, entityName, action, entity, fired);
     return null;
+  }
+
+  /**
+   * Refuses (405) an AD button the catalogue reports {@code invokable:false} (ETP-5812).
+   *
+   * <p>{@code etendo_schema(view:"actions")} told the agent the button cannot be invoked, yet a call
+   * by name still fired it: a button the Classic tab hides (an internal flag such as
+   * {@code Processing}), a curated {@code discarded} one or one with no process. The verdict is the
+   * catalogue's own ({@link McpSchemaActionFields#notInvokableReason(Column, Tab, String)}) over the
+   * same inputs — the tab the entity is built on and the field's effective curation
+   * ({@link McpFieldView}) — so the precheck cannot refuse what the catalogue offers, or run what it
+   * withholds. {@code MCP_CONFIG.actions.hidden} and {@code redirect} are judged first and keep
+   * their better reasons; this is the safety net for the buttons nobody configured.</p>
+   */
+  private static void refuseUnlessInvokable(String specName, String entityName, String action,
+      SFEntity entity, SFField fired) throws JSONException {
+    if (fired == null) {
+      return;
+    }
+    String blocker = McpSchemaActionFields.notInvokableReason(fired.getADColumn(),
+        entity.getADTab(), McpFieldView.of(fired).getVisibility());
+    if (blocker != null) {
+      throw McpRoutingException.actionHidden(specName, entityName, action,
+          "etendo_schema(view:'actions') reports it not invokable (" + blocker + ")");
+    }
   }
 
   /**
@@ -249,7 +286,7 @@ final class McpDeclaredActions {
       String property = fired == null ? null : NeoButtonActionHelper.propertyNameOf(fired);
       return property == null ? action : property;
     } catch (RuntimeException e) {
-      log.debug("Button lookup failed for {} on {}: {}", action, entity.getName(), e.getMessage());
+      log.debug(LOG_BUTTON_LOOKUP_FAILED, action, entity.getName(), e.getMessage());
       return action;
     }
   }
@@ -364,22 +401,41 @@ final class McpDeclaredActions {
   }
 
   /**
-   * The AD button {@code action} names on the entity, or {@code null}: the one {@code etendo_action}
-   * would fire ({@link NeoButtonActionHelper#findButtonColumn} — included fields, by DB column or
-   * field name), else a button column of the entity's table under either name. The second lookup
-   * matters for a button whose field curation left out: it cannot fire, but its alias must still
-   * meet the hidden/redirect check, so the agent gets the reason and the replacement rather than a
-   * bare "Action not found".
+   * The included field {@code etendo_action} fires {@code action} through
+   * ({@link NeoButtonActionHelper#findButtonField} — by DB column, field or property name), or
+   * {@code null}.
    */
-  private static Column buttonOf(SFEntity entity, String action) {
+  private static SFField firedField(SFEntity entity, String action) {
     if (entity == null || action == null) {
       return null;
     }
     try {
-      Column fired = NeoButtonActionHelper.findButtonColumn(entity.getId(), action);
-      return fired != null ? fired : tableButton(entity, action);
+      return NeoButtonActionHelper.findButtonField(entity.getId(), action);
     } catch (RuntimeException e) {
-      log.debug("Button lookup failed for {} on {}: {}", action, entity.getName(), e.getMessage());
+      log.debug(LOG_BUTTON_LOOKUP_FAILED, action, entity.getName(), e.getMessage());
+      return null;
+    }
+  }
+
+  /**
+   * The AD button {@code action} names on the entity, or {@code null} for a declared name: the
+   * column of the field {@code etendo_action} fires ({@link #firedField}), else a button column of
+   * the entity's table under either name. The second lookup matters for a button whose field
+   * curation left out: it cannot fire, but its alias must still meet the hidden/redirect check, so
+   * the agent gets the reason and the replacement rather than a bare "Action not found".
+   */
+  private static Column buttonOf(SFEntity entity, String action, boolean isDeclared,
+      SFField fired) {
+    if (isDeclared || entity == null || action == null) {
+      return null;
+    }
+    if (fired != null) {
+      return fired.getADColumn();
+    }
+    try {
+      return tableButton(entity, action);
+    } catch (RuntimeException e) {
+      log.debug(LOG_BUTTON_LOOKUP_FAILED, action, entity.getName(), e.getMessage());
       return null;
     }
   }

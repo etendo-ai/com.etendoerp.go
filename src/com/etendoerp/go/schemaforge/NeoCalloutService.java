@@ -28,12 +28,15 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
+import javax.servlet.http.HttpServletRequest;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.criterion.Restrictions;
+import org.openbravo.base.exception.OBException;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.model.Property;
@@ -154,55 +157,51 @@ public class NeoCalloutService {
             new SyntheticHttpServletRequest(params, sessionAttrs);
 
         RequestContext requestContext = RequestContext.get();
-        requestContext.setRequest(syntheticRequest);
+        // ETP-6452: the synthetic request is put back to the caller's when the callout is done.
+        // The defaults cascade runs inside a create's preflight and a DEFAULTS handler reads the
+        // real request afterwards, so leaving the synthetic one installed leaked into both.
+        try (CalloutRequestSwap swap = CalloutRequestSwap.install(requestContext,
+            syntheticRequest)) {
+          long perfInitStart = System.nanoTime();
+          Class<?> calloutClass = Class.forName(calloutInfo.className);
+          Object calloutObject = calloutClass.getDeclaredConstructor().newInstance();
 
-        long perfInitStart = System.nanoTime();
-        Class<?> calloutClass = Class.forName(calloutInfo.className);
-        Object calloutObject = calloutClass.getDeclaredConstructor().newInstance();
+          if (!(calloutObject instanceof SimpleCallout)) {
+            return NeoResponse.error(400,
+                "Callout class is not a SimpleCallout: " + calloutInfo.className);
+          }
 
-        if (!(calloutObject instanceof SimpleCallout)) {
-          return NeoResponse.error(400,
-              "Callout class is not a SimpleCallout: " + calloutInfo.className);
+          SimpleCallout calloutInstance = (SimpleCallout) calloutObject;
+
+          initWithServletConfig(calloutInstance, calloutInfo.className);
+
+          long perfInitEnd = System.nanoTime();
+          JSONObject calloutResult = calloutInstance.executeSimpleCallout(requestContext);
+          long perfExecEnd = System.nanoTime();
+          log.info("[NEO-CALLOUT] Raw callout result: {}", calloutResult != null ? calloutResult.toString().substring(0, Math.min(500, calloutResult.toString().length())) : "null");
+
+          JSONObject restResponse = transformResponse(calloutResult, adTab);
+          // ETP-5837: a callout may propose a doc type the tab's own filter does not allow
+          // (core falls back to the org default doc type, which ignores the tab). Drop it
+          // before the cascade sees it, so the form keeps its doc type and number sequence.
+          DocTypeResolver.dropDocTypesOutsideTabFilter(restResponse, adTab, ctx);
+          long perfTransformEnd = System.nanoTime();
+          log.info("[NEO-CALLOUT] Transformed response: {}", restResponse.toString().substring(0, Math.min(500, restResponse.toString().length())));
+
+          log.debug(
+              "[NEO-PERF] executeCallout field={} class={} resolve={}ms buildParams={}ms sessionAttrs={}ms instantiate={}ms simpleCalloutRun={}ms transform={}ms total={}ms",
+              fieldName,
+              calloutInfo.className,
+              (perfResolveEnd - perfResolveStart) / 1_000_000L,
+              (perfParamsEnd - perfParamsStart) / 1_000_000L,
+              (perfSessionEnd - perfSessionStart) / 1_000_000L,
+              (perfInitEnd - perfInitStart) / 1_000_000L,
+              (perfExecEnd - perfInitEnd) / 1_000_000L,
+              (perfTransformEnd - perfExecEnd) / 1_000_000L,
+              (perfTransformEnd - perfStart) / 1_000_000L);
+
+          return NeoResponse.ok(restResponse);
         }
-
-        SimpleCallout calloutInstance = (SimpleCallout) calloutObject;
-
-        // Initialize with a servlet config (required by DelegateConnectionProvider)
-        try {
-          CalloutServletConfig config = new CalloutServletConfig(
-              calloutInfo.className, RequestContext.getServletContext());
-          calloutInstance.init(config);
-        } catch (Exception e) {
-          log.debug("Could not initialize callout servlet config, proceeding without it: {}",
-              e.getMessage());
-        }
-
-        long perfInitEnd = System.nanoTime();
-        JSONObject calloutResult = calloutInstance.executeSimpleCallout(requestContext);
-        long perfExecEnd = System.nanoTime();
-        log.info("[NEO-CALLOUT] Raw callout result: {}", calloutResult != null ? calloutResult.toString().substring(0, Math.min(500, calloutResult.toString().length())) : "null");
-
-        JSONObject restResponse = transformResponse(calloutResult, adTab);
-        // ETP-5837: a callout may propose a doc type the tab's own filter does not allow
-        // (core falls back to the org default doc type, which ignores the tab). Drop it
-        // before the cascade sees it, so the form keeps its doc type and number sequence.
-        DocTypeResolver.dropDocTypesOutsideTabFilter(restResponse, adTab, ctx);
-        long perfTransformEnd = System.nanoTime();
-        log.info("[NEO-CALLOUT] Transformed response: {}", restResponse.toString().substring(0, Math.min(500, restResponse.toString().length())));
-
-        log.debug(
-            "[NEO-PERF] executeCallout field={} class={} resolve={}ms buildParams={}ms sessionAttrs={}ms instantiate={}ms simpleCalloutRun={}ms transform={}ms total={}ms",
-            fieldName,
-            calloutInfo.className,
-            (perfResolveEnd - perfResolveStart) / 1_000_000L,
-            (perfParamsEnd - perfParamsStart) / 1_000_000L,
-            (perfSessionEnd - perfSessionStart) / 1_000_000L,
-            (perfInitEnd - perfInitStart) / 1_000_000L,
-            (perfExecEnd - perfInitEnd) / 1_000_000L,
-            (perfTransformEnd - perfExecEnd) / 1_000_000L,
-            (perfTransformEnd - perfStart) / 1_000_000L);
-
-        return NeoResponse.ok(restResponse);
 
       } finally {
         OBContext.restorePreviousMode();
@@ -213,6 +212,59 @@ public class NeoCalloutService {
     } catch (Exception e) {
       log.error("Error executing callout: {}", e.getMessage(), e);
       return NeoResponse.error(500, "Callout execution failed: " + e.getMessage());
+    }
+  }
+
+  /**
+   * Initializes the callout with a servlet config (required by DelegateConnectionProvider); a
+   * callout that cannot be initialized runs without it.
+   */
+  private static void initWithServletConfig(SimpleCallout calloutInstance, String className) {
+    try {
+      CalloutServletConfig config = new CalloutServletConfig(className,
+          RequestContext.getServletContext());
+      calloutInstance.init(config);
+    } catch (Exception e) {
+      log.debug("Could not initialize callout servlet config, proceeding without it: {}",
+          e.getMessage());
+    }
+  }
+
+  /**
+   * Installs the callout's synthetic request on the {@link RequestContext} and puts the previous
+   * request and {@link VariablesSecureApp} back on close (ETP-6452). {@code setRequest} also drops
+   * the context's variables, so both are restored. A context with neither (no servlet request:
+   * tests, background work) is left as it was found.
+   */
+  static final class CalloutRequestSwap implements AutoCloseable {
+    private final RequestContext requestContext;
+    private final HttpServletRequest previousRequest;
+    private final VariablesSecureApp previousVars;
+
+    private CalloutRequestSwap(RequestContext requestContext, HttpServletRequest previousRequest,
+        VariablesSecureApp previousVars) {
+      this.requestContext = requestContext;
+      this.previousRequest = previousRequest;
+      this.previousVars = previousVars;
+    }
+
+    static CalloutRequestSwap install(RequestContext requestContext,
+        HttpServletRequest synthetic) {
+      HttpServletRequest previousRequest = requestContext.getRequest();
+      VariablesSecureApp previousVars = null;
+      try {
+        previousVars = requestContext.getVariablesSecureApp();
+      } catch (OBException e) {
+        // No request and no variables: nothing to restore.
+      }
+      requestContext.setRequest(synthetic);
+      return new CalloutRequestSwap(requestContext, previousRequest, previousVars);
+    }
+
+    @Override
+    public void close() {
+      requestContext.setRequest(previousRequest);
+      requestContext.setVariableSecureApp(previousVars);
     }
   }
 
