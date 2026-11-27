@@ -55,7 +55,7 @@ class InventoryPostingContractsTest {
         InventoryPostingContracts.byProcessed())) {
       assertEquals(List.of("post", "unpost"), List.copyOf(contracts.keySet()));
       String post = contracts.get("post").getDescription();
-      assertTrue(post.contains("409 costNotCalculated") && post.contains("costCalculationStalled"),
+      assertTrue(post.contains("409 costNotCalculated") && post.contains("stalled:true"),
           post);
       assertTrue(post.contains("never use the AD Posted button"), post);
     }

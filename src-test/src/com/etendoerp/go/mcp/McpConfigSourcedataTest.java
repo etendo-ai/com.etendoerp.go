@@ -862,7 +862,7 @@ class McpConfigSourcedataTest {
       assertTrue(prompt.contains("availableNow") && prompt.contains("unavailableReason"), specId);
       assertTrue(prompt.contains("costNotCalculated") && prompt.contains("retryAfterSeconds"),
           specId);
-      assertTrue(prompt.contains("costCalculationStalled") && prompt.contains("do not retry"),
+      assertTrue(prompt.contains("stalled:true") && prompt.contains("do not retry automatically"),
           specId);
     }
   }
@@ -879,7 +879,8 @@ class McpConfigSourcedataTest {
     Matcher m = Pattern.compile("<!--([0-9A-F]{32})-->\\s*<VALUE><!\\[CDATA\\[ETGO_CostCalculationStalled]]>"
         + "</VALUE>\\s*<!--\\1-->\\s*<MSGTEXT><!\\[CDATA\\[(.*?)]]>", Pattern.DOTALL).matcher(xml);
     assertTrue(m.find(), "ETGO_CostCalculationStalled");
-    assertTrue(m.group(2).contains("stalled") && m.group(2).contains("administrator"), m.group(2));
+    assertTrue(m.group(2).contains("more than 10 minutes") && m.group(2).contains("missing costs")
+        && !m.group(2).contains("will not help"), m.group(2));
   }
 
   /** The four goods-document headers: receipt, shipment, return to vendor, customer return. */
