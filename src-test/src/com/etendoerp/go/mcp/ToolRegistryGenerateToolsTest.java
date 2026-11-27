@@ -242,12 +242,14 @@ class ToolRegistryGenerateToolsTest {
       // etendo_vector_search + etendo_feedback when no specs exist. These are built-in read tools
       // (ETP-4284 / ETP-5123 / ETP-5306 / etendo-ai#53).
       assertTrue(names.contains(McpConstants.TOOL_NEO_WHOAMI), names.toString());
+      // ETP-6421: the guide to which Etendo this is comes first, for every reader.
+      assertEquals(McpConstants.TOOL_NEO_HOW_TO, names.get(0), names.toString());
       assertTrue(names.contains("etendo_discover"));
       assertTrue(names.contains("docs"));
       assertTrue(names.contains(McpConstants.TOOL_NEO_WIDGET));
       assertTrue(names.contains(McpConstants.TOOL_NEO_VECTOR_SEARCH));
       assertTrue(names.contains(McpConstants.TOOL_NEO_FEEDBACK), names.toString());
-      assertEquals(6, tools.size(), names.toString());
+      assertEquals(7, tools.size(), names.toString());
     }
 
     @Test
@@ -439,7 +441,7 @@ class ToolRegistryGenerateToolsTest {
       assertTrue(names.contains(McpConstants.TOOL_NEO_WIDGET));
       assertTrue(names.contains(McpConstants.TOOL_NEO_VECTOR_SEARCH));
       assertTrue(names.contains(McpConstants.TOOL_NEO_FEEDBACK), names.toString());
-      assertEquals(6, tools.size(), names.toString());
+      assertEquals(7, tools.size(), names.toString());
     }
 
     @Test
@@ -476,7 +478,7 @@ class ToolRegistryGenerateToolsTest {
       assertTrue(names.contains(McpConstants.TOOL_NEO_WIDGET));
       assertTrue(names.contains(McpConstants.TOOL_NEO_VECTOR_SEARCH));
       assertTrue(names.contains(McpConstants.TOOL_NEO_FEEDBACK), names.toString());
-      assertEquals(6, tools.size(), names.toString());
+      assertEquals(7, tools.size(), names.toString());
     }
 
     @Test
@@ -610,7 +612,7 @@ class ToolRegistryGenerateToolsTest {
       assertTrue(names.contains(McpConstants.TOOL_NEO_REQUEST_IMAGE_UPLOAD));
       assertTrue(names.contains(McpConstants.TOOL_NEO_UPLOAD_IMAGE));
       assertTrue(names.contains(McpConstants.TOOL_NEO_GET_IMAGE_UPLOAD));
-      assertEquals(9, tools.size(), names.toString());
+      assertEquals(10, tools.size(), names.toString());
     }
   }
 
@@ -1047,10 +1049,10 @@ class ToolRegistryGenerateToolsTest {
             String.valueOf(second.get(i).getInputSchema()), first.get(i).getName());
       }
       List<String> names = toolNames(first);
-      assertEquals(List.of(McpConstants.TOOL_NEO_WHOAMI, "etendo_discover", "docs",
-          McpConstants.TOOL_NEO_WIDGET, McpConstants.TOOL_NEO_VECTOR_SEARCH,
-          McpConstants.TOOL_NEO_FEEDBACK),
-          names.subList(0, 6), "built-ins first, in a fixed order: " + names);
+      assertEquals(List.of(McpConstants.TOOL_NEO_HOW_TO, McpConstants.TOOL_NEO_WHOAMI,
+          "etendo_discover", "docs", McpConstants.TOOL_NEO_WIDGET,
+          McpConstants.TOOL_NEO_VECTOR_SEARCH, McpConstants.TOOL_NEO_FEEDBACK),
+          names.subList(0, 7), "built-ins first, in a fixed order: " + names);
       assertTrue(names.indexOf("complete_order") < names.indexOf("etendo_list"),
           "process tools before the CRUD tools: " + names);
       Map<String, Object> listSchema = first.get(names.indexOf("etendo_list")).getInputSchema();

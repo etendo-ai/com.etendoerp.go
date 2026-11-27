@@ -94,7 +94,12 @@ public class ToolRegistry {
 
     // Always add etendo_discover if user can read
     if (permissions.canRead) {
-      // etendo-ai#53: first, because it is the call an agent should make first.
+      // ETP-6236: evaluated once per listing; it decides etendo_routine and how_to's description.
+      boolean routines = McpRoutinesFlag.isEnabled();
+      // ETP-6421: the overview of this MCP. First, and named to be found by clients that show the
+      // model only tool names; see McpHowToTool.
+      tools.add(McpHowToTool.definition(routines));
+      // etendo-ai#53: the call an agent should make first about the session.
       tools.add(McpWhoamiToolDefinition.definition());
       tools.add(buildDiscoverTool());
       tools.add(buildDocsTool());
@@ -105,7 +110,7 @@ public class ToolRegistry {
       tools.add(buildFeedbackTool());
       // ETP-6236: offered to every session that can read, behind its flag; each step asks its own
       // scope.
-      if (McpRoutinesFlag.isEnabled()) {
+      if (routines) {
         tools.add(McpRoutineTool.definition());
       }
     }
@@ -349,6 +354,7 @@ public class ToolRegistry {
     if ("docs".equals(toolName) || McpConstants.TOOL_NEO_VECTOR_SEARCH.equals(toolName)
         || McpConstants.TOOL_NEO_FEEDBACK.equals(toolName)
         || McpConstants.TOOL_NEO_WHOAMI.equals(toolName)
+        || McpConstants.TOOL_NEO_HOW_TO.equals(toolName)
         || McpConstants.TOOL_NEO_ROUTINE.equals(toolName)) {
       return null;
     }
@@ -421,7 +427,7 @@ public class ToolRegistry {
 
   // ── Discovery tool ─────────────────────────────────────────────────────
 
-  private McpToolDefinition buildDiscoverTool() {
+  McpToolDefinition buildDiscoverTool() {
     Map<String, Object> props = new LinkedHashMap<>();
     // IMP-53: optional. The full catalog runs to tens of KB; an agent that already knows the spec
     // it needs pays only for that one.
@@ -439,9 +445,16 @@ public class ToolRegistry {
             + "Returns spec names, types, entities, and available HTTP methods. "
             + "Call it when you do not know which spec holds what the task needs, or which "
             + "entities a spec has; when you already know the spec, go straight to it. "
-            + "Pass spec to get only that spec's entities, parent links and actions. "
-            + "The answer is always complete, never paged: count is the number of specs returned. "
-            + "If your client shows it cut, call it again with spec for the one you need.",
+            + "Pass spec to get only that spec's entities, parent links and actions; the full "
+            + "catalog is large, and if your client shows it cut, call it again with spec for the "
+            + "one you need. "
+            + "Each window spec carries windowName, the window's name in the user's language, "
+            + "and windowUrl, its link in the app when the app has a public URL (it may not "
+            + "match a menu entry). The menu path is not provided: to tell the user where "
+            + "something is managed, use windowName and windowUrl, and do not infer window names "
+            + "or menu paths from Openbravo/Etendo Classic, because the Etendo Go menu is "
+            + "different. "
+            + "The answer is always complete, never paged: count is the number of specs returned.",
         schema);
   }
 
@@ -460,8 +473,9 @@ public class ToolRegistry {
         "docs",
         "Search the Etendo documentation (via Context7) "
             + "for a given topic and return the relevant documentation text inline. "
-            + "Use this to look up how-tos, concepts, and reference material before "
-            + "answering questions about Etendo.",
+            + "Use it for concepts and for this API's reference (topic 'mcp'). It is not the "
+            + "source for telling the user where a screen is: parts of it describe Etendo "
+            + "Classic, whose menus differ; use etendo_discover's windowName and windowUrl.",
         buildObjectSchema(props, List.of("topic")));
   }
 
@@ -776,6 +790,8 @@ public class ToolRegistry {
         definition = McpOcrToolDefinitions.extract(List.of()); break;
       // etendo-ai#53: only includePermissions; anything else is refused.
       case McpConstants.TOOL_NEO_WHOAMI: definition = McpWhoamiToolDefinition.definition(); break;
+      // ETP-6421: no arguments; anything passed is refused.
+      case McpConstants.TOOL_NEO_HOW_TO: definition = McpHowToTool.definition(false); break;
       case McpConstants.TOOL_NEO_ROUTINE: definition = McpRoutineTool.definition(); break;
       default: return Optional.empty();
     }

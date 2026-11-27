@@ -21,12 +21,15 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
+import org.mockito.MockedStatic;
+import org.openbravo.dal.core.OBContext;
 import org.openbravo.model.ad.system.Language;
 import org.openbravo.model.ad.ui.Process;
 import org.openbravo.model.ad.ui.Window;
@@ -47,7 +50,7 @@ class McpToolTitlesTest {
       "etendo_list_attachments", "etendo_delete_attachment", "etendo_get_document_pdf",
       "etendo_send_document_email", "etendo_request_document_extraction_upload",
       "etendo_extract_invoice_document", "etendo_generate_amortization_plan", "etendo_feedback", "docs",
-      "etendo_job_status", "etendo_job_cancel", "etendo_whoami", "etendo_routine" };
+      "etendo_job_status", "etendo_job_cancel", "etendo_whoami", "etendo_how_to", "etendo_routine" };
 
   @Test
   @DisplayName("Fixed tools resolve from the catalog in the user's language")
@@ -139,5 +142,44 @@ class McpToolTitlesTest {
     SFSpec spec = mock(SFSpec.class);
     when(spec.getProcess()).thenReturn(process);
     assertNull(McpToolTitles.fromSpec(spec, null));
+  }
+
+  @Test
+  @DisplayName("windowNameForSpec returns the window name, never the process, and is total")
+  void windowNameForSpecReturnsTheWindowName() {
+    Window window = mock(Window.class);
+    when(window.getId()).thenReturn("W1");
+    when(window.get(Window.PROPERTY_NAME, null, "W1")).thenReturn(" Price List ");
+    Process process = mock(Process.class);
+    when(process.getId()).thenReturn("P1");
+    when(process.get(Process.PROPERTY_NAME, null, "P1")).thenReturn("Process name");
+    SFSpec spec = mock(SFSpec.class);
+    when(spec.getADWindow()).thenReturn(window);
+    when(spec.getProcess()).thenReturn(process);
+    assertEquals("Price List", McpToolTitles.windowNameForSpec(spec));
+
+    assertNull(McpToolTitles.windowNameForSpec(mock(SFSpec.class)));
+
+    SFSpec failing = mock(SFSpec.class);
+    when(failing.getADWindow()).thenThrow(new IllegalStateException("boom"));
+    assertNull(McpToolTitles.windowNameForSpec(failing));
+  }
+
+  @Test
+  @DisplayName("windowNameForSpec names the window in the token user's language (es_ES: Tarifa)")
+  void windowNameForSpecUsesTheUsersLanguage() {
+    Language spanish = mock(Language.class);
+    OBContext context = mock(OBContext.class);
+    when(context.getLanguage()).thenReturn(spanish);
+    Window window = mock(Window.class);
+    when(window.getId()).thenReturn("W1");
+    when(window.get(Window.PROPERTY_NAME, null, "W1")).thenReturn("Price List");
+    when(window.get(Window.PROPERTY_NAME, spanish, "W1")).thenReturn("Tarifa");
+    SFSpec spec = mock(SFSpec.class);
+    when(spec.getADWindow()).thenReturn(window);
+    try (MockedStatic<OBContext> obContext = mockStatic(OBContext.class)) {
+      obContext.when(OBContext::getOBContext).thenReturn(context);
+      assertEquals("Tarifa", McpToolTitles.windowNameForSpec(spec));
+    }
   }
 }

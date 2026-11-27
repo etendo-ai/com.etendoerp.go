@@ -6024,6 +6024,25 @@ Resolution rules (`McpToolRouterSupport.resolvePrimaryEntityName`):
   and report (`R`) specs never carry it.
 - A spec with no included entities yields `null`, and the key is omitted from the response entirely.
 
+**Where the user finds the window (ETP-6421).** Each window spec also carries `windowName` and
+`windowUrl`, so an agent can tell a person where to go instead of guessing a menu path
+(`McpDiscoverTool.addWindowLinks`):
+
+```json
+{ "name": "price-list", "type": "W", "windowName": "Tarifa", "windowUrl": "https://go.example.com/price-list" }
+```
+
+- **Window specs only.** Process (`P`) and report (`R`) specs never carry either key.
+- `windowName` is the name of the spec's `AD_Window` in the **language of the token's user**
+  (`OBContext` language), the same name the user sees in the app; the base name when no translation
+  exists. It never falls back to the process name (`McpToolTitles.windowNameForSpec`). The key is
+  omitted when the spec has no window or the lookup fails.
+- `windowUrl` is `{app base URL}/{spec name}` (`McpRecordUrls.buildWindowUrl`): the spec name is
+  the app's window segment. It is omitted when no app base URL is configured. A `routeOnly` or
+  hidden spec still gets the link the record links use.
+- **No menu path.** Go's menu tree lives in the SPA (`menu.json`), not in the backend, so the
+  result names the window and links it but does not say under which menu group it sits.
+
 #### 4.12.3 FK resolution on the write verbs (IMP-4, extended to every verb by IMP-15)
 
 Historically every foreign-key field in a write body required the exact 32-character record id,
@@ -14606,7 +14625,7 @@ hand links to the user and reach nobody else, so they stay closed-world.
 
 | Tools | `readOnlyHint` | `destructiveHint` | `idempotentHint` |
 |---|---|---|---|
-| `etendo_list`, `etendo_get`, `etendo_schema`, `etendo_discover`, `etendo_selectors`, `etendo_defaults`, `docs`, `etendo_widget`, `etendo_vector_search`, `etendo_get_image_upload`, `etendo_list_attachments`, `etendo_get_document_pdf`, `etendo_extract_invoice_document`, `etendo_job_status`, `etendo_whoami`, every `generate_*` report | true | false | true |
+| `etendo_list`, `etendo_get`, `etendo_schema`, `etendo_discover`, `etendo_selectors`, `etendo_defaults`, `docs`, `etendo_widget`, `etendo_vector_search`, `etendo_get_image_upload`, `etendo_list_attachments`, `etendo_get_document_pdf`, `etendo_extract_invoice_document`, `etendo_job_status`, `etendo_whoami`, `etendo_how_to`, every `generate_*` report | true | false | true |
 | `etendo_create`, `etendo_request_image_upload`, `etendo_upload_image`, `etendo_feedback`, `etendo_request_document_extraction_upload` | false | false | false |
 | `etendo_delete`, `etendo_delete_attachment` | false | true | true |
 | `etendo_update`, `etendo_batch`, `etendo_job_cancel`, `etendo_action`, `etendo_action_batch`, `etendo_routine` (its steps may update and complete documents), `etendo_request_attachment_upload` (`main:true` replaces the previous main file), `etendo_send_document_email` (two calls are two emails), `etendo_generate_amortization_plan`, every process tool (`complete_order` …) | false | true (conservative) | false |
@@ -17776,3 +17795,49 @@ an agent prompt. The domain owners (returns, finance) still have to validate the
 | `RMCreateInvoice` | `purchase-order/header`, `RM_CreateInvoice` | **Redirected** to `createPurchaseInvoice` (`actions.redirect`, since ETP-5714) | Included (`system`) but not displayed by Classic on the purchase order. The redirect refuses it (405) by any spelling; its reason says that `createPurchaseInvoice` invoices the order and that a return to vendor is invoiced with `createReturnInvoice` on `return-to-vendor-shipment`. |
 | `RMInsertOrphanLine` | `sales-order/header` and `purchase-order/header`, `rMAddOrphanLine` | **Not offered** | The field is not included (curated `discarded`); *Action not found*. `sales-quotation/quotation` includes it and hides `RM_AddOrphanLine` explicitly; the return specs that include it are not shown to MCP (`SHOWINMCP=N`). Returns declare `importShipmentLines` / `importReceiptLines` for adding lines. |
 | `UpdatePaymentPlan` | `sales-invoice/paymentPlan`, `purchase-invoice/paymentPlan`, `updatePaymentPlan` | **Hidden** (`actions.hidden`) | A Classic process (`AD_PROCESS` `UpdatePaymentPlan`, parameters `DueDate` and `FIN_Payment_Priority_ID`) that changes an installment's due date and payment priority; Classic does not display it on the Payment Plan tabs. Before it was hidden it was still callable (live, with a real installment id it failed with *id to load is required for loading*). The installments change only through the invoice's payments (`registerPayment`). |
+
+#### 4.12.45 Which Etendo this is, and how the tools fit: server `instructions` and `etendo_how_to` (ETP-6421)
+
+Asked "where do I manage price lists in Etendo?", models answered with Etendo Classic menu paths (the
+SmartClient ERP, which their training knows), not the web app this server belongs to, and nothing gave
+them an overview of the tools. Two channels now carry it (`McpHowToTool`):
+
+- `PRODUCT`: it is the web app, not Etendo Classic; never guide with Classic or Openbravo menu paths; to
+  say where something is done, call `etendo_discover` and give the user `windowName` and `windowUrl`
+  (§4.12.2); say so when the tools do not show it.
+- `USAGE`: how the tools are used, in task order: context (`etendo_whoami`), find (`etendo_discover`,
+  `etendo_vector_search`), understand a spec (`etendo_schema`, `view:'actions'`, `etendo_selectors`,
+  `etendo_defaults`), read (`etendo_list`, `etendo_get`), write (`etendo_create` with `parentId`,
+  `etendo_update` after `etendo_get`, `etendo_delete`, `etendo_action`, `etendo_batch` +
+  `etendo_job_status`), documents and reports; rules (never invent ids, read the error, confirm an
+  irreversible step the user did not ask for, `etendo_feedback`, `docs` topic `mcp`).
+- `ROUTINES`, only where `etendo_routine` is offered (`mcp-routines` flag, `McpRoutinesFlag`): run a saved
+  routine that fits, use `exec` for a known multi-step flow, and after a repeated flow OFFER to save it
+  (`save` with `fromExecution`), never without the user's OK.
+
+The `docs` tool description no longer sends the agent there "before answering questions about Etendo":
+it is for concepts and this API's reference (topic `mcp`), not for where a screen is, since parts of the
+documentation describe Etendo Classic.
+
+- **Server `instructions`** (`INSTRUCTIONS` = `PRODUCT` + a pointer to `etendo_how_to`, saying routines are
+  expected to be reused when `etendo_routine` is listed), in the `initialize` result and at the top level
+  of `server/discover`. Claude Code, ChatGPT and Cursor put it in the model's context at connection. The
+  essentials are in the first 512 characters (OpenAI's guidance) and the whole text stays under Claude
+  Code's 2 KB cut. It is the same for every caller (`server/discover` is public and cached), so the
+  routines part is conditional on the tool being listed instead of on the flag.
+- **Tool `etendo_how_to`**, for clients that ignore `instructions`. Claude desktop and claude.ai drop
+  them (anthropics/claude-ai-mcp#93, open in 2026-11) and show the model only deferred tool names until it
+  searches, so the name is the only signal. In a name test (simulated deferred list, two Claude models,
+  "how/where do I … in Etendo" questions), the model looked up `etendo_how_to` first in 41 of 42 runs;
+  `etendo_start_here` in 14, `etendo_help` in 27, and with no such tool it answered from memory in 39.
+  - No arguments (any is refused), read scope, read-only/idempotent hints, first in `tools/list`.
+  - Returns `{product, usage, routines?, appUrl?}`. `routines` (flag on) is `{guide, yours, more?}`:
+    `yours` lists the caller's saved routines by name and description, at most 20, `more` counts the
+    rest; a failed lookup leaves `yours` out and keeps the guide. `appUrl` is the instance's app base
+    URL when configured.
+  - Its description names routines only when the flag is on (`tools/list` is per caller).
+  - Its `tools/list` entry carries `_meta: {"anthropic/alwaysLoad": true}`, so Claude Code loads it with
+    the session instead of deferring it. claude.ai ignores the flag today (anthropics/claude-ai-mcp#1105).
+  - Telemetry verb `how_to`.
+- Nothing reaches a claude.ai/desktop model that answers without searching any tool; the connector's
+  display name, chosen by the user, is the only text it sees up front.

@@ -511,7 +511,8 @@ public class RemittanceFileGeneratorIntegrationTest extends WeldBaseTest {
     assertEquals("the payee's IBAN is untouched", List.of(PARTNER_IBAN),
         values(doc, "CdtTrfTxInf", "CdtrAcct", "Id", "IBAN"));
     assertTrue(values(doc, "PmtInf", "PmtTpInf", "LclInstrm", "Cd").isEmpty());
-    assertFalse(xml, xml.contains("B2B"));
+    // As an element value: random hex ids such as EndToEndId can contain "B2B" by chance.
+    assertFalse(xml, xml.contains(">B2B<"));
     assertFalse(xml, xml.contains(OWN_CREDITOR_ID));
     assertNull(xml, jdkSchemaFailure(xsdOf(RemittanceSepaFileSetup.CLASS_SCT, "pain.001.001.09"),
         xml));

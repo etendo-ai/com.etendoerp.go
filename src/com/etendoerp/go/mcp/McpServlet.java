@@ -99,6 +99,8 @@ public class McpServlet extends HttpServlet {
   static final String META_CLIENT_INFO = "io.modelcontextprotocol/clientInfo";
   /** The handshake method: the one request that carries no {@code MCP-Protocol-Version}. */
   private static final String INITIALIZE = "initialize";
+  /** Tool {@code _meta} flag that makes Claude Code load the tool up front (ETP-6421). */
+  static final String ALWAYS_LOAD = "anthropic/alwaysLoad";
   /**
    * The 503 answer when the tenant of a credential cannot be judged: its role lookup or the
    * environment access check failed (ETP-5047). Retryable, so it says so.
@@ -892,6 +894,8 @@ public class McpServlet extends HttpServlet {
     result.put("protocolVersion", negotiated);
     result.put("capabilities", McpModernResults.capabilities());
     result.put("serverInfo", McpModernResults.serverInfo());
+    // ETP-6421: clients that read it (Claude Code, ChatGPT, Cursor) learn up front which Etendo this is.
+    result.put(McpModernResults.KEY_INSTRUCTIONS, McpHowToTool.INSTRUCTIONS);
     return result;
   }
 
@@ -944,6 +948,10 @@ public class McpServlet extends HttpServlet {
     toolJson.put("description", tool.getDescription());
     toolJson.put("inputSchema", mapToJsonObject(tool.getInputSchema()));
     toolJson.put("annotations", McpToolAnnotations.of(tool.getName()));
+    if (McpConstants.TOOL_NEO_HOW_TO.equals(tool.getName())) {
+      // ETP-6421: Claude Code loads it with the session instead of deferring it behind tool search.
+      toolJson.put(McpModernResults.META, new JSONObject().put(ALWAYS_LOAD, true));
+    }
     return toolJson;
   }
 
