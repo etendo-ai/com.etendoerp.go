@@ -29,8 +29,10 @@ import com.etendoerp.go.featureflags.GoFeatureFlags;
  * <b>off</b>. Never cached in a static: a targeting change applies to the next request.
  *
  * <p><b>Toggle points.</b> {@code ToolRegistry.generateTools} (whether {@code etendo_routine} is
- * listed) and {@code McpToolRouter} (whether a call to it is routed). With the flag off the MCP is
- * as before ETP-6236; the routine tables and their rows stay.
+ * listed, and whether {@code etendo_how_to}'s description names routines), {@code McpToolRouter}
+ * (whether a call to it is routed) and {@code McpHowToTool.handle} (whether its answer carries the
+ * routines guide and the caller's routines). With the flag off the MCP is as before ETP-6236; the
+ * routine tables and their rows stay.
  */
 public final class McpRoutinesFlag {
 

@@ -126,7 +126,7 @@ class McpToolAnnotationsTest {
   @Test
   void onlyHowToAsksClaudeCodeToLoadItUpFront() throws Exception {
     McpServlet servlet = new McpServlet();
-    JSONObject howTo = servlet.describeTool(McpHowToTool.definition(), "en_US");
+    JSONObject howTo = servlet.describeTool(McpHowToTool.definition(false), "en_US");
     assertTrue(howTo.getJSONObject("_meta").getBoolean("anthropic/alwaysLoad"));
     JSONObject get = servlet.describeTool(new McpToolDefinition("etendo_get", "Get a record",
         Map.of("type", "object")), "en_US");
