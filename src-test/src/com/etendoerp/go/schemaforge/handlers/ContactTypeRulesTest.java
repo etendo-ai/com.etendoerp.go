@@ -455,7 +455,8 @@ class ContactTypeRulesTest {
     JSONObject body = new JSONObject().put("searchKey", "CLI").put("name", name)
         .put("etgoIscustomer", true);
 
-    NeoResponse response = new BusinessPartnerCategoryHandler().handle(crudContext(method, body, null));
+    NeoResponse response =
+        new BusinessPartnerCategoryHandler().handle(crudContext(method, body, null));
 
     assertRejected(response, ContactCategoryRequiredFields.MSG_NAME_REQUIRED);
     verify(conn, never()).prepareStatement(anyString());

@@ -109,7 +109,7 @@ class ContactCategoryRequiredFieldsTest {
   }
 
   @Test
-  void createMissingBothNamesBothFields() throws Exception {
+  void createMissingBothFieldsNamesBoth() throws Exception {
     assertMissing(ContactCategoryRequiredFields.validate(crud("POST", new JSONObject())),
         "searchKey", "name");
   }
