@@ -409,7 +409,7 @@ The header matters: without it Tomcat reads the body as form data and the servle
   runs: HTTP 500 with `{"message": "Missing parameter: …"}`, not an `error` key.
 - Validated before anything is written; a failure answers `error` and writes nothing:
   `cell` `^Celula[A-Za-z]+$`, `assignee` a GitHub login `^[A-Za-z0-9-]{1,39}$`, `issue`
-  `^https://github\.com/etendosoftware/[A-Za-z0-9._-]+/issues/\d+$`, `task` (when sent)
+  `^https://github\.com/(etendo-ai|etendosoftware)/[A-Za-z0-9._-]+/issues/\d+$`, `task` (when sent)
   `^[A-Z][A-Z0-9]+-\d+$`, and each value within its column width.
 - One `UPDATE` sets the four `Triage_*` columns, `Triaged = now()`, `Updated = now()` and
   `UpdatedBy` = the bot's user, conditioned on `row_type = 'feedback' AND triaged IS NULL`. A
