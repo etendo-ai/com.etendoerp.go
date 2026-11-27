@@ -171,7 +171,8 @@ public class ReturnMaterialReceiptHeaderHandler extends AbstractReturnDocumentHe
         "Creates the factura rectificativa (corrective sales invoice, ARI rectificative) of a "
             + "completed return receipt, links it to the invoices it rectifies and confirms it: "
             + "the invoice is left COMPLETED. Confirming the return does NOT do this; it is this "
-            + "separate call. Refused with 400 when the receipt is not completed. A second call "
+            + "separate call. Refused with 400 when the receipt is not completed (except a "
+            + "validateOnly dry run on a draft). A second call "
             + "is always refused with 409 returnInvoiceAlreadyExists, creating nothing, "
             + "when the return already has a non-voided factura rectificativa (one per return, "
             + "as on the screen; see hasReturnInvoice in rectifiableInvoices or returnInvoices on "
@@ -186,7 +187,8 @@ public class ReturnMaterialReceiptHeaderHandler extends AbstractReturnDocumentHe
         NeoActionContract.Param.array("originInvoices", NeoActionContract.TYPE_STRING, false,
             "Ids of the invoices it rectifies, from rectifiableInvoices. Default: the invoice "
                 + "auto-detected from the returned shipment lines; refused when none is found."),
-        InvoiceSifPreset.sifFieldsParam(true))
+        InvoiceSifPreset.sifFieldsParam(true),
+        ReturnInvoiceSupport.validateOnlyParam())
         .withIdDescription("The id of the completed return receipt.")
         .availableWhen(DocumentAvailability.WHEN_COMPLETED));
     // ETP-6179: the SIF fields the factura rectificativa would get (R1 preselected as the
@@ -441,7 +443,11 @@ public class ReturnMaterialReceiptHeaderHandler extends AbstractReturnDocumentHe
         if (receipt == null) {
           return NeoResponse.error(HttpServletResponse.SC_NOT_FOUND, "Receipt not found");
         }
-        if (!"CO".equals(receipt.getDocumentStatus())) {
+        // ETP-6179 CP-12: a dry run (validateOnly) is asked BEFORE confirming the return, so the
+        // SPA never confirms one whose rectificativa would then be refused.
+        boolean dryRunOnDraft = ReturnInvoiceSupport.isValidateOnly(context.getRequestBody())
+            && "DR".equals(receipt.getDocumentStatus());
+        if (!"CO".equals(receipt.getDocumentStatus()) && !dryRunOnDraft) {
           return NeoResponse.error(HttpServletResponse.SC_BAD_REQUEST,
               "Receipt must be completed before creating a return invoice");
         }
@@ -465,7 +471,7 @@ public class ReturnMaterialReceiptHeaderHandler extends AbstractReturnDocumentHe
         // had, the zero-amount refusal, then create, link and confirm — in that order, see the
         // shared body.
         return ReturnInvoiceSupport.createReturnInvoice(receipt, receiptId, lines, docType,
-            new ReturnInvoiceSupport.ReturnInvoiceKind(true, acceptsAllowDuplicate()), context,
+            new ReturnInvoiceSupport.ReturnInvoiceKind(true, acceptsAllowDuplicate(), true), context,
             createDraftInvoiceHandler);
 
       } finally {

@@ -27,7 +27,6 @@ import org.apache.logging.log4j.Logger;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.base.exception.OBException;
-import org.openbravo.base.session.OBPropertiesProvider;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.common.currency.Currency;
@@ -225,13 +224,16 @@ final class PisPaymentBridge {
    * from Tomcat itself, so it cannot be doubled, and the host is whatever the proxy is publishing.
    *
    * <p><b>Why not the configured base URL alone.</b> {@link BankIntegrationUrlUtils#buildBaseUrl()}
-   * composes {@code context.url} with {@code context.name}. That holds for PSD2's own convention
-   * ({@code context.url} = bare server, as its README documents), but Etendo's own
-   * {@code Openbravo.properties.template} ships {@code context.url} WITH the context path — and on
-   * a server configured that way the result repeats it, so Salt Edge was sent to
-   * {@code https://host/etendo/etendo/sws/pis-return}. That path matches no servlet mapping and the
-   * user landed on Etendo's generic error page after paying (ETP-4895). PSD2's helper is shared
-   * with Classic and keeps its convention untouched; the collapse below is applied on this side.
+   * only knows what {@code context.url} / {@code context.name} say, and {@code context.url} is often
+   * the internal backend address rather than the host the proxy publishes. The request knows the
+   * public host a bank can actually redirect the browser to; the properties do not.
+   *
+   * <p>The context path itself is no longer a reason: PSD2 >= 2.3.1 (Issue #151) appends
+   * {@code context.name} only when {@code context.url} does not already end with it, so a server
+   * configured as Etendo's {@code Openbravo.properties.template} documents ({@code context.url}
+   * WITH the context path) no longer gets it repeated. Before that, Salt Edge was sent to
+   * {@code https://host/etendo/etendo/sws/pis-return} and Etendo Go collapsed the repetition on
+   * its side (ETP-4895); that workaround was removed once PSD2 fixed it at the source (ETP-6463).
    *
    * <p>The configured base URL is still the fallback, for a request that cannot say where it is
    * publicly reachable — behind a proxy that forwards no {@code X-Forwarded-*}, Tomcat sees its own
@@ -239,8 +241,7 @@ final class PisPaymentBridge {
    */
   private static String resolveBackendReturnUrl(HttpServletRequest request) {
     String fromRequest = publicBaseFromRequest(request);
-    String base = fromRequest != null ? fromRequest
-        : collapseRepeatedContext(BankIntegrationUrlUtils.buildBaseUrl());
+    String base = fromRequest != null ? fromRequest : BankIntegrationUrlUtils.buildBaseUrl();
     String returnUrl = StringUtils.removeEnd(base, "/") + PIS_RETURN_SERVLET_PATH;
     // One line per initiated transfer (a handful a day), and the only way to tell from a server's
     // logs which of the two branches produced the address the bank was given.
@@ -307,27 +308,6 @@ final class PisPaymentBridge {
       return false;
     }
     return StringUtils.contains(name, ".");
-  }
-
-  /**
-   * Undoes the context path {@link BankIntegrationUrlUtils#buildBaseUrl()} repeats when
-   * {@code context.url} already ends with {@code context.name}.
-   *
-   * <p>Deliberately narrow: it collapses only a base ending in exactly
-   * {@code /<context.name>/<context.name>}, the one shape that composition can produce. Anything
-   * else is passed through untouched, so a deployment that genuinely nests a path is not mangled.
-   */
-  private static String collapseRepeatedContext(String baseUrl) {
-    String name = StringUtils.trimToNull(
-        OBPropertiesProvider.getInstance().getOpenbravoProperties().getProperty("context.name"));
-    if (name == null || baseUrl == null) {
-      return baseUrl;
-    }
-    String bare = StringUtils.stripStart(name, "/");
-    String doubled = "/" + bare + "/" + bare;
-    return StringUtils.endsWith(baseUrl, doubled)
-        ? StringUtils.removeEnd(baseUrl, "/" + bare)
-        : baseUrl;
   }
 
   /**

@@ -485,10 +485,10 @@ public class Fiscal390SubmissionSupportTest {
     when(service.hasOrgCertificate(any())).thenReturn(false);
     String[][] cases = {
         { "es_ES", "Esta organización no tiene un certificado configurado. Sube uno desde "
-            + "Configuración fiscal antes de presentar en producción (el modo de prueba no "
-            + "requiere certificado)." },
-        { "en_US", "This organization has no certificate configured. Upload one from Fiscal "
-            + "configuration before submitting in production (test mode does not require a "
+            + "Impuestos → Configuración Fiscal antes de presentar en producción (el modo de "
+            + "prueba no requiere certificado)." },
+        { "en_US", "This organization has no certificate configured. Upload one from Taxes → Fiscal "
+            + "Configuration before submitting in production (test mode does not require a "
             + "certificate)." } };
     for (String[] c : cases) {
       Language language = mock(Language.class);

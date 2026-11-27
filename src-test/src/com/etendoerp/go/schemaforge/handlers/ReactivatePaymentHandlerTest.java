@@ -27,6 +27,7 @@ import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -45,6 +46,7 @@ import javax.servlet.http.HttpServletResponse;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
+import org.hibernate.criterion.Criterion;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -72,7 +74,10 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentPropDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FIN_Reconciliation;
+import org.openbravo.module.remittance.Remittance;
+import org.openbravo.module.remittance.RemittanceLine;
 
+import com.etendoerp.go.schemaforge.InvoiceRemittance;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoEndpointType;
 import com.etendoerp.go.schemaforge.NeoResponse;
@@ -2041,6 +2046,173 @@ public class ReactivatePaymentHandlerTest {
       assertEquals(STATUS_RECONCILED, sc.status);
       assertFalse(normalizedAnything(reconHandlers));
       verify(sc.line, never()).setMatchingtype(Mockito.<String>any());
+    }
+  }
+
+  // ── ETP-6247: a payment of a confirmed remittance (REM_SENT) belongs to the remittance ──
+
+  private static final String REMITTED_PAYMENT = "pay-rem";
+
+  /**
+   * Runs {@code ctx} on an own payment in {@code status}; a remittance line points at it. The
+   * caller keeps the button-action and removal mocks open, so it can verify nothing was delegated.
+   */
+  @SuppressWarnings("unchecked")
+  private static NeoResponse runOnPaymentInStatus(NeoContext ctx, String status,
+      OBDal[] dalOut) {
+    FIN_Payment payment = processedPayment(REMITTED_PAYMENT, status);
+    Remittance remittance = mock(Remittance.class);
+    when(remittance.getId()).thenReturn("rem-1");
+    when(remittance.getDocumentNo()).thenReturn("REM-0042");
+    RemittanceLine line = mock(RemittanceLine.class);
+    when(line.getRemittance()).thenReturn(remittance);
+    OBCriteria<RemittanceLine> lineCrit = mock(OBCriteria.class);
+    when(lineCrit.add(any(Criterion.class))).thenReturn(lineCrit);
+    when(lineCrit.uniqueResult()).thenReturn(line);
+    try (MockedStatic<OBDal> obDalMock = Mockito.mockStatic(OBDal.class);
+        MockedStatic<OBContext> ctxMock = Mockito.mockStatic(OBContext.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalOut[0] = dal;
+      obDalMock.when(OBDal::getInstance).thenReturn(dal);
+      when(dal.get(FIN_Payment.class, REMITTED_PAYMENT)).thenReturn(payment);
+      when(dal.createCriteria(RemittanceLine.class)).thenReturn(lineCrit);
+      return new ReactivatePaymentHandler().handle(ctx);
+    }
+  }
+
+  private static void assertRefusedAsInRemittance(NeoResponse result) throws JSONException {
+    assertNotNull(result);
+    assertEquals(422, result.getHttpStatus());
+    JSONObject error = result.getBody().getJSONObject("error");
+    assertEquals(InvoiceRemittance.MSG_PAYMENT_IN_REMITTANCE,
+        error.getJSONArray("messageKeys").getString(0));
+    assertEquals("rem-1", error.getString(InvoiceRemittance.KEY_REMITTANCE_ID));
+    assertEquals("REM-0042", error.getString(InvoiceRemittance.KEY_REMITTANCE_DOCUMENT_NO));
+    assertTrue(error.getString("message").contains("REM-0042"));
+  }
+
+  @Test
+  public void reactivateRefusesARemittedPayment() throws Exception {
+    OBDal[] dal = new OBDal[1];
+    try (MockedStatic<NeoButtonActionHelper> buttons =
+             Mockito.mockStatic(NeoButtonActionHelper.class);
+        MockedStatic<FIN_Utility> util = Mockito.mockStatic(FIN_Utility.class)) {
+      NeoResponse result = runOnPaymentInStatus(actionCtx(REACTIVATE_ACTION, REMITTED_PAYMENT),
+          InvoiceRemittance.STATUS_REMITTED, dal);
+
+      assertRefusedAsInRemittance(result);
+      buttons.verify(() -> NeoButtonActionHelper.executeButtonActionCore(any(), anyString(),
+          anyString(), any()), never());
+      verify(dal[0], never()).save(any());
+      // The ownership 404 and the remittance 422 are decided on one load of the payment.
+      verify(dal[0], times(1)).get(FIN_Payment.class, REMITTED_PAYMENT);
+    }
+  }
+
+  /**
+   * ETP-6247 — a voided payment (e.g. undone by a remittance return) cannot be reactivated, as in
+   * Classic, which offers no action on it. Refused with a keyed 422 on the same single load,
+   * before any remittance lookup, and nothing is delegated or written.
+   */
+  @Test
+  public void reactivateRefusesAVoidedPayment() throws Exception {
+    OBDal[] dal = new OBDal[1];
+    try (MockedStatic<NeoButtonActionHelper> buttons =
+             Mockito.mockStatic(NeoButtonActionHelper.class);
+        MockedStatic<FIN_Utility> util = Mockito.mockStatic(FIN_Utility.class)) {
+      NeoResponse result = runOnPaymentInStatus(actionCtx(REACTIVATE_ACTION, REMITTED_PAYMENT),
+          "RPVOID", dal);
+
+      assertNotNull(result);
+      assertEquals(422, result.getHttpStatus());
+      JSONObject error = result.getBody().getJSONObject("error");
+      assertEquals(ReactivatePaymentHandler.MSG_PAYMENT_VOID_NOT_REACTIVABLE,
+          error.getJSONArray("messageKeys").getString(0));
+      // Resolved from the neo_hints catalog, never the bare key.
+      String message = error.getString("message");
+      assertFalse(message.isEmpty());
+      assertFalse(ReactivatePaymentHandler.MSG_PAYMENT_VOID_NOT_REACTIVABLE.equals(message));
+      buttons.verify(() -> NeoButtonActionHelper.executeButtonActionCore(any(), anyString(),
+          anyString(), any()), never());
+      verify(dal[0], never()).save(any());
+      verify(dal[0], never()).createCriteria(RemittanceLine.class);
+      verify(dal[0], times(1)).get(FIN_Payment.class, REMITTED_PAYMENT);
+    }
+  }
+
+  /**
+   * An unknown id is answered with the ownership 404 by the same single load that would have
+   * found a remitted payment: no remittance lookup, nothing delegated.
+   */
+  @Test
+  public void reactivateOfAMissingPaymentAnswers404OnASingleLoad() throws Exception {
+    try (MockedStatic<NeoButtonActionHelper> buttons =
+             Mockito.mockStatic(NeoButtonActionHelper.class);
+        MockedStatic<FIN_Utility> util = Mockito.mockStatic(FIN_Utility.class);
+        MockedStatic<OBDal> obDalMock = Mockito.mockStatic(OBDal.class);
+        MockedStatic<OBContext> ctxMock = Mockito.mockStatic(OBContext.class)) {
+      OBDal dal = mock(OBDal.class);
+      obDalMock.when(OBDal::getInstance).thenReturn(dal);
+      when(dal.get(FIN_Payment.class, "pay-missing")).thenReturn(null);
+
+      NeoResponse result =
+          new ReactivatePaymentHandler().handle(actionCtx(REACTIVATE_ACTION, "pay-missing"));
+
+      assertNotNull(result);
+      assertEquals(404, result.getHttpStatus());
+      assertEquals("Payment not found: pay-missing",
+          result.getBody().getJSONObject("error").getString("message"));
+      verify(dal, times(1)).get(FIN_Payment.class, "pay-missing");
+      verify(dal, never()).createCriteria(RemittanceLine.class);
+      buttons.verify(() -> NeoButtonActionHelper.executeButtonActionCore(any(), anyString(),
+          anyString(), any()), never());
+    }
+  }
+
+  @Test
+  public void reactivateOfANonRemittedPaymentStillDelegates() throws Exception {
+    OBDal[] dal = new OBDal[1];
+    try (MockedStatic<NeoButtonActionHelper> buttons =
+             Mockito.mockStatic(NeoButtonActionHelper.class);
+        MockedStatic<FIN_Utility> util = Mockito.mockStatic(FIN_Utility.class)) {
+      buttons.when(() -> NeoButtonActionHelper.executeButtonActionCore(any(), anyString(),
+          anyString(), any())).thenReturn(NeoResponse.ok(new JSONObject()));
+
+      NeoResponse result = runOnPaymentInStatus(actionCtx(REACTIVATE_ACTION, REMITTED_PAYMENT),
+          "RPR", dal);
+
+      assertEquals(200, result.getHttpStatus());
+      buttons.verify(() -> NeoButtonActionHelper.executeButtonActionCore(any(),
+          Mockito.eq(REMITTED_PAYMENT), Mockito.eq(REACTIVATE_ACTION), any()));
+      // The remittance is only looked up for a REM_SENT payment.
+      verify(dal[0], never()).createCriteria(RemittanceLine.class);
+    }
+  }
+
+  @Test
+  public void restRemoveRefusesARemittedPayment() throws Exception {
+    OBDal[] dal = new OBDal[1];
+    try (MockedStatic<PaymentRemovalUtil> removal = Mockito.mockStatic(PaymentRemovalUtil.class)) {
+      NeoResponse result = runOnPaymentInStatus(removeActionCtx(REMITTED_PAYMENT),
+          InvoiceRemittance.STATUS_REMITTED, dal);
+
+      assertRefusedAsInRemittance(result);
+      removal.verifyNoInteractions();
+    }
+  }
+
+  @Test
+  public void mcpRemoveRefusesARemittedPayment() throws Exception {
+    OBDal[] dal = new OBDal[1];
+    try (MockedStatic<PaymentRemovalUtil> removal = Mockito.mockStatic(PaymentRemovalUtil.class);
+        MockedStatic<PisDeferredPaymentService> pis =
+            Mockito.mockStatic(PisDeferredPaymentService.class)) {
+      NeoResponse result = runOnPaymentInStatus(mcpRemoveCtx(REMITTED_PAYMENT),
+          InvoiceRemittance.STATUS_REMITTED, dal);
+
+      assertRefusedAsInRemittance(result);
+      removal.verifyNoInteractions();
+      pis.verifyNoInteractions();
     }
   }
 

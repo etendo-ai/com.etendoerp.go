@@ -177,7 +177,6 @@ Declare every flag's key as a constant on `GoFeatureFlags` and add its row here.
 | `bp-portal-link` | `etendo.go.flags.bp-portal-link` | `ETGO_FLAG_BP_PORTAL_LINK` | absent ⇒ **`false`** |
 | `environment-access-enforcement-off` | `etendo.go.flags.environment-access-enforcement-off` | `ETGO_FLAG_ENVIRONMENT_ACCESS_ENFORCEMENT_OFF` | absent ⇒ **`false`** = enforcing (an OFF switch — see its section below) |
 | `onboarding-tenant-pool` | `etendo.go.flags.onboarding-tenant-pool` | `ETGO_FLAG_ONBOARDING_TENANT_POOL` | absent ⇒ **`false`** |
-| `mcp-modern-era-disabled` | `etendo.go.flags.mcp-modern-era-disabled` | `ETGO_FLAG_MCP_MODERN_ERA_DISABLED` | absent ⇒ **`false`** (dual-era on) |
 | `batch-callout-skip-disabled` | `etendo.go.flags.batch-callout-skip-disabled` | `ETGO_FLAG_BATCH_CALLOUT_SKIP_DISABLED` | absent ⇒ **`false`** (opt-in skip honoured) |
 | `contact-category-type` | `etendo.go.flags.contact-category-type` | `ETGO_FLAG_CONTACT_CATEGORY_TYPE` | absent ⇒ **`false`** (pre-ETP-5791 contact behaviour); per account on a hosted arm only — see its section below |
 | `billing-reconciliation-schedule` | `etendo.go.flags.billing-reconciliation-schedule` | `ETGO_FLAG_BILLING_RECONCILIATION_SCHEDULE` | absent ⇒ **`false`** (no schedule is planted) |
@@ -188,9 +187,10 @@ Declare every flag's key as a constant on `GoFeatureFlags` and add its row here.
 | `product-movements-tab` | `etendo.go.flags.product-movements-tab` | `ETGO_FLAG_PRODUCT_MOVEMENTS_TAB` | absent ⇒ **`false`** (no Movements tab on the Product window; placeholder TTL 2027-01-31) |
 | `bank-bounce-suggestions` | `etendo.go.flags.bank-bounce-suggestions` | `ETGO_FLAG_BANK_BOUNCE_SUGGESTIONS` | absent ⇒ **`false`** (no bounce-pair suggestions and discarded lines not honoured: Etendo as before ETP-5581; per account on a hosted arm only; placeholder TTL 2026-12-31). Registered before any code reads it — see its section below |
 | `sepa-remittances` | `etendo.go.flags.sepa-remittances` | `ETGO_FLAG_SEPA_REMITTANCES` | absent ⇒ **`false`** (no SEPA remittances: settings and the `remittance` spec refused, mandate keys dropped; per account on a hosted arm only; TTL 2027-03-31, provisional) — see its section below |
-| `sii-import-dua` | `etendo.go.flags.sii-import-dua` | `ETGO_FLAG_SII_IMPORT_DUA` | absent ⇒ **`false`** (no imports with DUA: purchase-invoice tax-line writes and `siiDeferredVat` refused with 403 `feature_disabled`; per account on a hosted arm only; TTL 2027-03-31, placeholder) — see its section below |
+| `sii-import-dua` | `etendo.go.flags.sii-import-dua` | `ETGO_FLAG_SII_IMPORT_DUA` | absent ⇒ **`false`** (no imports with DUA: turning `etgoImportDua` on, purchase-invoice tax-line writes and `siiDeferredVat` refused with 403 `feature_disabled`; per account on a hosted arm only; TTL 2027-03-31, placeholder) — see its section below |
 | `psd2-statement-import-settings` | `etendo.go.flags.psd2-statement-import-settings` | `ETGO_FLAG_PSD2_STATEMENT_IMPORT_SETTINGS` | absent ⇒ **`false`** (PSD2 import settings, `maxFetchInterval` on `accounts` and deleting statements of connected accounts all as before ETP-6151; per account on a hosted arm only; placeholder TTL 2026-12-31). Registered before any code reads it — see its section below |
-| `mcp-routines` | `etendo.go.flags.mcp-routines` | `ETGO_FLAG_MCP_ROUTINES` | absent ⇒ **`false`** (`etendo_routine` neither listed nor routed: the MCP as before ETP-6236; per account on a hosted arm only; placeholder TTL 2027-03-31) — see its section below |
+| `currency-conversion-v2` | `etendo.go.flags.currency-conversion-v2` | `ETGO_FLAG_CURRENCY_CONVERSION_V2` | absent ⇒ **`false`** (Currency Conversion as before ETP-6365: read-only; the manual rate writes, their preview and delete refused with 403 `feature_disabled`; per account on a hosted arm only; TTL 2027-03-31, placeholder) — see its section below |
+| `mcp-routines` | `etendo.go.flags.mcp-routines` | `ETGO_FLAG_MCP_ROUTINES` | absent ⇒ **`false`** (`etendo_routine` neither listed nor routed: the MCP as before ETP-6236; per account on a hosted arm only; TTL 2026-12-01) — see its section below |
 | *(pattern for a new flag)* | `etendo.go.flags.<key>` | `ETGO_FLAG_<KEY>` | absent ⇒ **`false`** |
 
 `bp-portal-link` (ETP-5267, extended in ETP-6209) decides whether a sales document email —
@@ -226,10 +226,10 @@ Product window. One evaluator only, the backend: `ProductMovementsPolicy` evalua
 publishes the answer as `capabilities.productMovements`, and the tab reads that capability. The
 browser never evaluates the flag, so a rule on email, tenant or percentage cannot make the two ends
 disagree; a change reaches a user when the access map is next loaded. `ProductTransactionsHandler`
-asks the same policy before adding `etgoStockAfter` and `etgoProcessTime`. A request with no account is
+asks the same policy before adding `etgoStockAfter` and `etgoProcessTime`, and `ProductStockWarehouseHandler` (the `product/stock` rows, bound by `@NeoExtension`) before adding `etgoUomSymbol`, the `C_UOM.UOMSymbol` of the product's unit that the side panel prints after each quantity (left out when the UOM has no symbol). A request with no account is
 evaluated account-less and gets the default (off). Only behaviour is gated: the stored computed
 columns of `M_Transaction`, their triggers and the `ETGO_SF_*` configuration ship unconditionally, so
-run `update.database` and check `ad_scd_check` = 0 before targeting any account. The flag is not access control: with it off the `/transactions` rows (and the new `etgoWarehouse`, `etgoDocKind` and `etgoDocHeaderId` fields) stay readable under the role's entity and organization access; it only withholds `etgoStockAfter` and `etgoProcessTime` and hides the tab.
+run `update.database` and check `ad_scd_check` = 0 before targeting any account. The flag is not access control: with it off the `/transactions` rows (and the new `etgoWarehouse`, `etgoDocKind` and `etgoDocHeaderId` fields) stay readable under the role's entity and organization access; it only withholds `etgoStockAfter`, `etgoProcessTime` and `etgoUomSymbol` and hides the tab.
 
 `etgoProcessTime` is the time of day under each movement's date: `M_TRANSACTION.TRXPROCESSDATE` (timestamp without time zone, the server wall clock) as an ISO local date-time string `yyyy-MM-ddTHH:mm:ss`, fractions dropped and no time-zone conversion. It comes from the same statement as `etgoStockAfter` (no extra query), is display only (it changes neither ordering nor any other field), and is absent from a row with no process date.
 
@@ -315,14 +315,14 @@ The backend targets on the **account email**. A web client must use the same val
 will bucket the same user differently. **This is not resolved on the client side**, deliberately.
 
 The client does not persist the account email. The only account identity it stores (`sf_auth_user`)
-is written by `buildEnvironmentSessionStorage` in `@etendosoftware/etendo-go-core` as
+is written by `buildEnvironmentSessionStorage` in `@etendo-ai/etendo-go-core` as
 `env.adminUserName || env.adminUser` — the **ERP admin username of the selected environment**.
 Targeting on that would silently disagree with the backend.
 
 The backend now returns the account email at the top level of `GET /sws/go/environments` (see §3).
 That is necessary but **not sufficient**, for two reasons found during integration:
 
-1. **The core helper discards it.** `fetchEnvironments` in `@etendosoftware/etendo-go-core` ends with
+1. **The core helper discards it.** `fetchEnvironments` in `@etendo-ai/etendo-go-core` ends with
    `return data.environments || []`, so anything outside that array never reaches the caller. Reading
    `accountEmail` requires a direct `fetch` rather than the helper — which is the default path.
 2. **Scope mismatch.** The OpenFeature evaluation context has to be set **app-wide at bootstrap**,
@@ -573,24 +573,13 @@ claim never touches the pool and the filler run does nothing — onboarding is b
 classic path. The pool size and the other knobs are plain runtime properties, not flags. Full
 reference: [`onboarding-flow.md`](onboarding-flow.md), "Tenant pool".
 
-### `mcp-modern-era-disabled` (ETP-5640) — backend-only kill switch, inverted
-
-Turns off the stateless MCP era (spec 2026-07-28) on `/sws/mcp`: `true` makes `server/discover`
-answer `-32601` again and serves every request under the `initialize`-based era, exactly as before
-ETP-5640. **Inverted on purpose**: every flag resolves to `false` when it is missing or the control
-plane is unreachable, and that must leave the server dual-era rather than switch it off. Environment
-level only (evaluated with an empty context) — never target it per account, because MCP clients
-cache the era per origin and one origin serves every tenant. Its only caller is
-`McpRequestEra.modernEnabled()`. Retire it, keeping the modern path, once the modern era is stable in
-production. Full reference: [`neo-headless.md`](neo-headless.md) §4.12.30.
-
 ### `batch-callout-skip-disabled` (ETP-5676) — backend-only kill switch, inverted
 
 Turns off the per-batch redundant-callout skip: `true` makes every `/sws/neo/batch` and
 `etendo_batch` request run every create-cascade callout, even one sent with
 `_skipRedundantCallouts: true`. Unset or `false` honours that opt-in; a batch without it never
-skips anything either way. Inverted for the same reason as `mcp-modern-era-disabled`: a missing
-flag or an unreachable control plane must not change behaviour. Environment level (empty context),
+skips anything either way. **Inverted on purpose**: every flag resolves to `false` when it is missing
+or the control plane is unreachable, and that must not change behaviour. Environment level (empty context),
 evaluated once per batch; its only caller is `NeoBatchScope.calloutSkipKillSwitchOn()`. Retire it,
 keeping the skip, once the skip has run on real tenant imports without a wrong default. Full
 reference: [`neo-headless.md`](neo-headless.md) §4.3.6.
@@ -881,7 +870,13 @@ refusal to change a Bank account with open remittances to another type
 (`ETGO_RemittanceAccountTypeChangeBlocked`: the remittances exist whatever the flag says now) and
 the deactivation of its remittance-method links when it leaves Bank with none open. An
 observer cannot read a per-account flag, and remittance methods only exist where the flag was on.
-The module adds no column for remittances.
+Nor the **invoice side of a confirmed remittance** (ETP-6247, `InvoiceRemittance`, `neo-headless.md`
+§4.6c): the stored computed column `C_Invoice.EM_ETGO_Remitted_Amt`, the paymentPlan
+`remittedAmount`/`payableAmount`, the `ETGO_InvoiceInRemittance` / `ETGO_PaymentInRemittance`
+refusals and the `invoicePayments` remittance keys. They read `REM_SENT` payments, which exist only
+where a remittance was confirmed (flag on, or Classic); gating them would re-open the double
+collection for a tenant whose flag was switched off after remitting.
+That invoice column is the only one the module adds for remittances.
 The remittance status is not this module's: `REM_REMITTANCE.REMITTANCE_STATUS` (list
 `REM_RemittanceStatus`: `PE` pending, `PR` processed, `CT`/`PT` collected/paid, `CP`/`PP`
 partially, `AN` voided) is the remittance module's `REMITTANCE_STATUS` (added by ETP-6148), owned
@@ -935,7 +930,7 @@ product decision; none exists today.
 
 ### `sii-import-dua` (ETP-6284) — backend-only, per account, off by default
 
-Gates purchase-invoice **imports with DUA** for SII, never their schema. Positive polarity:
+Gates purchase-invoice **imports with DUA** (with or without SII), never their schema. Positive polarity:
 `true` = enabled. Default and every failure = `false`. One evaluator, `SiiImportDuaFlag`, at
 request entry: `FeatureFlagContext.forAccount(GoAccountResolver.currentAccountEmail())` plus the
 tenant as `clientId`; write Datadog/ConfigCat rules on the lowercase `email` attribute. Locally
@@ -947,13 +942,44 @@ MCP):
 - the writes (POST/PUT/PATCH/DELETE) on the purchase-invoice `tax` entity
   (`PurchaseInvoiceTaxExtension`, judged before any read);
 - the `siiDeferredVat` header action (`PurchaseInvoiceSiiDeferredVat`);
-- `SFWindowAccessMap`, which publishes `capabilities.siiImportDua` for the UI (the DUA and
-  import-taxes cards of the SIF tab, the deferred-VAT check, Confirm of an import invoice without
-  lines). The SPA never evaluates the flag and has no key for it.
+- a header write turning the "Importación con DUA" check on (`etgoImportDua`,
+  `PurchaseInvoiceImportDua`);
+- `SFWindowAccessMap`, which publishes `capabilities.siiImportDua` for the UI (the Lines-tab check
+  and its import block — DUA data and import tax lines —, the deferred-VAT check, the SIF tab's F5 auto-switch, Confirm
+  of an import invoice without lines). The SPA never evaluates the flag and has no key for it.
 
-**Not gated:** the reads of the tax entity, the header DUA fields (Classic columns),
-`hasManualTaxLines` and `aeatsiiFacturaIds` (the SII attachments of every record, for every
+**Not gated:** the reads of the tax entity, the header DUA fields (Classic columns), the DUA rule
+of an invoice whose check is already on, `hasManualTaxLines` and `aeatsiiFacturaIds` (the SII attachments of every record, for every
 invoice).
+
+### `currency-conversion-v2` (ETP-6365) — backend-only, per account, off by default
+
+Gates the **redesigned Currency Conversion window** (`conversion-rates`): the manual rates written
+through actions. Positive polarity: `true` = the redesign. Default and every failure = `false`, the
+window as it was before ETP-6365 (read-only). One evaluator, `CurrencyConversionV2Flag`, at request
+entry: `FeatureFlagContext.forAccount(GoAccountResolver.currentAccountEmail())`; write
+Datadog/ConfigCat rules on the lowercase `email` attribute. Locally
+`etendo.go.flags.currency-conversion-v2=true` / `ETGO_FLAG_CURRENCY_CONVERSION_V2=true` (Tomcat
+restart).
+
+**What it gates** (403 `feature_disabled`, `messageKeys = [ETGO_CurrencyConversionV2Disabled]`, on
+every channel — REST single, batch, MCP — because all of them reach the entity's customization,
+`ConversionRateHandler` (`@NeoExtension(spec = "conversion-rates", entity = "conversionRate")`); the
+list of gated requests is `ConversionRateFlagGate`):
+- the actions `createManualCurrency`, `createManualRate`, `updateManualRate` (each writes the rate
+  and its inverse) and their dry run `previewManualRate`;
+- `DELETE` of a rate (also the System-row delete answered by `refusalForReadOnlyTarget`) and any
+  generic `POST`/`PUT`/`PATCH`;
+- what the MCP is told: `actionContracts()` declares only the read actions while the flag is off,
+  so `etendo_schema(view:"actions")` and `etendo_discover` do not advertise the writes;
+- `SFWindowAccessMap`, which publishes `capabilities.currencyConversionV2`. The SPA route
+  `conversion-rates` renders the redesigned page when it is `true` and the generated read-only
+  window otherwise. The SPA never evaluates the flag and has no key for it.
+
+**Not gated:** the reads, `serverClock`, `currentRates`, `manualCurrencyOptions` and the
+`etgoRateStatus` column. **Known gap:** the entity's `DELETE` method comes from configuration
+(`ETGO_SF_ENTITY`), so `etendo_delete` still lists the spec while the flag is off; the call is
+refused with the 403 above.
 
 ### `mcp-routines` (ETP-6236) — backend-only, per account, off by default
 
@@ -987,7 +1013,8 @@ accounts that should see the tool. The mcp-tests harness needs it on for a targe
 > `ReconciliationHandler.buildAutoMatch` and `buildPendingLines` (bounce pairs, the `bounce` state),
 > `ReconciliationHandler.applySuggestions` (`bouncePair` groups, and the KPI events through the
 > detection it hands to `BankBounceKpiTelemetry.ModalDecisions`),
-> `BankBouncePairService.discardPair`, `restorePair` and `dismissPair` (KPI-only, writes nothing),
+> `BankBouncePairService.discardPair`, `restorePair` and `dismissPair` (marks the rejection line
+> "No es un rechazo", `BankBounceDismissal`), `BankBounceDismissal.restoreSuggestion` (its undo),
 > every caller of `StatementLineFilter`
 > (whether discarded lines are honoured at all) and `BankStatementsHandler.loadStatements`.
 > Contract: `docs/neo-headless.md` §4.12.1.1, *Discarded lines and bounce pairs*.
@@ -1033,6 +1060,18 @@ the way `PortalLinkPolicy#currentAccountEmail` does (`GoAccountResolver.currentA
 same shape as `bp-portal-link`. No account, no email or a failed lookup means **off**, never on.
 Write Datadog rules on the lowercase `email` attribute against lowercase values. Evaluate per request
 and never cache the answer in a `static final`.
+
+**AI second layer (ETP-6359) is gated by this same flag.** There is no flag of its own, by product
+decision: the ticket asked for a separate `bank-bounce-ai` flag and it was deliberately not created,
+so there is no such key to target, register or retire (retiring `bank-bounce-suggestions` retires
+the AI too). With `bank-bounce-suggestions` on for the account and a Decisions API key configured,
+`autoMatch` also asks the Decisions API about the `review` pairs (`BankBounceAi`) and answers
+`bounceAiAssessments`; `discardPair` and the `bouncePair` groups of `applySuggestions` honour
+`choiceSource:"ai"` with a server-side check (409 `BOUNCE_AI_SUGGESTION_STALE`); and the decision
+KPI carries the `ai_*` properties. The AI cannot be switched off per account while the flag stays on. With the flag off none of it runs and Etendo is as before
+ETP-5581. The other off-ramps stay: no Copilot key, a running back-off, no concurrency slot, the
+daily cap, the MCP channel and batches (never annotated) and any failure each leave the answer
+without the field. Contract: `neo-headless.md` §4.12.1.1, *AI second layer*.
 
 **Turning it on locally:** `etendo.go.flags.bank-bounce-suggestions=true` in `Openbravo.properties`
 (or `ETGO_FLAG_BANK_BOUNCE_SUGGESTIONS=true` in Tomcat's environment), with no Datadog/ConfigCat arm
@@ -2211,12 +2250,12 @@ The `GET /sws/go/environments` response gained additive fields:
 All are backward compatible; clients that ignore them are unaffected.
 
 > **`accountEmail` is invisible through the core helper.** `fetchEnvironments` in
-> `@etendosoftware/etendo-go-core` returns `data.environments || []`, so it drops every top-level
+> `@etendo-ai/etendo-go-core` returns `data.environments || []`, so it drops every top-level
 > field. A consumer using the helper sees nothing and gets no error. Reading `accountEmail` needs a
 > direct `fetch`. See §1 for why surfacing it is necessary but not sufficient.
 
 > **Open item — the plan badge is not yet rendered.** The environment picker (`EnvSelectStep.jsx`)
-> lives in `@etendosoftware/etendo-go-core`, not in the functional repo, so consuming `plan` needs a
+> lives in `@etendo-ai/etendo-go-core`, not in the functional repo, so consuming `plan` needs a
 > change and version bump on the core side. The backend field is stable and shipped; the UI side is
 > waiting on that pickup.
 

@@ -4,7 +4,12 @@
 # Una clase de test por línea (nombre completo). Las *IntegrationTest / *DbTest son de integración;
 # el resto, con mocks. Ejecutar: ./gradlew goCellTest -Pcell=plataforma [-Pkind=mock|integration|all]
 
-# --- con mocks (659)
+# --- con mocks (669)
+com.etendoerp.go.modulescript.EnsureDocumentStatusTranslationsScriptTest
+com.etendoerp.go.onboarding.OnboardingRemittanceSetupServiceTest
+com.etendoerp.go.payment.CheckoutPromotionTermsTest
+com.etendoerp.go.payment.MonthlySecondMonthPromotionServiceTest
+com.etendoerp.go.payment.PromotionRecoveryTest
 com.etendoerp.go.accounts.AccountDemoExpiryHandlerTest
 com.etendoerp.go.accounts.AccountGroupKeyHandlerTest
 com.etendoerp.go.agentchat.AgentChatConversationsServletTest
@@ -28,6 +33,7 @@ com.etendoerp.go.common.RequestTimingFilterTest
 com.etendoerp.go.common.ServletResponseUtilsTest
 com.etendoerp.go.common.SpanishTaxIdValidatorTest
 com.etendoerp.go.featureflags.FeatureFlagContextTest
+com.etendoerp.go.featureflags.GoFeatureFlagsRegistrySyncTest
 com.etendoerp.go.featureflags.PropertiesFeatureProviderTest
 com.etendoerp.go.hubspot.DemoTrialsTest
 com.etendoerp.go.hubspot.HttpHubSpotClientTest
@@ -128,11 +134,10 @@ com.etendoerp.go.mcp.McpWriteRequestSupportFkSentinelTest
 com.etendoerp.go.mcp.McpWriteRequestSupportStaleRecordTest
 com.etendoerp.go.mcp.McpWriteVerbCoercionCallSiteTest
 com.etendoerp.go.mcp.NeoAccessUtilsTest
-com.etendoerp.go.mcp.NeoExtensionSurfaceCoverageTest
+com.etendoerp.go.mcp.NeoExtensionSurfaceDispatchTest
 com.etendoerp.go.mcp.SelectorContextParamsTest
 com.etendoerp.go.mcp.ToolRegistryGenerateToolsTest
 com.etendoerp.go.mcp.ToolRegistryTest
-com.etendoerp.go.modulescript.EnsureDocumentStatusTranslationsScriptTest
 com.etendoerp.go.modulescript.EnsureLegacyPlanScriptTest
 com.etendoerp.go.modulescript.SeedAllowedPlanChangesScriptTest
 com.etendoerp.go.oauth2.ApiScopesTest
@@ -177,7 +182,6 @@ com.etendoerp.go.onboarding.OnboardingInitialPeriodStateServiceTest
 com.etendoerp.go.onboarding.OnboardingMarkOrgReadyServiceTest
 com.etendoerp.go.onboarding.OnboardingOrgInfoServiceTest
 com.etendoerp.go.onboarding.OnboardingPeriodControlServiceTest
-com.etendoerp.go.onboarding.OnboardingRemittanceSetupServiceTest
 com.etendoerp.go.onboarding.OnboardingSampleDataDefinitionTest
 com.etendoerp.go.onboarding.OnboardingSampleDataNormalizerTest
 com.etendoerp.go.onboarding.OnboardingSampleDataServiceTest
@@ -190,7 +194,6 @@ com.etendoerp.go.onboarding.pool.TenantPoolConfigTest
 com.etendoerp.go.onboarding.pool.TenantPoolFillerTest
 com.etendoerp.go.onboarding.pool.TenantPoolFixtureIsolationTest
 com.etendoerp.go.payment.CheckoutConfigurationTest
-com.etendoerp.go.payment.CheckoutPromotionTermsTest
 com.etendoerp.go.payment.CheckoutRequestProvisioningStatusTest
 com.etendoerp.go.payment.CheckoutRequestStoreSubscriptionFinderTest
 com.etendoerp.go.payment.CheckoutWebhookProcessorTest
@@ -207,7 +210,6 @@ com.etendoerp.go.payment.EnvironmentPlanCacheTest
 com.etendoerp.go.payment.HostedCheckoutLegacyFallbackTest
 com.etendoerp.go.payment.HostedCheckoutServiceTest
 com.etendoerp.go.payment.HostedCheckoutSessionPlanTest
-com.etendoerp.go.payment.MonthlySecondMonthPromotionServiceTest
 com.etendoerp.go.payment.PausedSubscriptionAlertTest
 com.etendoerp.go.payment.PlanCatalogServiceTest
 com.etendoerp.go.payment.PlanChangeCatalogTest
@@ -215,7 +217,6 @@ com.etendoerp.go.payment.PlanChangeServiceTest
 com.etendoerp.go.payment.PlanNotAvailableExceptionTest
 com.etendoerp.go.payment.PlanPriceDerivationHandlerTest
 com.etendoerp.go.payment.PlanQuotaSchemaInvariantTest
-com.etendoerp.go.payment.PromotionRecoveryTest
 com.etendoerp.go.payment.StripeApiClientTest
 com.etendoerp.go.payment.StripeCurrencyScaleTest
 com.etendoerp.go.payment.StripeCustomerPortalServiceTest
@@ -272,15 +273,23 @@ com.etendoerp.go.rest.EtendoGoJwtServletBillingCookieAuthTest
 com.etendoerp.go.rest.EtendoGoJwtServletBillingSubscriptionTest
 com.etendoerp.go.rest.EtendoGoJwtServletBlockedTenantPayPathTest
 com.etendoerp.go.rest.EtendoGoJwtServletCalendarReviewTest
-com.etendoerp.go.rest.EtendoGoJwtServletCoverageTest
 com.etendoerp.go.rest.EtendoGoJwtServletDemoDataTransferTest
 com.etendoerp.go.rest.EtendoGoJwtServletDemoPeriodWindowTest
 com.etendoerp.go.rest.EtendoGoJwtServletEnvironmentAccessTest
+com.etendoerp.go.rest.EtendoGoJwtServletEnvironmentsTest
 com.etendoerp.go.rest.EtendoGoJwtServletFirstStepsTest
 com.etendoerp.go.rest.EtendoGoJwtServletHeartbeatTest
 com.etendoerp.go.rest.EtendoGoJwtServletLegacyFallbackTest
+com.etendoerp.go.rest.EtendoGoJwtServletLoginTest
 com.etendoerp.go.rest.EtendoGoJwtServletMaskEmailTest
 com.etendoerp.go.rest.EtendoGoJwtServletOnboardingDatasetTest
+com.etendoerp.go.rest.EtendoGoJwtServletOnboardingPreflightTest
+com.etendoerp.go.rest.EtendoGoJwtServletPaidOnboardingTest
+com.etendoerp.go.rest.EtendoGoJwtServletPaidReactivationTest
+com.etendoerp.go.rest.EtendoGoJwtServletPaidUpgradeTest
+com.etendoerp.go.rest.EtendoGoJwtServletPasswordTest
+com.etendoerp.go.rest.EtendoGoJwtServletProvisioningNameTest
+com.etendoerp.go.rest.EtendoGoJwtServletPurchaseSourceTest
 com.etendoerp.go.rest.EtendoGoJwtServletSampleDataTest
 com.etendoerp.go.rest.EtendoGoJwtServletSessionEnvironmentTest
 com.etendoerp.go.rest.EtendoGoJwtServletSessionLoginUsageTest
@@ -448,6 +457,7 @@ com.etendoerp.go.schemaforge.NeoSubEndpointDispatcherTest
 com.etendoerp.go.schemaforge.NeoSupersededDefaultsTest
 com.etendoerp.go.schemaforge.NeoTabDefaultSortTest
 com.etendoerp.go.schemaforge.NeoTenantWriteGuardTest
+com.etendoerp.go.schemaforge.NeoUpdateCalloutRefireTest
 com.etendoerp.go.schemaforge.NeoUsageEventEndpointTest
 com.etendoerp.go.schemaforge.NeoVectorSearchEndpointTest
 com.etendoerp.go.schemaforge.NeoWriteChannelTest
@@ -478,8 +488,7 @@ com.etendoerp.go.schemaforge.TenantIsolationPolicyTest
 com.etendoerp.go.schemaforge.TenantOwnershipTest
 com.etendoerp.go.schemaforge.WidgetAccessPolicyTest
 com.etendoerp.go.schemaforge.WidgetActivityHandlerTest
-com.etendoerp.go.schemaforge.WidgetBestProductsHandlerTest
-com.etendoerp.go.schemaforge.WidgetBestSellersHandlerTest
+com.etendoerp.go.schemaforge.WidgetBestProductsAndSellersHandlerTest
 com.etendoerp.go.schemaforge.WidgetKpisHandlerTest
 com.etendoerp.go.schemaforge.WidgetPendingAmountsHandlerTest
 com.etendoerp.go.schemaforge.WidgetPendingTasksHandlerTest
@@ -492,6 +501,7 @@ com.etendoerp.go.schemaforge.email.ApiGatewayEmailProviderAdapterTest
 com.etendoerp.go.schemaforge.email.DalEmailSafetyStoreTest
 com.etendoerp.go.schemaforge.email.DalEmailSendLogStoreTest
 com.etendoerp.go.schemaforge.email.DefaultDocumentSendEmailContractTest
+com.etendoerp.go.schemaforge.email.DocShareLinkServiceTest
 com.etendoerp.go.schemaforge.email.DocumentEmailThrottleConfigTest
 com.etendoerp.go.schemaforge.email.DocumentSendAuthorizeTierTest
 com.etendoerp.go.schemaforge.email.DocumentSendRecipientEditsTest
@@ -513,6 +523,7 @@ com.etendoerp.go.schemaforge.email.contracts.CompanyInvitationEmailContractTenan
 com.etendoerp.go.schemaforge.email.contracts.DocumentSendEmailContractsTest
 com.etendoerp.go.schemaforge.email.render.AccountEmailContentTest
 com.etendoerp.go.schemaforge.email.render.EmailDatesTest
+com.etendoerp.go.schemaforge.email.render.EmailEncodeOnOutputTest
 com.etendoerp.go.schemaforge.email.render.EmailEscapeTest
 com.etendoerp.go.schemaforge.email.render.EmailLayoutTest
 com.etendoerp.go.schemaforge.email.render.EmailMessagesTest
@@ -572,8 +583,7 @@ com.etendoerp.go.schemaforge.webhooks.SFAssignUserRolesTest
 com.etendoerp.go.schemaforge.webhooks.SFDebugInvitationBypassTest
 com.etendoerp.go.schemaforge.webhooks.SFDocumentEmailHistoryTest
 com.etendoerp.go.schemaforge.webhooks.SFListMenuTest
-com.etendoerp.go.schemaforge.webhooks.SFListProcessesTest
-com.etendoerp.go.schemaforge.webhooks.SFListWindowsTest
+com.etendoerp.go.schemaforge.webhooks.SFListWindowsAndProcessesTest
 com.etendoerp.go.schemaforge.webhooks.SFMyReportAccessTest
 com.etendoerp.go.schemaforge.webhooks.SFPopulateSpecTest
 com.etendoerp.go.schemaforge.webhooks.SFPromoteUserRoleTest
@@ -612,7 +622,6 @@ com.etendoerp.go.startup.UsageAggregationScheduleStartupTest
 com.etendoerp.go.support.SupportConversationsServletTest
 com.etendoerp.go.support.SupportIntegrationClientTest
 com.etendoerp.go.support.SupportJiraWebhookHandlerTest
-com.etendoerp.go.supportaccess.SupportAccessGuardChangesAccessFieldsEdgeTest
 com.etendoerp.go.supportaccess.SupportAccessGuardTest
 com.etendoerp.go.supportaccess.SupportAccessServiceTest
 com.etendoerp.go.supportaccess.SupportHandoffServiceTest
@@ -666,7 +675,7 @@ com.etendoerp.go.usageevents.UsageEventTypesTest
 com.etendoerp.go.usageevents.UsageEventWriterJdbcTest
 com.etendoerp.go.usageevents.UsageEventWriterTest
 
-# --- integración (BD) (52)
+# --- integración (BD) (54)
 com.etendoerp.go.accounts.AccountGroupServiceIntegrationTest
 com.etendoerp.go.accounts.DemoExpiryIntegrationTest
 com.etendoerp.go.hubspot.DalHubSpotOutboxStoreIntegrationTest
@@ -712,10 +721,12 @@ com.etendoerp.go.schemaforge.NeoSelectorStatementCountIntegrationTest
 com.etendoerp.go.schemaforge.NeoTenantWriteGuardIntegrationTest
 com.etendoerp.go.schemaforge.SelectorSearchIntegrationTest
 com.etendoerp.go.schemaforge.TenantReadIsolationIntegrationTest
+com.etendoerp.go.schemaforge.email.DocShareLinkServiceIntegrationTest
 com.etendoerp.go.schemaforge.handlers.NeoListAggregateQueryIntegrationTest
 com.etendoerp.go.schemaforge.webhooks.McpFeedbackTriageWebhooksIntegrationTest
 com.etendoerp.go.session.JdbcGoSessionStoreIntegrationTest
 com.etendoerp.go.startup.TemplateRoleSyncStoreIntegrationTest
+com.etendoerp.go.support.DalSupportConversationStoreIntegrationTest
 com.etendoerp.go.usage.IsolatedDalReadIntegrationTest
 com.etendoerp.go.usage.UsageAggregationServiceIntegrationTest
 com.etendoerp.go.usage.quota.DalConsumptionReaderPeriodWindowIntegrationTest

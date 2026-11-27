@@ -6,7 +6,7 @@
 # Tests comunes a ventas y compras (src-test/cells/compartidos/ventas-compras.txt)
 @incluye ventas-compras
 
-# --- con mocks (58)
+# --- con mocks (59)
 com.etendoerp.go.schemaforge.AgingPayableReportHandlerTest
 com.etendoerp.go.schemaforge.CreateGoodsReceiptHandlerTest
 com.etendoerp.go.schemaforge.CreatePurchaseInvoiceHandlerTest
@@ -31,6 +31,7 @@ com.etendoerp.go.schemaforge.InvoiceInboxFailureDetailTest
 com.etendoerp.go.schemaforge.InvoiceInboxFlagTest
 com.etendoerp.go.schemaforge.InvoiceInboxHeaderHandlerTest
 com.etendoerp.go.schemaforge.InvoiceInboxIntakeTest
+com.etendoerp.go.schemaforge.InvoiceInboxLinePricingTest
 com.etendoerp.go.schemaforge.InvoiceInboxLiveChecksTest
 com.etendoerp.go.schemaforge.InvoiceInboxMarkReviewedTest
 com.etendoerp.go.schemaforge.InvoiceInboxMessagesTest
@@ -47,7 +48,6 @@ com.etendoerp.go.schemaforge.PurchaseInvoiceHeaderHandlerTest
 com.etendoerp.go.schemaforge.PurchaseInvoiceLineHandlerTest
 com.etendoerp.go.schemaforge.PurchaseInvoiceOcrLookupsTest
 com.etendoerp.go.schemaforge.PurchaseOrderHeaderHandlerTest
-com.etendoerp.go.schemaforge.ReturnToVendorShipmentHeaderHandlerPostingTest
 com.etendoerp.go.schemaforge.ReturnToVendorShipmentHeaderHandlerTest
 com.etendoerp.go.schemaforge.ReturnToVendorShipmentLineHandlerTest
 com.etendoerp.go.schemaforge.ocr.CopilotOcrServiceClientTest
@@ -66,17 +66,20 @@ com.etendoerp.go.schemaforge.ocr.OcrUnitMatcherTest
 com.etendoerp.go.schemaforge.ocr.ReceiverTaxIdCheckTest
 com.etendoerp.go.schemaforge.ocr.TaxIdNormalizerTest
 
-# --- integración (BD) (13)
+# --- integración (BD) (16)
 com.etendoerp.go.schemaforge.CreateGoodsReceiptHandlerNegativeQuantityIntegrationTest
 com.etendoerp.go.schemaforge.CreatePurchaseInvoiceHandlerGrossAmountIntegrationTest
 com.etendoerp.go.schemaforge.CreatePurchaseInvoiceHandlerNegativeQuantityIntegrationTest
+com.etendoerp.go.schemaforge.CurrencyOptionsHandlerTenancyIntegrationTest
 com.etendoerp.go.schemaforge.GoodsReceiptNoStockCompletionIntegrationTest
 com.etendoerp.go.schemaforge.GoodsReceiptWarehouseSwitchReanchorIntegrationTest
 com.etendoerp.go.schemaforge.InvoiceInboxConfirmIntegrationTest
 com.etendoerp.go.schemaforge.InvoiceInboxDiscardIntegrationTest
 com.etendoerp.go.schemaforge.InvoiceInboxIntakeIntegrationTest
+com.etendoerp.go.schemaforge.InvoiceInboxPriceListIntegrationTest
 com.etendoerp.go.schemaforge.InvoiceInboxProcessorInboxDuplicatesIntegrationTest
 com.etendoerp.go.schemaforge.InvoiceInboxWorkStoreIntegrationTest
 com.etendoerp.go.schemaforge.PurchaseInvoiceOcrLookupsProductDefaultsIntegrationTest
 com.etendoerp.go.schemaforge.PurchaseInvoiceOcrLookupsTaxCurrencyIntegrationTest
 com.etendoerp.go.schemaforge.PurchaseInvoiceOcrLookupsVendorTaxIdIntegrationTest
+com.etendoerp.go.schemaforge.webhooks.SFListMenuInvoiceInboxIntegrationTest

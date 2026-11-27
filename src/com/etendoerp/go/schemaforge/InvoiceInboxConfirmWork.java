@@ -81,6 +81,8 @@ final class InvoiceInboxConfirmWork {
   private static final String SPEC_CONTACTS = "contacts";
   private static final String SPEC_PRODUCT = "product";
   private static final String SPEC_INVOICE = "purchase-invoice";
+  private static final String KEY_FAILED_AT = "failedAt";
+  private static final String KEY_DETAIL = "detail";
   private static final String OP_VENDOR = "bp";
   private static final String OP_ADDRESS = "loc";
   private static final String OP_INVOICE = "inv";
@@ -413,7 +415,7 @@ final class InvoiceInboxConfirmWork {
   /** Runs the operations in the caller's transaction; the ids they created by operation id. */
   private static Map<String, String> runOps(JSONArray ops) throws JSONException {
     JSONObject result = BatchService.forBatchOnly().executeInCallerTransaction(ops);
-    if (result.has("failedAt")) {
+    if (result.has(KEY_FAILED_AT)) {
       Map<String, Object> step = stepParams(result, ops);
       String stepText = InvoiceInboxFailureDetail.stepText(step);
       log.warn("Inbox confirm: the creation failed at {}: {}", stepText, result);
@@ -437,7 +439,7 @@ final class InvoiceInboxConfirmWork {
    * creation) plus {@code n} for a line (1-based) and {@code name} for a new product.
    */
   static Map<String, Object> stepParams(JSONObject failure, JSONArray ops) {
-    JSONObject failedAt = failure.optJSONObject("failedAt");
+    JSONObject failedAt = failure.optJSONObject(KEY_FAILED_AT);
     String id = failedAt == null ? "" : failedAt.optString("id", "");
     Map<String, Object> step = new java.util.LinkedHashMap<>();
     if (OP_VENDOR.equals(id)) {
@@ -463,6 +465,20 @@ final class InvoiceInboxConfirmWork {
   private static InvoiceInboxFailureDetail.Detail stepFailure(Map<String, Object> step,
       JSONObject result) {
     String reason = reasonOf(result);
+    int refusedStatus = noMessageStatus(result);
+    if (refusedStatus > 0) {
+      log.warn("Inbox confirm: operation '{}' was refused with status {} and no message; body: {}",
+          failedId(result), refusedStatus, bodyForLog(result));
+      Object[] refused = new Object[step.size() * 2 + 2];
+      int r = 0;
+      for (Map.Entry<String, Object> entry : step.entrySet()) {
+        refused[r++] = entry.getKey();
+        refused[r++] = entry.getValue();
+      }
+      refused[r++] = InvoiceInboxFailureDetail.P_STATUS;
+      refused[r] = refusedStatus;
+      return InvoiceInboxFailureDetail.of(InvoiceInboxFailureDetail.STEP_REFUSED_STATUS, refused);
+    }
     Object[] params = new Object[step.size() * 2 + 4];
     int i = 0;
     for (Map.Entry<String, Object> entry : step.entrySet()) {
@@ -495,7 +511,7 @@ final class InvoiceInboxConfirmWork {
   /** The names of the missing fields the failed operation reported; empty when none. */
   private static List<String> missingOf(JSONObject failure) {
     JSONObject error = failure.optJSONObject(K_ERROR);
-    JSONObject detail = error == null ? null : error.optJSONObject("detail");
+    JSONObject detail = error == null ? null : error.optJSONObject(KEY_DETAIL);
     JSONObject nested = detail == null ? null : detail.optJSONObject(K_ERROR);
     JSONArray fields = nested == null ? null : nested.optJSONArray("fields");
     if (fields == null || fields.length() == 0) {
@@ -510,16 +526,62 @@ final class InvoiceInboxConfirmWork {
 
   /** The reason a batch failure carries: the detail of the operation, else the batch's own. */
   static String reasonOf(JSONObject failure) {
+    String reason = operationReason(failure);
     JSONObject error = failure.optJSONObject(K_ERROR);
-    JSONObject detail = error == null ? null : error.optJSONObject("detail");
+    if (reason.isEmpty() && error != null) {
+      reason = error.optString(K_MESSAGE, "");
+    }
+    return reason.isEmpty() ? "The creation was refused" : reason;
+  }
+
+  /** The message the refused operation itself gave; empty when it gave none. */
+  private static String operationReason(JSONObject failure) {
+    JSONObject error = failure.optJSONObject(K_ERROR);
+    JSONObject detail = error == null ? null : error.optJSONObject(KEY_DETAIL);
     JSONObject nested = detail == null ? null : detail.optJSONObject(K_ERROR);
     String reason = nested != null ? nested.optString(K_MESSAGE, "") : "";
     if (reason.isEmpty() && detail != null) {
       reason = detail.optString(K_MESSAGE, "");
     }
-    if (reason.isEmpty() && error != null) {
-      reason = error.optString(K_MESSAGE, "");
+    return reason;
+  }
+
+  /**
+   * The HTTP status of a refused operation that gave no message of its own, so the only text left
+   * is the batch's generic "Operation 'x' rejected by server"; 0 when there is a real message or no
+   * status to report.
+   */
+  static int noMessageStatus(JSONObject failure) {
+    if (!operationReason(failure).isEmpty()) {
+      return 0;
     }
-    return reason.isEmpty() ? "The creation was refused" : reason;
+    JSONObject error = failure.optJSONObject(K_ERROR);
+    if (error == null) {
+      return 0;
+    }
+    String message = error.optString(K_MESSAGE, "");
+    boolean generic = message.startsWith(BatchService.OPERATION_PREFIX)
+        && message.endsWith(BatchService.REJECTED_SUFFIX);
+    return generic ? Math.max(0, error.optInt("status", 0)) : 0;
+  }
+
+  private static String failedId(JSONObject failure) {
+    JSONObject failedAt = failure.optJSONObject(KEY_FAILED_AT);
+    return failedAt == null ? "" : failedAt.optString("id", "");
+  }
+
+  /** The refused body for the support log: its keys and size only, never its values. */
+  private static String bodyForLog(JSONObject failure) {
+    JSONObject error = failure.optJSONObject(K_ERROR);
+    Object detail = error == null ? null : error.opt(KEY_DETAIL);
+    if (!(detail instanceof JSONObject)) {
+      return detail == null ? "none" : "non-object, length " + String.valueOf(detail).length();
+    }
+    List<String> keys = new ArrayList<>();
+    java.util.Iterator<?> names = ((JSONObject) detail).keys();
+    while (names.hasNext()) {
+      keys.add(String.valueOf(names.next()));
+    }
+    return "keys " + keys + ", length " + detail.toString().length();
   }
 }

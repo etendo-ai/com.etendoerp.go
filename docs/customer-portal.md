@@ -57,7 +57,7 @@ CRUD engine), reachable with no Etendo session. Every response is `no-store`, ex
 | `GET /logo` | The issuing company's logo, resolved from the link's organization; served for any sent link, so the expired page keeps the branding |
 | `GET /public-logo/{reference}` | **No portal token** (ETP-6209). The same logo, for the header of the portal emails, where the portal token must never appear in an image URL. Details below |
 | `GET /home?months=` | Pending-payment balances, one tile per kind (count + highlight: quotations awaiting an answer, overdue invoices, orders in progress, shipments this month), recent documents, `paidThisYear` (per currency, `Invoice.totalPaid` of this year's completed/closed invoices), `invoicesThisYear` (`total`, `upToDate`) and `chart` (invoiced per month over `months` = 3, 6 or 12, default 12, in the currency invoiced in most months) — server-side aggregates |
-| `GET /search?q=` | Documents of every kind matching `q` (number, reference, description), newest first, 8 at most; blank `q` answers an empty list |
+| `GET /search?q=` | Documents of every kind matching `q` (number, reference, description). `documents`: newest first across kinds, 8 at most. `groups`: `[{kind, count, documents}]`, one entry per kind with at least one match, in kind order (`QUOTATION`, `ORDER`, `SHIPMENT`, `INVOICE`), so one kind cannot crowd the others out — `documents` is the kind's 5 newest, `count` every match of the kind in the same scope (a count query, not capped by either limit). Rows are the usual list rows. Blank `q` answers both empty. Details below |
 | `GET /documents?type=&group=&status=&dateFrom=&dateTo=&q=&limit=&offset=` | One kind's list, filtered and paged (default 50, max 200), with invoice payment fields, a quotation's generated order (`orderId`, `orderNo`) and the kind's `groups`; `group` (one of the kind's status groups, below) replaces `status` |
 | `GET /documents/{kind}/{id}` | Read-only detail, related documents (each re-checked against the scope), `hasPdf` |
 | `GET /documents/{kind}/{id}/pdf` | The document's printable (§5) |
@@ -67,6 +67,28 @@ CRUD engine), reachable with no Etendo session. Every response is `no-store`, ex
 `expired` or `unavailable`. On an expired or unavailable link the data reads (`/home`, `/search`,
 `/documents*`) answer that same 401; the page then re-checks `/me` once. A document outside the
 scope, of the wrong kind or in a hidden status is **404, never 403**.
+
+### Header search
+
+`GET /search?q=` runs, per kind, one page query of 8 rows (the larger of the two limits) with the
+same scope as every portal read (tenant, Business Partner, active, sales side, the kind's
+discriminator and status allow-list) plus a case-insensitive substring match on `documentNo`,
+`orderReference` and `description` (`%` and `_` match themselves). A count query runs only for a
+kind whose page came back full; a shorter page is already the whole count. So the search costs
+4 page queries, at most 4 count queries and one grouped instalment query for every invoice shown.
+
+```json
+{
+  "documents": [ /* the 8 newest across kinds, unchanged from before groups existed */ ],
+  "groups": [
+    { "kind": "ORDER",   "count": 1,  "documents": [ /* 1 row */ ] },
+    { "kind": "INVOICE", "count": 37, "documents": [ /* the 5 newest */ ] }
+  ]
+}
+```
+
+A kind with no match has no entry. `count` can exceed the rows of its group; the rest is reachable
+through `GET /documents?type=<kind>&q=` with the same `q`, which applies the same match.
 
 ### Visible documents
 
@@ -89,7 +111,7 @@ is visible) plus, where the status alone cannot say it, a condition on the docum
 
 | Kind | Group | Statuses | Condition |
 |---|---|---|---|
-| Quotation | `awaiting` | `UE`, `CO` | — |
+| Quotation | `awaiting` | `UE`, `CO` | not expired: no `validUntil`, or one not before today (server day) — an expired one shows under "all" only |
 | | `accepted` | `CA`, `ETGO_CI` | — |
 | | `rejected` | `CJ` | — |
 | Order | `inProgress` | `CO` | a line with `orderedQuantity ≠ deliveredQuantity` or `≠ invoicedQuantity` |
@@ -97,12 +119,17 @@ is visible) plus, where the status alone cannot say it, a condition on the docum
 | | `voided` | `VO` | — |
 | Shipment | `delivered` | `CO`, `CL` | — |
 | | `voided` | `VO` | — |
-| Invoice | `pending` | `CO`, `CL` | `outstandingAmount ≠ 0` |
+| Invoice | `pending` | `CO`, `CL` | `outstandingAmount > 0` — a credit note in the customer's favour (negative) shows under "all" only, as the home's balance and count already excluded it |
 | | `overdue` | `CO`, `CL` | an instalment past due (server day) with money owed |
 | | `paid` | `CO`, `CL` | `outstandingAmount = 0` |
 
 No group (or an unknown one) is every visible status. The home's tiles count the same sets
 (`awaiting`, `overdue`, `inProgress`), so a tile and its tab always agree.
+**Expired quotations are left out on purpose.** The quotations «Bajo evaluación» tab (`awaiting`)
+and the Home «Por responder» count exclude pending quotations whose `validUntil` is before today
+(server day); they stay visible under «Todos». So these counts can be lower than the app's
+pending-quotation count: that gap is by design (the portal offers no decision on an expired
+quotation), not a bug.
 
 ### The public logo — `GET /public-logo/{reference}` (ETP-6209)
 
@@ -250,22 +277,35 @@ A customer can accept or reject a quotation of their scope, confirmed by email. 
   rule). Decidable = `UE` only
   (`QuotationDecisions.isDecidable`, PO answer Q3) and not expired (no `ValidUntil` = not expired). Reject
   needs one of `PRICE`, `DELIVERY`, `PAYMENT_TERMS`, `OTHER_SUPPLIER`, `NOT_NEEDED`, `OTHER` (text
-  required). Answers `{state:"sent", email}`, 404 out of scope, 409 `not_pending` /
-  `expired` / `no_recipient` / `accept_unavailable`, 422 `invalid_reason`, 429 `cooldown`, 503.
-- **Recipient:** the confirmation goes to the **first To of the link's root send** only, never CC.
-  No To: the detail's `decision.canDecide` is false with `blockedReason: "no_recipient"`. When the
-  quotation can be decided, the detail's `decision` also carries `email` (as the request's
-  answer), so the SPA's accept / reject popups name it before anything is sent. The address is
-  shown in full, not masked: a product decision following the Figma design.
+  required). Answers `{state:"sent", email, confirmationRecipients}` (the To of the original send), 404 out of scope, 409
+  `not_pending` / `expired` / `no_recipient` / `not_recipient` / `accept_unavailable`, 422
+  `invalid_reason`, 429 `cooldown`, 503.
+- **Only a quotation sent to the accessing email (QA CP-49, `PortalQuotationSends`).** The
+  accessing email is the To + CC of the email that carried the session's link (who of them opened
+  it cannot be known). The quotation's sends are its `ETGO_EMAIL_SEND_LOG` rows of contract
+  `sales-quotation-send` with status `SENT` (app or MCP). The session may decide only when at
+  least one address is in both (case-insensitive); otherwise `blockedReason: "not_recipient"` and
+  the request answers 409 `not_recipient`. Reading stays allowed. `canDecide` is on the detail
+  (top level and in `decision`) and on every quotation row of `GET /documents` (not on `/home`
+  recent nor `/search` rows).
+- **Recipients (QA CP-45, as revised by the PO):** the newest such send is the *original send*.
+  The confirmation goes to **every To of it, never its CC** (replacing "first To only"). It is a
+  **standalone email with its own subject** («Confirma la aceptación / el rechazo del presupuesto
+  …»): no "Re:", no thread, until the gateway can carry `In-Reply-To`/`References` (the Lambda
+  sends through SES `send_email`, which cannot carry custom headers, and Etendo does not store the
+  provider's `messageId`; follow-up with infra). The detail's `decision` carries `email` (first To)
+  and `confirmationRecipients` (every To) so the popups name them before anything is sent, as the
+  request's 200 does; shown in full, a product decision following the Figma.
 - **`ETGO_PORTAL_DECISION`** (native SQL, no AD registration): one row per request, the SHA-256 of
   a 256-bit token, `STATUS` `PENDING` / `CONFIRMED` / `VOIDED` / `NOT_APPLIED`, `SENT_AT` (a row is
   usable only once its email left). Single use, never expires.
-- **The confirmation email's design** (card per the Figma, Etendo footer, the Motivo column and
+- **The confirmation email's design** (card per the Figma, etendo.ai footer, the Motivo column and
   why the avatar is the company's initials) is in `transactional-email-contracts.md` → *Portal
   email design*.
 - **One step from the email (call with the PO).** The confirmation email's button is explicit
   ("Confirmar rechazo" / "Confirmar aceptación", `portal-quotation-decision.confirm.cta.<DECISION>`)
-  and opens the landing (`/portal/decision/<token>` in the SPA), whose script sends
+  and opens the landing (`/portal/<AD_Client_ID>/decision/<token>` in the SPA since QA CP-43;
+  the MVP shape `/portal/decision/<token>` keeps working), whose script sends
   **`POST /decisions/confirm`** on load and shows the result ("Has rechazado el presupuesto …",
   already applied, superseded, no longer pending, expired). **A bare GET of the link applies
   nothing:** a scanner that does not run the page's script never reaches the POST. The token
@@ -276,7 +316,7 @@ A customer can accept or reject a quotation of their scope, confirmed by email. 
   decision (a re-opened link answers `confirmed` with `appliedNow: false`, and sends no second
   notice or KPI event). **Accepted trade-off (PO, one-step flow):** a mail scanner that executes
   the page's JavaScript could confirm a pending decision. The token is single-use, and the email
-  only ever reaches the quotation's main recipient (the first To of the original send).
+  only ever reaches the To recipients of the quotation's original send.
   **Into the portal (PO).** After the confirmation, whatever its state (applied now, answered
   before, superseded, no longer pending, expired), `PortalDecisionEntry` mints a new portal link
   for the customer, like a renewal: same tenant, Business Partner, recipients and language as the
@@ -386,7 +426,7 @@ portal KPIs (portal reach, emails by piece) from two more. Contract and Mixpanel
 |---|---|---|
 | `backend_portal_document_sent` (`type`) | `PortalLinkService#confirm`, after the link's commit, `SEND` origin only | no other sent `SEND` link of the same record (renewals, decision links and re-sends never emit) |
 | `backend_portal_document_downloaded` (`type`) | `/pdf` after the stream succeeded | atomic stamp `ETGO_PORTAL_LINK.FIRST_DOWNLOADED` on the document's first sent `SEND` link (`UPDATE … WHERE first_downloaded IS NULL`): only the request that set it emits; a document never sent with a link emits nothing (it is outside the KPI's denominator) |
-| `backend_portal_opened` (`third_party`, `entry_doc_type`, `origin`) | `GET /me` answering `valid` | one per **visit**: a link's valid `/me` after 30 minutes without one (sliding, in memory per node), so reloads inside a visit do not count. `third_party` is a keyed HMAC pseudonym of the link's Business Partner (purpose `kpi-third-party:v1`): distinct customers are countable, never identifiable |
+| `backend_portal_opened` (`third_party`, `entry_doc_type`, `origin`, `portal_session`, `in_universe`) | a portal session minted (any token-validated request of a valid link without a live session) | one per **session** (below), so reloads inside a session do not count. `third_party` is a keyed HMAC pseudonym of the link's Business Partner (purpose `kpi-third-party:v1`): distinct customers are countable, never identifiable |
 | `backend_portal_email_sent` (`piece`, `doc_type`) | `PortalLinkService#confirm` (`document_send` with `doc_type`, `link_renewal`) and `PortalDecisionService#markSent` (`decision_accept`, `decision_reject`), after the commit | none: every email that left (a throttled, duplicate or failed send never reaches these hooks) |
 | `backend_quotation_decided` (`decision`, `source`) | portal: `PortalDecisionService#confirm` when applied now, through `PortalKpiTelemetry#portalQuotationConfirmed`; app: `RejectQuotationHandler#reject`, `Convertquotation` and the quotation path of `createDraftInvoice` | portal: **once per quotation, and only for a quotation emailed with a portal link** — after the commit, it fires only when the quotation has a confirmed `SEND` link (`sent_at` set) and this decision is the quotation's first `CONFIRMED` one (`ORDER BY confirmed_at, id LIMIT 1`; confirmations of a quotation are serialized by its row lock and a confirmed decision never changes, so exactly one is first). A quotation reached through a shared contact link (`SHARED`) or another document's link, or decided again from the portal after being re-opened, does not count — so the answer rate can no longer exceed 100 %. Read-only, the decision is never affected; no new column. App: the conversion of an `ETGO_AC` quotation (accepted from the portal) is not a second decision |
 
@@ -400,6 +440,43 @@ note is an `invoice` (the portal kinds do not tell it apart). The newer `entry_d
 `backend_portal_email_sent`. **Needs `update.database`** for the
 `FIRST_DOWNLOADED` column.
 
+### 7b. Portal sessions and the value-session KPI (ETP-6209 KPI design)
+
+**Session (`PortalSessionTracker`, table `ETGO_PORTAL_SESSION`).** Every token-validated request
+of a valid link (`/me` and the data reads, the decision request, the click event) resumes the
+session named by the request header **`X-Portal-Session`**, or mints a new one when the header is
+absent, malformed, unknown, of another link, idle for 30 minutes or older than 12 hours. The id
+(32 hex chars, 128 random bits) is answered in the response header `X-Portal-Session` and, on
+`/me` (`valid` only), as `sessionId`. It is **not a credential** (the token still is), never in a
+URL, never logged. `LAST_SEEN` is written at most once a minute. Expired, unavailable and invalid
+links start nothing. A row is one session: `ENTRY_ORIGIN` (the link's origin), `ORIGIN_KIND` /
+`ORIGIN_RECORD_ID` (the document the link was emailed for), `IN_UNIVERSE` (`Y` for a `SEND` or
+`RENEWAL` link with an origin document) and one-shot stamps (`HOME_DOC_AT`, `RELATED_DOC_AT`,
+`DECISION_AT`, `ENGAGED_AT`, `DOWNLOADED_AT`, `ETENDO_CLICK_AT`, `LEARN_MORE_CLICK_AT`,
+`START_FREE_CLICK_AT`), each set by `UPDATE … WHERE x IS NULL` and committed at once, so a stamp
+and its event happen exactly once across concurrent requests and nodes.
+
+**Page parameters.** `GET /documents/{kind}/{id}?origin=link|home|search|list|related|refresh|action`
+(anything else is `unknown`, never counted); `GET …/pdf?purpose=preview|download&origin=detail|list`
+(`purpose` absent = `preview`); `POST /events/etendo-click` with `{reference: learnMore|startFree,
+location: header|mobile|rail}` → 204, 400 `invalid_event`, 401, 429.
+
+**The click endpoint never starts a session.** Its body is checked first (400 before any session
+work); then it only *resumes* the presented `X-Portal-Session` — it never mints one, so a click
+cannot open a session (and a `backend_portal_opened`) of its own and inflate the KPI's
+denominator. With no live session (absent, expired, another link) the click is dropped silently
+and still answers 204. It is recorded **once per (session, reference)**: a later click on the same
+link from another placement is not visible (only the first click's `location` is kept).
+
+**Value interactions, rule v1** (decided with the PO; `rule` on the engaged event versions it):
+(a) a document other than the origin opened from Home or the search, (b) a related document other
+than the origin, (c) a quotation decision request sent in the session. A list open is recorded
+(`backend_portal_document_opened`) but not counted; the origin document never counts; a download
+is never a value interaction. Events and Mixpanel recipes: `backend-observability.md` →
+*Customer Portal KPIs*. The old events stay as controls; `backend_portal_opened` is now once per
+session (the in-memory per-link visit window is gone) and `backend_portal_document_downloaded`
+gains `purpose`. **Needs `update.database`** for `ETGO_PORTAL_SESSION`.
+
 ## 8. Tests
 
 `src-test/src/com/etendoerp/go/portal/` (`PortalLinkServiceTest`, `PortalServletTest`,
@@ -408,3 +485,49 @@ note is an `invoice` (the portal kinds do not tell it apart). The newer `entry_d
 `schemaforge/AnonymousAttachmentStreamerTest`, and
 `schemaforge/email/contracts/PortalLinkRenewalEmailContractTest`. The feature's test list is kept in
 the functional repo's `flags-registry.json` (`bp-self-service-portal`).
+
+## QA 24/11 changes (ETP-6209)
+
+- **URL shape (CP-43).** Every portal URL a customer receives is
+  `<app>/portal/<AD_Client_ID>/<token>` (`PortalLinkPolicy#buildLink`), the decision confirmation
+  `<app>/portal/<AD_Client_ID>/decision/<token>`. The SPA replaces the address with
+  `/portal/<AD_Client_ID>` before any third-party tag reads it, and sends the tenant id in
+  **`X-Portal-Client`** beside `X-Portal-Token` (`/me/<clientId>/<token>` is also accepted). When
+  present it must match the token's client; a mismatch answers exactly as an unknown token (401),
+  so it is no oracle. Absent (MVP-shape links) validates the token alone. `/me` (every state) and
+  the confirm answer carry `clientId`. No log, usage event or KPI payload carries the token or a
+  portal URL.
+- **Multi-currency totals (CP-47, `PortalCurrencyTotals`).** `GET /documents` adds
+  `convertedTotal`, `GET /home` adds `convertedBalance` (outstanding), `convertedOverdue` (its
+  overdue part; `balances[].overdue…` stay) and `convertedPaidThisYear`,
+  each `{amount, currency, approximate}` in the company currency (the link organization's, then
+  its legal entity's, then the tenant's), folded by the app's own `NeoCurrencyTotals` with today's
+  `C_Conversion_Rate` (core `FinancialUtils#getConversionRate`, from the link's organization up to
+  `0`). `approximate` is true when a foreign amount was converted. `null` when there is nothing to
+  total or a rate is missing (the page then keeps the per-currency figures, which stay in the
+  payload).
+- **Invoices' "tipo" quick filter (CP-16).** `GET /documents?type=invoice&subtype=invoice|creditNote`
+  (absent or unknown: both). A credit note is the row's `isCreditNote` rule, as an HQL condition
+  (`PortalDocumentKind#creditNoteCondition`). Status labels are the SPA's (the API sends codes).
+- **Document email design (CP-48).** A sales document email that carries a portal link uses the
+  confirmation's card (`EmailCardLayout`): the company's logo or initials, a title naming the
+  document, the operator's message, a «Datos del documento» box (Empresa · Nº · Importe, or the
+  first date for a shipment), the portal sentence above the button, the reply note and the
+  «Creado con etendo.ai» footer (see `transactional-email-contracts.md` → *Portal email design*). Without a link the letter design is unchanged.
+- **Amounts in emails (CP-44).** The summary's total of every document email is formatted with
+  the instance separators and the currency symbol (`EmailAmountFormat`, "2.431,37 €"); the plain
+  value still travels to the gateway as `amount`.
+- **Customer email footer.** «Creado con etendo.ai», a plain link to the etendo.ai home page with
+  a per-email UTM; see `transactional-email-contracts.md` → *Portal email design*.
+- **Document type in the emails (QA pass 2).** A credit note sent through `sales-invoice-send` is
+  named «Factura rectificativa» / «Credit Note» (subject, card title, body): the invoice resolver
+  sets the document type variant `creditNote` (`EmailDocumentRecord#withDocumentTypeVariant`, by
+  `PortalDocumentKind#isCreditNote`) and the contract reads
+  `sales-invoice-send.documentType.creditNote`. The quotation is «Presupuesto de Venta», the app's
+  name (catalog `sales-quotation-send.documentType`), on every channel (app and MCP).
+- **Link renewal email (QA pass 2).** Same card as the other customer emails: the company's logo or
+  initials, title `portal-link-renewal.title`, the message, «Acceder a mi portal», the link
+  fallback, the validity note and the «Creado con etendo.ai» footer (`mail_reenvio_enlace`). No
+  «Saludos, Equipo de Etendo»: it is sent on behalf of our customer. Recipients unchanged (the
+  expired link's To and CC).
+

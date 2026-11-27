@@ -20,6 +20,8 @@ package com.etendoerp.go.schemaforge.email.render;
 import java.util.List;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 
 /**
  * Renders {@link EmailContent} into the shared Etendo email document (ETP-5003).
@@ -44,10 +46,12 @@ import org.apache.commons.lang3.StringUtils;
  * <p>{@link #render} is still the only way into the markup. Content with a title is drawn as the
  * centred card of the customer portal decision confirmations, by the package-private
  * {@link EmailCardLayout}; everything else is the standard letter below, unchanged. Either can
- * close with the "Creado con Etendo" {@link EmailFooter}, drawn by {@link #appendFooter}, only when
+ * close with the «Creado con etendo.ai» {@link EmailFooter}, drawn by {@link #appendFooter}, only when
  * the content asks for it — so no other email changes by a byte.</p>
  */
 public final class EmailLayout {
+
+  private static final Logger log = LogManager.getLogger(EmailLayout.class);
 
   /** Pinned to production: an email is opened long after the environment that sent it may exist. */
   static final String LOGO_URL = "https://app.etendo.ai/favicon.png";
@@ -61,11 +65,8 @@ public final class EmailLayout {
 
   /** Font stack of the ETP-6209 designs: the decision card and the Etendo footer. */
   static final String CARD_FONT_STACK = "Inter, Arial, Helvetica, sans-serif";
-  /** Lime tile behind the Etendo icon of the footer; also what shows when images are blocked. */
-  static final String FOOTER_ICON_BACKGROUND = "#B8FA50";
-  static final String FOOTER_TITLE_COLOR = "#1B1A1F";
-  static final String FOOTER_MUTED_COLOR = "#6B7280";
-  static final String FOOTER_PILL_BORDER = "#C7CBD3";
+  /** The footer line's words and link (ETP-6209 QA: #6B7280 read too faint next to the logo). */
+  static final String FOOTER_TEXT_COLOR = "#4B5563";
   static final String WHITE = "#FFFFFF";
   static final String PRESENTATION_TABLE =
       "<table role=\"presentation\" cellpadding=\"0\" cellspacing=\"0\" border=\"0\"";
@@ -204,7 +205,13 @@ public final class EmailLayout {
   }
 
   private static void appendCta(StringBuilder html, EmailContent content) {
+    // ADR-0005: entity escaping cannot neutralise a javascript:/data: scheme, so the button is
+    // dropped rather than rendered with a live href.
     if (!content.hasCta()) {
+      return;
+    }
+    if (!EmailEscape.isSafeUrl(content.getCtaUrl())) {
+      log.warn("Email call to action dropped: its URL has a scheme outside http, https and mailto");
       return;
     }
     String url = escape(content.getCtaUrl());
@@ -254,58 +261,33 @@ public final class EmailLayout {
   }
 
   /**
-   * Draws the "Creado con Etendo" footer (ETP-6209): the Etendo icon on its lime tile, the line,
-   * a "learn more" pill, the site and — once its URL is set — the privacy link, centred. The icon is the hosted
-   * {@link #LOGO_URL} on a lime cell, so a client that blocks images still shows the tile.
+   * Draws the «Creado con etendo.ai» footer (ETP-6209 marketing spec): one small centred line, the
+   * words «Creado con» and the etendo.ai logo as one link to the home page with the email's UTM
+   * ({@link EmailFooter}).
    *
    * @param html the document being written
    * @param footer the footer to draw
    */
   static void appendFooter(StringBuilder html, EmailFooter footer) {
-    String ctaUrl = escape(footer.getCtaUrl());
+    // One anchor wraps the words and the logo, so either is the link: no button, no tracking pixel,
+    // the link points straight at its target with no redirect. The logo carries its size both as
+    // attributes (Outlook) and inline, and the brand as alt text for clients that block images.
+    // The logo is baseline-aligned: its wordmark's baseline is the image's bottom edge, so the words
+    // and the wordmark sit on one line. Centring (vertical-align:middle) read as the words dropping
+    // below the logo in Gmail (ETP-6209 QA); the words are 14px to match the wordmark's x-height.
     html.append(PRESENTATION_TABLE).append(" width=\"100%\" style=\"width:100%;\">")
-        .append(CENTERED_ROW_OPEN).append(" style=\"padding:32px 0;\">")
-        .append(PRESENTATION_TABLE).append(" align=\"center\">")
-        // Icon tile.
-        .append(CENTERED_ROW_OPEN).append('>')
-        .append(PRESENTATION_TABLE).append(" align=\"center\"><tr><td width=\"52\" height=\"52\" ")
-        .append("align=\"center\" valign=\"middle\" bgcolor=\"").append(FOOTER_ICON_BACKGROUND)
-        .append("\" style=\"width:52px;height:52px;background:").append(FOOTER_ICON_BACKGROUND)
-        .append(";border-radius:10px;\"><img src=\"").append(LOGO_URL)
-        .append("\" width=\"52\" height=\"52\" alt=\"Etendo\" style=\"display:block;width:52px;")
-        .append("height:52px;border:0;border-radius:10px;\"></td></tr>").append(TABLE_CLOSE)
-        .append(ROW_CLOSE)
-        // "Creado con Etendo".
-        .append(CENTERED_ROW_OPEN).append(" class=\"sf-strong\"").append(STYLE_FONT)
-        .append(CARD_FONT_STACK).append(";padding-top:12px;font-size:18px;line-height:24px;")
-        .append("font-weight:600;color:").append(FOOTER_TITLE_COLOR).append(";\">")
-        .append(escape(footer.getTitle())).append(ROW_CLOSE)
-        // "Conoce más" pill.
-        .append(CENTERED_ROW_OPEN).append(" style=\"padding-top:12px;\">")
-        .append(PRESENTATION_TABLE).append(" align=\"center\"><tr><td bgcolor=\"").append(WHITE)
-        .append("\" style=\"background:").append(WHITE).append(";border:1px solid ")
-        .append(FOOTER_PILL_BORDER).append(";border-radius:360px;\"><a href=\"").append(ctaUrl)
-        .append("\" style=\"display:inline-block;padding:4px 12px;font-family:")
-        .append(CARD_FONT_STACK).append(";font-size:14px;line-height:24px;font-weight:500;color:")
-        .append(FOOTER_TITLE_COLOR).append(";text-decoration:none;\">")
-        .append(escape(footer.getCtaLabel())).append("</a></td></tr>").append(TABLE_CLOSE)
-        .append(ROW_CLOSE);
-    appendFooterLink(html, footer.getSiteUrl(), footer.getSiteLabel(), "none");
-    // Omitted until EmailFooter.PRIVACY_URL holds marketing's real URL.
-    if (StringUtils.isNotBlank(footer.getPrivacyUrl())) {
-      appendFooterLink(html, footer.getPrivacyUrl(), footer.getPrivacyLabel(), "underline");
-    }
-    html.append(TABLE_CLOSE).append(ROW_CLOSE).append(TABLE_CLOSE);
-  }
-
-  private static void appendFooterLink(StringBuilder html, String url, String label,
-      String decoration) {
-    html.append(CENTERED_ROW_OPEN).append(" class=\"sf-text\"").append(STYLE_FONT)
-        .append(CARD_FONT_STACK).append(";padding-top:12px;font-size:11px;line-height:16px;")
-        .append("font-weight:400;color:").append(FOOTER_MUTED_COLOR).append(";\"><a href=\"")
-        .append(escape(url)).append("\" style=\"color:").append(FOOTER_MUTED_COLOR)
-        .append(";text-decoration:").append(decoration).append(";\">").append(escape(label))
-        .append("</a>").append(ROW_CLOSE);
+        .append(CENTERED_ROW_OPEN).append(" class=\"sf-text\"").append(STYLE_FONT)
+        .append(CARD_FONT_STACK).append(";padding:24px 0 8px 0;font-size:14px;line-height:20px;")
+        .append("font-weight:400;color:").append(FOOTER_TEXT_COLOR).append(";\">")
+        .append("<a href=\"").append(escape(footer.getUrl())).append("\" style=\"color:")
+        .append(FOOTER_TEXT_COLOR).append(";text-decoration:none;\">")
+        .append(escape(footer.getPrefix())).append("&nbsp;<img src=\"")
+        .append(escape(footer.getLogoUrl())).append("\" width=\"").append(EmailFooter.LOGO_WIDTH)
+        .append("\" height=\"").append(EmailFooter.LOGO_HEIGHT).append("\" alt=\"")
+        .append(escape(footer.getBrand())).append("\" style=\"width:")
+        .append(EmailFooter.LOGO_WIDTH).append("px;height:").append(EmailFooter.LOGO_HEIGHT)
+        .append("px;border:0;vertical-align:baseline;\"></a>").append(ROW_CLOSE)
+        .append(TABLE_CLOSE);
   }
 
   private static String paragraphOpen() {

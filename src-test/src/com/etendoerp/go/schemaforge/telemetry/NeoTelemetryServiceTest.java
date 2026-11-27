@@ -262,6 +262,52 @@ class NeoTelemetryServiceTest {
   }
 
   /**
+   * ETP-6359: the four AI facts of a bounce-pair decision pass the allowlist. The three booleans
+   * only as real booleans, the probability as a 0-100 percentage; anything else is dropped
+   * silently, which is why the keys are pinned here.
+   */
+  @Test
+  void emitKeepsTheBounceAiFactsWithTheirTypesAndBounds() {
+    RecordingSink sink = new RecordingSink();
+    NeoTelemetryService service = service(sink, 0L);
+
+    service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED, mapOf(
+        "decision", "discarded", "ai_assessed", true, "ai_probability", 87,
+        "ai_recommended", true, "ai_recommendation_accepted", false));
+    Map<String, Object> kept = sink.last().getProperties();
+    assertEquals(5, kept.size(), kept.toString());
+    assertEquals(Boolean.TRUE, kept.get("ai_assessed"));
+    assertEquals(87, kept.get("ai_probability"));
+    assertEquals(Boolean.TRUE, kept.get("ai_recommended"));
+    assertEquals(Boolean.FALSE, kept.get("ai_recommendation_accepted"));
+
+    for (int edge : new int[] { 0, 100 }) {
+      service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED,
+          mapOf("ai_probability", edge));
+      assertEquals(edge, sink.last().getProperties().get("ai_probability"));
+    }
+    for (int outside : new int[] { 101, -1, Integer.MAX_VALUE }) {
+      service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED,
+          mapOf("decision", "discarded", "ai_probability", outside));
+      assertFalse(sink.last().getProperties().containsKey("ai_probability"),
+          "ai_probability=" + outside);
+      assertEquals("discarded", sink.last().getProperties().get("decision"));
+    }
+  }
+
+  /** ETP-6359: a mistyped AI boolean is dropped, not coerced. */
+  @Test
+  void emitDropsNonBooleanBounceAiFlags() {
+    RecordingSink sink = new RecordingSink();
+    NeoTelemetryService service = service(sink, 0L);
+
+    service.emit(NeoTelemetryEvents.BACKEND_BANK_BOUNCE_PAIR_DECIDED, mapOf(
+        "ai_assessed", "true", "ai_recommended", 1, "ai_recommendation_accepted", "Y"));
+
+    assertTrue(sink.last().getProperties().isEmpty(), sink.last().getProperties().toString());
+  }
+
+  /**
    * ETP-6247: backend_remittance_file_generated keeps its properties with their types: role_groups
    * a sorted, deduplicated list of known groups, direction AR or AP, invoice_count a bounded
    * number, is_regeneration a real boolean.
@@ -329,6 +375,37 @@ class NeoTelemetryServiceTest {
     service.emit(NeoTelemetryEvents.BACKEND_REMITTANCE_FILE_GENERATED,
         mapOf("is_regeneration", "true"));
     assertFalse(sink.last().getProperties().containsKey("is_regeneration"));
+  }
+
+  /**
+   * ETP-6209 portal session KPIs: the session pseudonym passes as a string, in_universe and
+   * is_origin_doc must be real booleans, and the other keys keep only a value of their vocabulary.
+   */
+  @Test
+  void thePortalSessionKeysKeepOnlyBooleansAndTheirVocabulary() {
+    RecordingSink sink = new RecordingSink();
+    NeoTelemetryService service = service(sink, 0L);
+
+    service.emit(NeoTelemetryEvents.BACKEND_PORTAL_SESSION_ENGAGED, mapOf(
+        "portal_session", "pseudonym.sig", "in_universe", true, "is_origin_doc", false,
+        "interaction", "related_document", "first_interaction", "quotation_decision",
+        "rule", "v1", "purpose", "download", "reference", "startFree", "location", "mobile"));
+    assertEquals(9, sink.last().getProperties().size(), sink.last().getProperties().toString());
+
+    // Columns: key, a value outside its type or vocabulary.
+    Object[][] dropped = {
+        { "in_universe", "true" }, { "is_origin_doc", 1 },
+        { "interaction", "list_open" }, { "first_interaction", "Home_Document" },
+        { "rule", "v2" }, { "purpose", "print" }, { "reference", "https://etendo.ai" },
+        { "location", "footer" }, { "interaction", true },
+    };
+    for (Object[] c : dropped) {
+      service.emit(NeoTelemetryEvents.BACKEND_PORTAL_SESSION_ENGAGED,
+          mapOf(c[0], c[1], "portal_session", "pseudonym.sig"));
+      assertFalse(sink.last().getProperties().containsKey(c[0]), "must drop " + c[0] + "=" + c[1]);
+      // A sentinel key no row of the table tests: the rest of the event survives.
+      assertEquals("pseudonym.sig", sink.last().getProperties().get("portal_session"));
+    }
   }
 
   /** The contact flags must be real booleans and the contact age a whole number within bounds. */

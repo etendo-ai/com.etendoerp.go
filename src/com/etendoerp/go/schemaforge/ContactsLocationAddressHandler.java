@@ -24,13 +24,17 @@ import java.text.Normalizer;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.Iterator;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 import org.openbravo.module.bptaxidkey.ViesService;
 
 import org.apache.commons.lang3.StringUtils;
+import org.apache.commons.lang3.exception.ExceptionUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.hibernate.criterion.Restrictions;
@@ -38,7 +42,9 @@ import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.base.exception.OBException;
+import org.openbravo.base.exception.OBSecurityException;
 import org.openbravo.base.provider.OBProvider;
+import org.openbravo.base.validation.ValidationException;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.core.SessionHandler;
 import org.openbravo.dal.service.OBCriteria;
@@ -77,7 +83,7 @@ import com.etendoerp.go.schemaforge.util.StructuredAddressComposer.ComposedAddre
  * resolution.
  */
 @NeoExtension(spec = "contacts", entity = "locationAddress")
-public class ContactsLocationAddressHandler implements NeoHandler {
+public class ContactsLocationAddressHandler implements StructuredAddressCustomization {
 
   private static final Logger log = LogManager.getLogger(ContactsLocationAddressHandler.class);
   private static final String FIELD_SHIP_TO_ADDRESS = "shipToAddress";
@@ -119,6 +125,29 @@ public class ContactsLocationAddressHandler implements NeoHandler {
   private static final String FIELD_LOCATION_ADDRESS = "locationAddress";
   /** Free-text region, resolved server-side against the payload's own country. See {@link #resolveRegionByName}. */
   private static final String FIELD_REGION_NAME = "regionName";
+  /** Query parameter carrying the parent Business Partner id. */
+  private static final String QUERY_PARENT_ID = "parentId";
+  /**
+   * ETP-5806 CP-12h (QA finding) — the {@code C_Location} keys {@link #putGeoLocFields} injects
+   * into EVERY record of a GET, single or list, regardless of the feature flag. Declared through
+   * {@link #responseEnrichedFields()} so the MCP projection validator stops calling them unknown;
+   * see that method for the full reasoning.
+   *
+   * <p>Base property names only, no {@code $}-companions: {@code McpFieldProjection} reduces a
+   * requested name to its base property before judging it, so {@code country$_identifier} is
+   * already covered by {@code country}.
+   */
+  private static final Set<String> ENRICHED_LOCATION_FIELDS = Set.of(
+      FIELD_ADDRESS_LINE1, FIELD_ADDRESS_LINE2, FIELD_CITY_NAME, FIELD_POSTAL_CODE, FIELD_COUNTRY,
+      FIELD_COUNTRY_CODE, FIELD_REGION, FIELD_REGION_NAME);
+  /**
+   * ETP-5806 CP-12h — the 3 structured SEPA keys, injected by {@link #putGeoLocFields} only while
+   * {@code structured-address-for-sepa} is on for the caller's account. Kept apart from
+   * {@link #ENRICHED_LOCATION_FIELDS} so the declaration follows the flag: while off the keys are
+   * genuinely absent from the response, and a caller that asks for them should keep being told so.
+   */
+  private static final Set<String> ENRICHED_STRUCTURED_FIELDS = Set.of(
+      FIELD_STREET_NAME, FIELD_BUILDING_NUMBER, FIELD_BUILDING_NAME);
   private static final String FIELD_RESPONSE = "response";
   private static final String FIELD_UPDATED = "updated";
   private static final String FIELD_DATA = "data";
@@ -138,13 +167,37 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       if (("PUT".equals(method) || "PATCH".equals(method)) && recordId != null) {
         return handleUpdate(ctx);
       }
+    } catch (OBSecurityException e) {
+      SessionHandler.getInstance().rollback();
+      log.warn("ContactsLocationAddressHandler refused {}", method);
+      return NeoResponse.error(403, "Access denied");
+    } catch (InvalidAddressException | ValidationException e) {
+      // The caller's data (unresolvable region, DAL column validation): a descriptive 400 without
+      // a stack trace. A plain OBException (session, connection) is not client data and falls
+      // through to the 500 below.
+      SessionHandler.getInstance().rollback();
+      log.warn("ContactsLocationAddressHandler rejected {}: {}", method, e.getMessage());
+      return NeoResponse.error(400, e);
     } catch (Exception e) {
       SessionHandler.getInstance().rollback();
-      log.error("ContactsLocationAddressHandler error in {}", method, e);
+      Throwable root = ExceptionUtils.getRootCause(e);
+      Map<String, String> query = ctx.getQueryParams();
+      log.error("ContactsLocationAddressHandler error in {} (recordId={}, parentId={}, cause={})",
+          method, recordId, query != null ? query.get(QUERY_PARENT_ID) : null,
+          (root != null ? root : e).getClass().getName(), e);
       return NeoResponse.error(500, "Location handler error: " + e.getMessage());
     }
     // GET list and DELETE fall through to default CRUD
     return null;
+  }
+
+  /** A client-data refusal raised by this handler, as opposed to any other {@link OBException}. */
+  private static final class InvalidAddressException extends OBException {
+    private static final long serialVersionUID = 1L;
+
+    InvalidAddressException(String message) {
+      super(message);
+    }
   }
 
   /** An ISO 3166-1 alpha-2 code ({@code ES}); a {@code C_Country_ID} is never two letters. */
@@ -177,6 +230,36 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     } finally {
       OBContext.restorePreviousMode();
     }
+  }
+
+  /**
+   * ETP-5806 CP-12h (QA finding) — the keys {@link #putGeoLocFields} injects into every GET
+   * record, declared so the MCP {@code fields:[…]} projection validator stops reporting them as
+   * {@code unknownFields} while the very same response carries their values.
+   *
+   * <p><b>Root cause this closes.</b> {@code McpQuerySupport#applyProjection} validates a caller's
+   * whitelist against {@code NeoFieldFilter#emittableResponseKeys()}, which is built from this
+   * spec's {@code ETGO_SF_FIELD} rows — i.e. the columns of {@code C_BPartner_Location}, the
+   * wrapper's own table. Every address field lives one table over, in {@code C_Location}, and
+   * reaches the response only because {@link #afterHandle} injects it. So
+   * {@code etendo_list contacts/locationAddress fields:[streetName, cityName, …]} returned the
+   * values AND reported all of them unknown — a self-contradiction an agent reads as a silent
+   * failure, and the reason {@code bp-location} (whose entity IS {@code C_Location}, so the same
+   * names are real curated fields there) showed no such symptom with the identical request.
+   *
+   * <p>The 3 structured SEPA keys follow the flag, the other 8 do not — see
+   * {@link #ENRICHED_STRUCTURED_FIELDS}. Nothing here filters, renames or writes anything; the
+   * only reader is the projection validator.
+   *
+   * @return the injected response keys, by base property name
+   */
+  @Override
+  public Set<String> responseEnrichedFields() {
+    Set<String> keys = new LinkedHashSet<>(ENRICHED_LOCATION_FIELDS);
+    if (StructuredAddressComposer.isEnabled(GoAccountResolver.currentAccountEmail())) {
+      keys.addAll(ENRICHED_STRUCTURED_FIELDS);
+    }
+    return keys;
   }
 
   @Override
@@ -229,10 +312,14 @@ public class ContactsLocationAddressHandler implements NeoHandler {
         StructuredAddressComposer.isEnabled(GoAccountResolver.currentAccountEmail());
     String bpId = body != null ? body.optString(FIELD_BUSINESS_PARTNER, null) : null;
     if (StringUtils.isBlank(bpId) && ctx.getQueryParams() != null) {
-      bpId = ctx.getQueryParams().get("parentId");
+      bpId = ctx.getQueryParams().get(QUERY_PARENT_ID);
     }
     if (StringUtils.isBlank(bpId)) {
       return NeoResponse.error(400, "Missing parentId (Business Partner ID)");
+    }
+    if (body == null) {
+      // parentId came in the query string: let rejectUnusableCreatePayload answer the 400
+      body = new JSONObject();
     }
 
     String locationAddressId = nullIfEmpty(body.optString(FIELD_LOCATION_ADDRESS, null));
@@ -370,13 +457,11 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       return countryId == null ? NeoResponse.error(400, "Missing required field: country (C_Country_ID)") : null;
     }
     String streetNameForValidation = readAlias(body, KEYS_STREET_NAME);
-    // ETP-5806 follow-up (QA finding) — a blank/omitted Building Number with a present Street Name
-    // falls back to "s/n" instead of being reported as missing. See
-    // StructuredAddressComposer#effectiveBuildingNumber.
+    // ETP-5806 CP-13 — Building Number is not part of this check at all: a blank/omitted value
+    // becomes "s/n" (StructuredAddressComposer#effectiveBuildingNumber) before it is persisted, so
+    // it is never something the caller still has to supply.
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(
         streetNameForValidation,
-        StructuredAddressComposer.effectiveBuildingNumber(streetNameForValidation,
-            readAlias(body, KEYS_BUILDING_NUMBER)),
         nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
         countryId);
     if (!missing.isEmpty()) {
@@ -431,7 +516,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     // decides the one boolean lives in that method instead of in this already-busy one.
     boolean partial = StructuredAddressComposer.requiresMergeOnUpdate(ctx.getHttpMethod(),
         structuredAddressEnabled, readAlias(body, KEYS_STREET_NAME),
-        readAlias(body, KEYS_BUILDING_NUMBER), nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
+        nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
         nullIfEmpty(body.optString(FIELD_COUNTRY, null)));
 
     OBContext.setAdminMode(true);
@@ -558,12 +643,11 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       return null;
     }
     String streetNameForValidation = readAlias(body, KEYS_STREET_NAME);
-    // ETP-5806 follow-up (QA finding) — same "s/n" fallback as create. See
-    // StructuredAddressComposer#effectiveBuildingNumber.
+    // ETP-5806 CP-13 — Building Number is not part of this check at all: a blank/omitted value
+    // becomes "s/n" (StructuredAddressComposer#effectiveBuildingNumber) before it is persisted, so
+    // it is never something the caller still has to supply.
     List<String> missing = StructuredAddressComposer.missingMandatoryFields(
         streetNameForValidation,
-        StructuredAddressComposer.effectiveBuildingNumber(streetNameForValidation,
-            readAlias(body, KEYS_BUILDING_NUMBER)),
         nullIfEmpty(body.optString(FIELD_CITY_NAME, null)),
         effectiveCountryForValidation);
     if (!missing.isEmpty()) {
@@ -600,7 +684,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       return null;
     }
     JSONObject locationJson = dataArr.getJSONObject(0);
-    String geoLocId = nullIfEmpty(locationJson.optString("locationAddress", null));
+    String geoLocId = nullIfEmpty(locationJson.optString(FIELD_LOCATION_ADDRESS, null));
     if (geoLocId == null) {
       return null;
     }
@@ -891,7 +975,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
    * disagree with its siblings.
    */
   private static OBException regionFailure(String shown, String detail) {
-    return new OBException("The region \"" + shown + "\" " + detail);
+    return new InvalidAddressException("The region \"" + shown + "\" " + detail);
   }
 
   /**
@@ -1052,7 +1136,7 @@ public class ContactsLocationAddressHandler implements NeoHandler {
       throws Exception {
     JSONObject locationJson = new JSONObject();
     locationJson.put("id",              bpLoc.getId());
-    locationJson.put("locationAddress", geoLoc.getId());
+    locationJson.put(FIELD_LOCATION_ADDRESS, geoLoc.getId());
     locationJson.put("name",            bpLoc.getName() != null ? bpLoc.getName() : JSONObject.NULL);
     // JSON booleans, as a read through the default CRUD returns them (ETP-6012); the form accepts both.
     locationJson.put(FIELD_SHIP_TO_ADDRESS,    Boolean.TRUE.equals(bpLoc.isShipToAddress()));
@@ -1289,10 +1373,5 @@ public class ContactsLocationAddressHandler implements NeoHandler {
     if (!body.has(key)) return defaultVal;
     String v = body.optString(key, "");
     return "Y".equalsIgnoreCase(v) || "true".equalsIgnoreCase(v);
-  }
-
-  private static String str(JSONObject body, String key, String fallback) {
-    String v = nullIfEmpty(body.optString(key, null));
-    return v != null ? v : fallback;
   }
 }

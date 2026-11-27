@@ -57,6 +57,7 @@ import com.etendoerp.go.common.NeoCurrencyFormatConfig;
 import com.etendoerp.go.portal.PortalDecisionService;
 import com.etendoerp.go.portal.PortalLink;
 import com.etendoerp.go.portal.PortalLinkService;
+import com.etendoerp.go.portal.PortalQuotationSends;
 import com.etendoerp.go.portal.PortalLogoReference;
 import com.etendoerp.go.schemaforge.email.EmailAuthorizationResult;
 import com.etendoerp.go.schemaforge.email.EmailContract;
@@ -67,6 +68,7 @@ import com.etendoerp.go.schemaforge.email.EmailProviderRequest;
 import com.etendoerp.go.schemaforge.email.EmailRecipientResolution;
 import com.etendoerp.go.schemaforge.email.EmailRecipientSet;
 import com.etendoerp.go.schemaforge.email.EmailSendContext;
+import com.etendoerp.go.schemaforge.email.render.EmailFooter;
 
 /**
  * Unit tests for the two emails of a portal quotation decision: the confirmation the customer
@@ -152,23 +154,50 @@ public class PortalDecisionEmailContractsTest {
 
   // ── confirmation ────────────────────────────────────────────────────────────
 
+  /**
+   * QA CP-45 repro: the confirmation goes to every To of the quotation's original send (it went to
+   * the first To only), never to its CC nor to the caller; no original send, no recipient.
+   */
   @Test
-  public void theConfirmationGoesToTheFirstToOfTheRootSendNeverToTheCaller() throws Exception {
+  public void theConfirmationGoesToEveryToOfTheOriginalSendNeverCcNorTheCaller()
+      throws Exception {
     PortalLink session = link();
     when(linkService.findLink(LINK_ID)).thenReturn(Optional.of(session));
-    when(decisionService.confirmationRecipient(ROOT_ID)).thenReturn("billing@customer.test");
+    when(decisionService.originalSend(LINK_ID, QUOTATION_ID)).thenReturn(Optional.of(
+        new PortalQuotationSends.Send("LOG-1", Arrays.asList("qm1@customer.test",
+            "qm2@customer.test"), Collections.singletonList("qmcc@customer.test"),
+            "Presupuesto de Ventas #PR1000063")));
     JSONObject body = new JSONObject()
         .put(EmailContractCommandSupport.FIELD_RECIPIENT, "opener@elsewhere.test");
 
     EmailRecipientResolution recipient = confirm().resolveRecipient(command(body));
 
-    assertEquals(Collections.singletonList("billing@customer.test"),
+    assertEquals(Arrays.asList("qm1@customer.test", "qm2@customer.test"),
         recipient.getRecipientSet().getTo());
     assertTrue(recipient.getRecipientSet().getCc().isEmpty());
 
-    when(decisionService.confirmationRecipient(ROOT_ID)).thenReturn(null);
-    assertTrue("a send with no To has no recipient",
+    when(decisionService.originalSend(LINK_ID, QUOTATION_ID)).thenReturn(Optional.empty());
+    assertTrue("a quotation never sent to the link's email has no recipient",
         confirm().resolveRecipient(command(new JSONObject())).isNoRecipient());
+  }
+
+  /**
+   * QA CP-45 (as revised): a standalone email with its own subject, never "Re: <the original
+   * send's subject>", even when that send stored one.
+   */
+  @Test
+  public void theConfirmationKeepsItsOwnSubjectNotTheOriginalSends() throws Exception {
+    stubMint();
+    // Built first: link() stubs its own mock, which must not happen inside a thenReturn(...).
+    PortalLink link = link();
+    when(linkService.findLink(LINK_ID)).thenReturn(Optional.of(link));
+    when(decisionService.originalSend(LINK_ID, QUOTATION_ID)).thenReturn(Optional.of(
+        new PortalQuotationSends.Send("LOG-1", Collections.singletonList("billing@customer.test"),
+            Collections.emptyList(), "Presupuesto de Ventas #PR-7")));
+
+    String subject = resolveConfirmation("ACCEPT", null, null).getData().getString("subject");
+
+    assertTrue(subject, subject.startsWith("Confirma la aceptación del presupuesto"));
   }
 
   @Test
@@ -251,8 +280,9 @@ public class PortalDecisionEmailContractsTest {
     // As the app shows it (the pinned "." and "," separators; symbol on its side).
     assertTrue(body, body.contains(">2.450,00\u00A0€<"));
     assertFalse(body, body.contains(">Motivo<"));
-    // The Etendo footer closes the card.
-    assertTrue(body, body.contains("Creado con Etendo"));
+    // The «Creado con etendo.ai» footer closes the card, its link tagged as the acceptance's.
+    assertTrue(body, body.contains("Creado con&nbsp;<img src=\"" + EmailFooter.LOGO_URL + "\""));
+    assertTrue(body, body.contains("utm_content=mail_aceptacion"));
   }
 
   @Test

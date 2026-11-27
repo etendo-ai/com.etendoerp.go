@@ -17,12 +17,16 @@
 
 package com.etendoerp.go.schemaforge.handlers;
 
+import java.util.Map;
+
 import javax.inject.Inject;
 import javax.inject.Named;
 
+import com.etendoerp.go.schemaforge.InventoryPostingContracts;
 import com.etendoerp.go.schemaforge.NeoContext;
 import com.etendoerp.go.schemaforge.NeoHandler;
 import com.etendoerp.go.schemaforge.NeoResponse;
+import com.etendoerp.go.schemaforge.util.NeoActionContract;
 
 /**
  * {@code NeoHandler} for the {@code internalConsumption} entity (Internal Consumption header,
@@ -52,6 +56,15 @@ public class InternalConsumptionHeaderHandler implements NeoHandler {
   /** Package-private seam so unit tests can inject a mocked {@link DocumentPostingService}. */
   void setPostingService(DocumentPostingService postingService) {
     this.postingService = postingService;
+  }
+
+  /**
+   * {@inheritDoc} {@code post} / {@code unpost} (ETP-6406): the actions this handler serves through
+   * the posting service, published so an agent uses them instead of the AD {@code Posted} button.
+   */
+  @Override
+  public Map<String, NeoActionContract> actionContracts() {
+    return InventoryPostingContracts.byStatus();
   }
 
   @Override

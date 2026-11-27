@@ -482,9 +482,9 @@ public class DocumentPostingServiceTest {
    * ETP-5714 (round 2): "retry in 30 seconds" is a lie when costing is stuck — in a live tenant the
    * background process ran every 30 s but aborted on the first transaction it could not cost, so
    * everything behind it waited for ever. When the oldest uncalculated transaction of the
-   * document's organisation is older than the threshold the answer says costing looks stalled and
-   * that retrying will not help: its own code and key, {@code retryable:false}, no
-   * {@code Retry-After}.
+   * document's organisation is older than the threshold the answer is still 409
+   * {@code costNotCalculated} (ETP-6406: one code for one cause), flagged {@code stalled:true}
+   * with its own message key, {@code retryable:false} and no {@code Retry-After}.
    */
   @Test
   public void handleActionAnswersStalledCostingAsNotRetryable() throws Exception {
@@ -515,15 +515,16 @@ public class DocumentPostingServiceTest {
 
       NeoResponse resp = svc.handleAction(mockPostActionContext());
 
-      assertEquals(422, resp.getHttpStatus());
+      assertEquals(409, resp.getHttpStatus());
       assertNull(resp.getHeaders().get("Retry-After"));
       JSONObject body = resp.getBody();
-      assertEquals("costCalculationStalled", body.getString("error"));
+      assertEquals("costNotCalculated", body.getString("error"));
+      assertTrue(body.getBoolean("stalled"));
       assertFalse(body.getBoolean("retryable"));
       assertFalse(body.has("retryAfterSeconds"));
       assertEquals("ETGO_CostCalculationStalled", body.getJSONArray("messageKeys").getString(0));
       assertEquals("Cost calculation looks stalled.", body.getString("message"));
-      assertTrue(body.getString("hint"), body.getString("hint").contains("administrator"));
+      assertTrue(body.getString("hint"), body.getString("hint").contains("missing product costs"));
     }
   }
 
@@ -3503,6 +3504,259 @@ public class DocumentPostingServiceTest {
       assertEquals(422, resp.getHttpStatus());
       assertFalse(resp.getBody().getBoolean(BODY_SUCCESS));
       assertEquals(coreMessage, resp.getBody().getString(BODY_MESSAGE));
+    }
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // ETP-6406: the cost pre-check answers like a goods document (ETP-5714) — a retryable 409
+  // costNotCalculated, or the same 409 flagged stalled (not retryable) when the org's costing queue is
+  // stuck — instead of a plain 422 with no retry guidance.
+  // ---------------------------------------------------------------------------------------------
+
+  /** Gives the mocked Internal Consumption a client and an organisation for the stall probe. */
+  private void stubInternalConsumptionOwner() {
+    org.openbravo.model.ad.system.Client client = mock(org.openbravo.model.ad.system.Client.class);
+    when(client.getId()).thenReturn("C1");
+    org.openbravo.model.common.enterprise.Organization org =
+        mock(org.openbravo.model.common.enterprise.Organization.class);
+    when(org.getId()).thenReturn("O1");
+    when(mockInternalConsumption.get("client")).thenReturn(client);
+    when(mockInternalConsumption.get("organization")).thenReturn(org);
+  }
+
+  /** Answers the costing-queue probe on the mocked DAL's connection. */
+  private void stubIcQueueStalled(boolean stalled) throws Exception {
+    Connection read = mock(Connection.class);
+    java.sql.PreparedStatement ps = mock(java.sql.PreparedStatement.class);
+    java.sql.ResultSet rs = mock(java.sql.ResultSet.class);
+    when(mockIcObDal.getConnection()).thenReturn(read);
+    when(read.prepareStatement(anyString())).thenReturn(ps);
+    when(ps.executeQuery()).thenReturn(rs);
+    when(rs.next()).thenReturn(true);
+    when(rs.getBoolean(1)).thenReturn(stalled);
+  }
+
+  /**
+   * ETP-6406 — an uncalculated Internal Consumption is refused with the retryable identity a goods
+   * document gets: {@code NotCalculatedCost} plus {@code retryAfterSeconds}, so the action endpoint
+   * answers 409 with {@code Retry-After} and the agent waits and repeats instead of falling back
+   * to the AD {@code Posted} button.
+   */
+  @Test
+  public void testUncalculatedInternalConsumptionIsRetryable() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    stubInternalConsumption(mockUncalculatedTransaction);
+    stubInternalConsumptionOwner();
+    stubIcQueueStalled(false);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class);
+        MockedStatic<OBMessageUtils> msgMock = mockStatic(OBMessageUtils.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(mockIcObDal);
+      msgMock.when(() -> OBMessageUtils.messageBD(MSG_NOT_CALCULATED_COST))
+          .thenReturn(NOT_CALCULATED_COST_TEXT);
+
+      DocumentPostingService.PostResult r =
+          svc.post(TABLE_ID_M_INTERNAL_CONSUMPTION, IC_RECORD_ID, mockIcConnectionProvider);
+      NeoResponse resp = svc.toResponse(r, IC_RECORD_ID);
+
+      assertFalse(r.ok());
+      assertEquals(List.of(MSG_NOT_CALCULATED_COST), r.messageKeys());
+      assertEquals(30, r.messageParams().get("retryAfterSeconds"));
+      assertEquals(409, resp.getHttpStatus());
+      assertEquals("30", resp.getHeaders().get("Retry-After"));
+      JSONObject body = resp.getBody();
+      assertEquals("costNotCalculated", body.getString("error"));
+      assertTrue(body.getBoolean("retryable"));
+      assertEquals(NOT_CALCULATED_COST_TEXT, body.getString("message"));
+      acctStatic.verify(
+          () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
+    }
+  }
+
+  /**
+   * ETP-6406 — when an uncalculated transaction of the document's organisation is older than the
+   * threshold, costing is stuck: the pre-check answers the non-retryable
+   * 409 flagged {@code stalled}, as a goods document does (ETP-5714).
+   */
+  @Test
+  public void testUncalculatedInternalConsumptionWithStalledCostingIsNotRetryable() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    stubInternalConsumption(mockUncalculatedTransaction);
+    stubInternalConsumptionOwner();
+    stubIcQueueStalled(true);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class);
+        MockedStatic<OBMessageUtils> msgMock = mockStatic(OBMessageUtils.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(mockIcObDal);
+
+      DocumentPostingService.PostResult r =
+          svc.post(TABLE_ID_M_INTERNAL_CONSUMPTION, IC_RECORD_ID, mockIcConnectionProvider);
+      NeoResponse resp = svc.toResponse(r, IC_RECORD_ID);
+
+      assertFalse(r.ok());
+      assertEquals(List.of("ETGO_CostCalculationStalled"), r.messageKeys());
+      assertEquals(409, resp.getHttpStatus());
+      assertNull(resp.getHeaders().get("Retry-After"));
+      assertEquals("costNotCalculated", resp.getBody().getString("error"));
+      assertTrue(resp.getBody().getBoolean("stalled"));
+      assertFalse(resp.getBody().getBoolean("retryable"));
+      assertFalse(resp.getBody().has("retryAfterSeconds"));
+      acctStatic.verify(
+          () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
+    }
+  }
+
+  /**
+   * ETP-6406 — the probe needs the document's client and organisation; a header that cannot give
+   * them keeps the retryable answer (the probe fails open, as it does for goods documents).
+   */
+  @Test
+  public void testUncalculatedInternalConsumptionWithoutOwnerKeepsTheRetry() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    stubInternalConsumption(mockUncalculatedTransaction);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<OBMessageUtils> msgMock = mockStatic(OBMessageUtils.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(mockIcObDal);
+      msgMock.when(() -> OBMessageUtils.messageBD(MSG_NOT_CALCULATED_COST))
+          .thenReturn(NOT_CALCULATED_COST_TEXT);
+
+      DocumentPostingService.PostResult r =
+          svc.post(TABLE_ID_M_INTERNAL_CONSUMPTION, IC_RECORD_ID, mockIcConnectionProvider);
+
+      assertEquals(List.of(MSG_NOT_CALCULATED_COST), r.messageKeys());
+      assertEquals(30, r.messageParams().get("retryAfterSeconds"));
+      verify(mockIcObDal, never()).getConnection();
+    }
+  }
+
+  /** Arbitrary test AD_Table_ID standing in for M_Movement (fully mocked, never looked up live). */
+  private static final String TABLE_ID_M_MOVEMENT = "323";
+  private static final String MOVEMENT_RECORD_ID = "mov-1";
+
+  /**
+   * Stubs the table lookup to resolve {@code M_Movement} and the header lookup to a single-line
+   * Goods Movement whose line carries one transaction with the given cost-calculated flag, owned
+   * by client C1 / organisation O1.
+   */
+  private static org.openbravo.model.materialmgmt.transaction.InternalMovement stubMovement(
+      OBDal obDal, Boolean costCalculated) {
+    stubTableWithDbName(obDal, TABLE_ID_M_MOVEMENT, "M_Movement");
+    MaterialTransaction transaction = mock(MaterialTransaction.class);
+    when(transaction.isCostCalculated()).thenReturn(costCalculated);
+    org.openbravo.model.materialmgmt.transaction.InternalMovementLine line =
+        mock(org.openbravo.model.materialmgmt.transaction.InternalMovementLine.class);
+    when(line.getMaterialMgmtMaterialTransactionList()).thenReturn(List.of(transaction));
+    org.openbravo.model.materialmgmt.transaction.InternalMovement movement =
+        mock(org.openbravo.model.materialmgmt.transaction.InternalMovement.class);
+    when(movement.getMaterialMgmtInternalMovementLineList()).thenReturn(List.of(line));
+    org.openbravo.model.ad.system.Client client = mock(org.openbravo.model.ad.system.Client.class);
+    when(client.getId()).thenReturn("C1");
+    org.openbravo.model.common.enterprise.Organization org =
+        mock(org.openbravo.model.common.enterprise.Organization.class);
+    when(org.getId()).thenReturn("O1");
+    when(movement.get("client")).thenReturn(client);
+    when(movement.get("organization")).thenReturn(org);
+    when(obDal.get(org.openbravo.model.materialmgmt.transaction.InternalMovement.class,
+        MOVEMENT_RECORD_ID)).thenReturn(movement);
+    return movement;
+  }
+
+  /** Answers the costing-queue probe on the given mocked DAL's connection. */
+  private static void stubQueueStalled(OBDal obDal, boolean stalled) throws Exception {
+    Connection read = mock(Connection.class);
+    java.sql.PreparedStatement ps = mock(java.sql.PreparedStatement.class);
+    java.sql.ResultSet rs = mock(java.sql.ResultSet.class);
+    when(obDal.getConnection()).thenReturn(read);
+    when(read.prepareStatement(anyString())).thenReturn(ps);
+    when(ps.executeQuery()).thenReturn(rs);
+    when(rs.next()).thenReturn(true);
+    when(rs.getBoolean(1)).thenReturn(stalled);
+  }
+
+  /**
+   * ETP-6406 — a Goods Movement whose cost is not calculated yet used to reach core's
+   * {@code DocMovement}, whose swallowed exception came back as a 422 {@code validation_error}
+   * reading "the product product". The pre-check now stops it before {@code AcctServer} with the
+   * retryable 409 {@code costNotCalculated}, like an Internal Consumption.
+   */
+  @Test
+  public void testUncalculatedGoodsMovementIsRetryable() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    OBDal obDal = mock(OBDal.class);
+    stubMovement(obDal, Boolean.FALSE);
+    stubQueueStalled(obDal, false);
+    ConnectionProvider conn = mock(ConnectionProvider.class);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class);
+        MockedStatic<OBMessageUtils> msgMock = mockStatic(OBMessageUtils.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(obDal);
+      msgMock.when(() -> OBMessageUtils.messageBD(MSG_NOT_CALCULATED_COST))
+          .thenReturn(NOT_CALCULATED_COST_TEXT);
+
+      DocumentPostingService.PostResult r = svc.post(TABLE_ID_M_MOVEMENT, MOVEMENT_RECORD_ID, conn);
+      NeoResponse resp = svc.toResponse(r, MOVEMENT_RECORD_ID);
+
+      assertEquals(List.of(MSG_NOT_CALCULATED_COST), r.messageKeys());
+      assertEquals(409, resp.getHttpStatus());
+      assertEquals("costNotCalculated", resp.getBody().getString("error"));
+      assertEquals(NOT_CALCULATED_COST_TEXT, resp.getBody().getString("message"));
+      acctStatic.verify(
+          () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
+      verify(conn, never()).getTransactionConnection();
+    }
+  }
+
+  /** ETP-6406 — the same Goods Movement with the organisation's costing stuck: 409 stalled. */
+  @Test
+  public void testUncalculatedGoodsMovementWithStalledCostingIsNotRetryable() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    OBDal obDal = mock(OBDal.class);
+    stubMovement(obDal, Boolean.FALSE);
+    stubQueueStalled(obDal, true);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class);
+        MockedStatic<OBMessageUtils> msgMock = mockStatic(OBMessageUtils.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(obDal);
+
+      DocumentPostingService.PostResult r =
+          svc.post(TABLE_ID_M_MOVEMENT, MOVEMENT_RECORD_ID, mock(ConnectionProvider.class));
+
+      assertEquals(List.of("ETGO_CostCalculationStalled"), r.messageKeys());
+      assertEquals(409, svc.toResponse(r, MOVEMENT_RECORD_ID).getHttpStatus());
+      acctStatic.verify(
+          () -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)), never());
+    }
+  }
+
+  /**
+   * ETP-6406 — a Goods Movement whose cost IS calculated is not stopped: the pre-check lets it
+   * reach {@code AcctServer.get()} as before.
+   */
+  @Test
+  public void testCalculatedGoodsMovementReachesTheAccountingEngine() throws Exception {
+    DocumentPostingService svc = new DocumentPostingService();
+    OBDal obDal = mock(OBDal.class);
+    stubMovement(obDal, Boolean.TRUE);
+    ConnectionProvider conn = mock(ConnectionProvider.class);
+
+    try (MockedStatic<OBDal> obDalStatic = mockStatic(OBDal.class);
+        MockedStatic<OBContext> obc = mockStatic(OBContext.class);
+        MockedStatic<AcctServer> acctStatic = mockStatic(AcctServer.class)) {
+      obDalStatic.when(OBDal::getInstance).thenReturn(obDal);
+      stubObContext(obc, "en_US");
+      acctStatic.when(() -> AcctServer.get(anyString(), anyString(), anyString(), any(ConnectionProvider.class)))
+          .thenReturn(null);
+
+      svc.post(TABLE_ID_M_MOVEMENT, MOVEMENT_RECORD_ID, conn);
+
+      acctStatic.verify(
+          () -> AcctServer.get(eq(TABLE_ID_M_MOVEMENT), anyString(), anyString(), any(ConnectionProvider.class)));
+      verify(obDal, never()).getConnection();
     }
   }
 }

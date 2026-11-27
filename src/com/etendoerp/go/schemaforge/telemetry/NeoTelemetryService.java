@@ -128,6 +128,15 @@ public class NeoTelemetryService {
   private static final String PROP_PAIRS_UNCHECKED = "pairs_unchecked";
   private static final String PROP_PAIRS_SENT_TO_PANEL = "pairs_sent_to_panel";
   private static final String PROP_PRESELECTION_CHANGED = "preselection_changed";
+  /**
+   * ETP-6359 — the AI second layer of the bounce-pair KPI: whether the rejection had an
+   * assessment, the probability (0-100) of the outflow the user chose, whether the AI recommended
+   * one and whether the user accepted it. Shape only, like the keys above.
+   */
+  private static final String PROP_AI_ASSESSED = "ai_assessed";
+  private static final String PROP_AI_PROBABILITY = "ai_probability";
+  private static final String PROP_AI_RECOMMENDED = "ai_recommended";
+  private static final String PROP_AI_RECOMMENDATION_ACCEPTED = "ai_recommendation_accepted";
   private static final String PROP_ADJUSTED = "adjusted";
   /**
    * Customer portal KPI property keys (ETP-6209, {@code PortalKpiTelemetry}). Shape only:
@@ -139,6 +148,19 @@ public class NeoTelemetryService {
   private static final String PROP_ORIGIN = "origin";
   private static final String PROP_PIECE = "piece";
   private static final String PROP_DOC_TYPE = "doc_type";
+  /**
+   * ETP-6209 portal session KPIs: {@code portal_session} is a keyed HMAC pseudonym of the session
+   * id; the others are booleans or fixed vocabularies ({@link #VOCABULARY_PROPERTY_VALUES}).
+   */
+  private static final String PROP_PORTAL_SESSION = "portal_session";
+  private static final String PROP_IN_UNIVERSE = "in_universe";
+  private static final String PROP_IS_ORIGIN_DOC = "is_origin_doc";
+  private static final String PROP_INTERACTION = "interaction";
+  private static final String PROP_FIRST_INTERACTION = "first_interaction";
+  private static final String PROP_RULE = "rule";
+  private static final String PROP_PURPOSE = "purpose";
+  private static final String PROP_REFERENCE = "reference";
+  private static final String PROP_LOCATION = "location";
   /** ETP-6247 — the remittance SEPA file event ({@code backend_remittance_file_generated}). */
   private static final String PROP_DIRECTION = "direction";
   private static final String PROP_INVOICE_COUNT = "invoice_count";
@@ -152,6 +174,16 @@ public class NeoTelemetryService {
   /** Every value {@value #PROP_ROLE_GROUPS} may carry: the SPA's {@code ROLE_GROUP_VALUES}. */
   static final Set<String> ROLE_GROUP_VALUES = Collections.unmodifiableSet(new HashSet<>(
       Arrays.asList("warehouse", "sales", "purchasing", "finance", "admin", "other")));
+
+  /** The value interactions of the portal session KPI (rule v1). */
+  private static final Set<String> PORTAL_INTERACTIONS = new HashSet<>(Arrays.asList(
+      "home_document", "related_document", "quotation_decision"));
+
+  /**
+   * ETP-6209 — scalar keys that may only take one of a fixed set of values; any other value drops
+   * the property, so none of them can carry free text.
+   */
+  private static final Map<String, Set<String>> VOCABULARY_PROPERTY_VALUES = buildVocabularies();
 
   /** Directions of {@value #PROP_DIRECTION}: AR collects, AP pays. */
   private static final Set<String> DIRECTION_VALUES = new HashSet<>(Arrays.asList("AR", "AP"));
@@ -200,6 +232,10 @@ public class NeoTelemetryService {
       PROP_PAIRS_UNCHECKED,
       PROP_PAIRS_SENT_TO_PANEL,
       PROP_PRESELECTION_CHANGED,
+      PROP_AI_ASSESSED,
+      PROP_AI_PROBABILITY,
+      PROP_AI_RECOMMENDED,
+      PROP_AI_RECOMMENDATION_ACCEPTED,
       PROP_DIRECTION,
       PROP_INVOICE_COUNT,
       PROP_IS_REGENERATION,
@@ -210,6 +246,15 @@ public class NeoTelemetryService {
       PROP_ORIGIN,
       PROP_PIECE,
       PROP_DOC_TYPE,
+      PROP_PORTAL_SESSION,
+      PROP_IN_UNIVERSE,
+      PROP_IS_ORIGIN_DOC,
+      PROP_INTERACTION,
+      PROP_FIRST_INTERACTION,
+      PROP_RULE,
+      PROP_PURPOSE,
+      PROP_REFERENCE,
+      PROP_LOCATION,
       "category",
       "channel",
       "count",
@@ -248,8 +293,13 @@ public class NeoTelemetryService {
       PROP_PRESELECTED,
       PROP_CHOSEN_AMONG_ALTERNATIVES,
       PROP_PRESELECTION_CHANGED,
+      PROP_AI_ASSESSED,
+      PROP_AI_RECOMMENDED,
+      PROP_AI_RECOMMENDATION_ACCEPTED,
       PROP_IS_REGENERATION,
-      PROP_ADJUSTED));
+      PROP_ADJUSTED,
+      PROP_IN_UNIVERSE,
+      PROP_IS_ORIGIN_DOC));
 
   private static final Map<String, NumericBounds> NUMERIC_PROPERTY_BOUNDS =
       buildNumericBounds();
@@ -454,6 +504,19 @@ public class NeoTelemetryService {
     return Math.round(nanos / 1_000_000.0d);
   }
 
+  /** The fixed vocabularies of the ETP-6209 portal KPI keys. */
+  private static Map<String, Set<String>> buildVocabularies() {
+    Map<String, Set<String>> vocabularies = new HashMap<>();
+    vocabularies.put(PROP_INTERACTION, PORTAL_INTERACTIONS);
+    vocabularies.put(PROP_FIRST_INTERACTION, PORTAL_INTERACTIONS);
+    vocabularies.put(PROP_RULE, Collections.singleton("v1"));
+    vocabularies.put(PROP_PURPOSE, new HashSet<>(Arrays.asList("preview", "download")));
+    vocabularies.put(PROP_REFERENCE, new HashSet<>(Arrays.asList("learnMore", "startFree")));
+    vocabularies.put(PROP_LOCATION, new HashSet<>(Arrays.asList("header", "mobile", "rail")));
+    // doc_type and origin predate these and other events may use them: left as plain strings.
+    return Collections.unmodifiableMap(vocabularies);
+  }
+
   private static Map<String, Object> sanitizeProperties(Map<String, ?> properties) {
     Map<String, Object> sanitized = new LinkedHashMap<>();
     if (properties == null) {
@@ -478,6 +541,9 @@ public class NeoTelemetryService {
     }
     if (PROP_DIRECTION.equals(key)) {
       return DIRECTION_VALUES.contains(value) ? value : null;
+    }
+    if (VOCABULARY_PROPERTY_VALUES.containsKey(key)) {
+      return VOCABULARY_PROPERTY_VALUES.get(key).contains(value) ? value : null;
     }
     if (NUMERIC_PROPERTY_BOUNDS.containsKey(key)) {
       return isSafeNumber(key, value) ? value : null;
@@ -549,6 +615,8 @@ public class NeoTelemetryService {
     bounds.put(PROP_PAIRS_DISCARDED, new NumericBounds(0, MAX_PAIRS));
     bounds.put(PROP_PAIRS_UNCHECKED, new NumericBounds(0, MAX_PAIRS));
     bounds.put(PROP_PAIRS_SENT_TO_PANEL, new NumericBounds(0, MAX_PAIRS));
+    // ETP-6359: an integer percentage.
+    bounds.put(PROP_AI_PROBABILITY, new NumericBounds(0, 100));
     // ETP-6247: distinct invoices of one remittance.
     bounds.put(PROP_INVOICE_COUNT, new NumericBounds(0, 1000000));
     bounds.put(PROP_HTTP_STATUS, new NumericBounds(100, 599));

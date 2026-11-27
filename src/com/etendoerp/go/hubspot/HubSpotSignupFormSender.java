@@ -45,6 +45,7 @@ import com.etendoerp.go.hubspot.HubSpotOutboxStore.PendingEvent;
 class HubSpotSignupFormSender {
 
   private static final Logger log = LogManager.getLogger(HubSpotSignupFormSender.class);
+  private static final String LEGAL_CONSENT_OPTIONS = "legalConsentOptions";
 
   private final HubSpotClient client;
   private final HubSpotSignupForm signupForm;
@@ -75,13 +76,26 @@ class HubSpotSignupFormSender {
       }
     }
     JSONObject body = new JSONObject().put("fields", fields);
-    JSONObject context = formContext(payloadOf(event));
+    JSONObject signupContext = payloadOf(event);
+    JSONObject context = formContext(signupContext);
     if (context.length() > 0) {
       body.put("context", context);
     }
+    JSONObject consent = legalConsentOptions(signupContext);
+    if (consent != null) {
+      body.put(LEGAL_CONSENT_OPTIONS, consent);
+    }
     Response response;
     try {
-      response = client.send(signupForm.baseUrl(), "POST", signupForm.submitPath(), body);
+      response = submit(body);
+      if (consent != null && !response.isSuccess() && !response.isRetryable()) {
+        // A consent HubSpot does not take (an unknown subscription type, say) must not cost the
+        // contact its source: the sign-up goes again without it, and the refusal is logged.
+        log.warn("HubSpot refused the consent of account {}; sending the sign-up without it: {}",
+            event.accountId(), describe("POST", signupForm.submitPath(), response));
+        body.remove(LEGAL_CONSENT_OPTIONS);
+        response = submit(body);
+      }
     } catch (HubSpotUnreachableException e) {
       return Outcome.retry(e.getMessage());
     }
@@ -95,6 +109,36 @@ class HubSpotSignupFormSender {
     // Usually a field the form does not have: worth the response in the log (marketing's spec).
     log.warn("HubSpot refused the sign-up form of account {}: {}", event.accountId(), reason);
     return Outcome.failed(reason);
+  }
+
+  private Response submit(JSONObject body) throws HubSpotUnreachableException {
+    return client.send(signupForm.baseUrl(), "POST", signupForm.submitPath(), body);
+  }
+
+  /**
+   * ETP-6363 — the consent the visitor gave by signing up, with the texts they were shown, which
+   * HubSpot keeps as its proof: the notice (consent to process) and, when the marketing
+   * subscription is configured, the promotional-mail checkbox with its state, sent also when it
+   * was unticked.
+   *
+   * @return the {@code legalConsentOptions}, or {@code null} when the sign-up kept no notice
+   */
+  JSONObject legalConsentOptions(JSONObject signupContext) throws JSONException {
+    String notice = StringUtils.trimToNull(
+        signupContext.optString(HubSpotOutbox.FIELD_CONSENT_TEXT, null));
+    if (notice == null) {
+      return null;
+    }
+    JSONObject consent = new JSONObject().put("consentToProcess", true).put("text", notice);
+    String label = StringUtils.trimToNull(
+        signupContext.optString(HubSpotOutbox.FIELD_COMMUNICATIONS_TEXT, null));
+    if (label != null && signupForm.subscriptionTypeId() != null) {
+      consent.put("communications", new JSONArray().put(new JSONObject()
+          .put("value", signupContext.optBoolean(HubSpotOutbox.FIELD_MARKETING_CONSENT, false))
+          .put("subscriptionTypeId", signupForm.subscriptionTypeId().longValue())
+          .put("text", label)));
+    }
+    return new JSONObject().put("consent", consent);
   }
 
   /** The visitor cookie (only when there is one), the page and its title. */

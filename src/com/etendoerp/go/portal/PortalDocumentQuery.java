@@ -83,6 +83,11 @@ final class PortalDocumentQuery {
   private static final String HAS_OVERDUE_INSTALMENT = "exists (select 1 from FIN_Payment_Schedule"
       + " ps where ps.invoice.id = e.id and ps.active = true and ps.outstandingAmount > 0"
       + " and ps.dueDate < :today)";
+  /**
+   * A quotation still valid today: no {@code ValidUntil}, or one not before today — the
+   * negation of {@code PortalDecisionService#isExpired} at the server's calendar day.
+   */
+  private static final String NOT_EXPIRED = "(e.validUntil is null or e.validUntil >= :today)";
   /** A line not yet fully delivered or not yet fully invoiced. */
   private static final String HAS_PENDING_LINE = "exists (select 1 from OrderLine l"
       + " where l.salesOrder.id = e.id and l.active = true"
@@ -92,7 +97,9 @@ final class PortalDocumentQuery {
     Map<String, Group> quotation = new LinkedHashMap<>();
     // CO is a quotation completed but not yet answered, the same "awaiting" the app's convert and
     // reject actions accept (QuotationTopbarActions: CO or UE). CL and VO show under "all" only.
-    quotation.put("awaiting", new Group(List.of("UE", "CO"), null));
+    // An expired one (a ValidUntil before today) awaits nothing: the portal offers no decision on
+    // it (PortalDecisionService#isExpired, ETP-6209 QA), so it shows under "all" only.
+    quotation.put("awaiting", new Group(List.of("UE", "CO"), NOT_EXPIRED));
     // ETGO_AC: accepted by the customer from the portal, not yet converted (Part C, PO Q1).
     quotation.put("accepted", new Group(List.of("ETGO_AC", "CA", "ETGO_CI"), null));
     quotation.put("rejected", new Group(List.of("CJ"), null));
@@ -112,8 +119,10 @@ final class PortalDocumentQuery {
 
     Map<String, Group> invoice = new LinkedHashMap<>();
     // "Pendientes" is everything still owed, overdue included ("Ver facturas pendientes" of the
-    // home opens it); "Vencidas" is the overdue part of it.
-    invoice.put("pending", new Group(List.of("CO", "CL"), "e.outstandingAmount <> 0"));
+    // home opens it); "Vencidas" is the overdue part of it. Owed means a positive outstanding
+    // amount, the home's balance rule (outstandingByCurrency): a credit note in the customer's
+    // favour (negative outstanding) is not pending and shows under "all" only (ETP-6209 QA).
+    invoice.put("pending", new Group(List.of("CO", "CL"), "e.outstandingAmount > 0"));
     invoice.put("overdue", new Group(List.of("CO", "CL"), HAS_OVERDUE_INSTALMENT));
     invoice.put("paid", new Group(List.of("CO", "CL"), "e.outstandingAmount = 0"));
     GROUPS.put(PortalDocumentKind.INVOICE, invoice);
@@ -144,6 +153,8 @@ final class PortalDocumentQuery {
   /** {@code M_InOut.MovementType} of a customer shipment (outbound). */
   private static final String CUSTOMER_SHIPMENT = "C-";
 
+  /** Joins the conditions of a list query's {@code where}. */
+  private static final String AND = " and ";
   private static final String P_CLIENT = "clientId";
   private static final String P_BPARTNER = "bpartnerId";
   private static final String P_STATUSES = "statuses";
@@ -164,6 +175,11 @@ final class PortalDocumentQuery {
     final String search;
     final Group group;
     final Date today;
+    /**
+     * Invoices only (ETP-6209 QA CP-16, the app's "tipo" quick filter): {@code TRUE} credit notes
+     * only, {@code FALSE} invoices only, {@code null} both.
+     */
+    final Boolean creditNote;
 
     Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search) {
       this(statuses, dateFrom, dateToExclusive, search, null, null);
@@ -171,6 +187,14 @@ final class PortalDocumentQuery {
 
     Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search, Group group,
         Date today) {
+      this(statuses, dateFrom, dateToExclusive, search, group, today, null);
+    }
+
+    // One value per list filter of the HTTP route.
+    @SuppressWarnings("java:S107")
+    Filter(List<String> statuses, Date dateFrom, Date dateToExclusive, String search, Group group,
+        Date today, Boolean creditNote) {
+      this.creditNote = creditNote;
       this.statuses = statuses;
       this.dateFrom = dateFrom;
       this.dateToExclusive = dateToExclusive;
@@ -408,21 +432,67 @@ final class PortalDocumentQuery {
     return result;
   }
 
+  /** One kind's share of a header search: its newest matches and how many match in all. */
+  static final class KindMatches {
+    final PortalDocumentKind kind;
+    /** Every match of the kind, not only the ones in {@link #documents}. */
+    final long count;
+    /** The kind's newest matches, newest first. */
+    final List<BaseOBObject> documents;
+
+    KindMatches(PortalDocumentKind kind, long count, List<BaseOBObject> documents) {
+      this.kind = kind;
+      this.count = count;
+      this.documents = documents;
+    }
+  }
+
   /**
-   * Documents of every kind matching a search, newest first (the header search of the home).
-   * Each kind contributes at most {@code limit}; the merged list is cut to {@code limit}.
+   * A header search: the newest matches of every kind merged, and one {@link KindMatches} per
+   * kind with at least one match, in {@link PortalDocumentKind} order, so one kind with many
+   * matches cannot crowd the others out of the answer.
    */
-  static List<BaseOBObject> search(PortalSession session, String search, int limit) {
+  static final class SearchResult {
+    final List<BaseOBObject> documents;
+    final List<KindMatches> groups;
+
+    SearchResult(List<BaseOBObject> documents, List<KindMatches> groups) {
+      this.documents = documents;
+      this.groups = groups;
+    }
+  }
+
+  /**
+   * Documents of every kind matching a search (the header search of the home).
+   *
+   * <p>One page query per kind, of {@code max(limit, perKindLimit)} rows; a count query only for a
+   * kind whose page came back full (a shorter page is already the whole count). The merged
+   * {@code documents} are the {@code limit} newest across kinds, each kind contributing at most
+   * {@code limit}; each group holds the kind's {@code perKindLimit} newest.
+   *
+   * @return the merged list and the per-kind groups; both empty for a blank search
+   */
+  static SearchResult search(PortalSession session, String search, int limit, int perKindLimit) {
     if (StringUtils.isBlank(search)) {
-      return Collections.emptyList();
+      return new SearchResult(Collections.emptyList(), Collections.emptyList());
     }
     Filter filter = new Filter(null, null, null, search);
+    int pageSize = Math.max(limit, perKindLimit);
     List<BaseOBObject> all = new ArrayList<>();
+    List<KindMatches> groups = new ArrayList<>();
     for (PortalDocumentKind kind : PortalDocumentKind.values()) {
-      all.addAll(list(session, kind, filter, 0, limit));
+      List<BaseOBObject> page = list(session, kind, filter, 0, pageSize);
+      if (page.isEmpty()) {
+        continue;
+      }
+      all.addAll(page.subList(0, Math.min(limit, page.size())));
+      long count = page.size() < pageSize ? page.size() : count(session, kind, filter);
+      groups.add(new KindMatches(kind, count,
+          new ArrayList<>(page.subList(0, Math.min(perKindLimit, page.size())))));
     }
     sortNewestFirst(all);
-    return all.size() > limit ? new ArrayList<>(all.subList(0, limit)) : all;
+    return new SearchResult(all.size() > limit ? new ArrayList<>(all.subList(0, limit)) : all,
+        groups);
   }
 
   /** The {@code limit} newest visible documents of every kind, newest first. */
@@ -468,7 +538,7 @@ final class PortalDocumentQuery {
         .append(" and e.active = true")
         .append(" and e.salesTransaction = true")
         .append(" and e.documentStatus in (:").append(P_STATUSES).append(')')
-        .append(" and ").append(discriminator(kind));
+        .append(AND).append(discriminator(kind));
     if (filter.dateFrom != null) {
       where.append(" and e.").append(kind.getDateProperty()).append(" >= :").append(P_FROM);
     }
@@ -476,7 +546,11 @@ final class PortalDocumentQuery {
       where.append(" and e.").append(kind.getDateProperty()).append(" < :").append(P_TO);
     }
     if (filter.group != null && filter.group.condition != null) {
-      where.append(" and ").append(filter.group.condition);
+      where.append(AND).append(filter.group.condition);
+    }
+    if (filter.creditNote != null && kind == PortalDocumentKind.INVOICE) {
+      where.append(Boolean.TRUE.equals(filter.creditNote) ? AND : AND + "not ")
+          .append(PortalDocumentKind.creditNoteCondition("e.transactionDocument"));
     }
     if (filter.search != null) {
       where.append(" and (lower(e.documentNo) like :").append(P_SEARCH)

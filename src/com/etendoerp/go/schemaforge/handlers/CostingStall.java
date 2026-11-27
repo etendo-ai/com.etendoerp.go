@@ -35,6 +35,12 @@ import com.etendoerp.go.schemaforge.NeoResponse;
 /**
  * The refusal of a post whose cost is not calculated because costing itself is stuck (ETP-5714).
  *
+ * <p>Since ETP-6406 it is the same 409 {@code costNotCalculated} as the plain wait, flagged
+ * {@code stalled:true}: the cause is the same (cost still pending), so the code is the same, and
+ * an administrator fixing the cost makes the same post succeed. What changes is the retry
+ * guidance: {@code retryable:false} and no {@code retryAfterSeconds}, so no client loops on a
+ * queue that will not move by itself.</p>
+ *
  * <p>"Cost not calculated yet" is normally a matter of seconds: the costing background process
  * runs about every 30 seconds, works the queue oldest first and the post can simply be repeated.
  * In a live tenant it never succeeded: the client's costing rule used the standard algorithm, the
@@ -56,20 +62,17 @@ final class CostingStall {
   static final int STALLED_AFTER_MINUTES = 10;
   /** The AD message and the identity ({@code messageKeys}) of the refusal. */
   static final String MSG_COSTING_STALLED = "ETGO_CostCalculationStalled";
-  /** The error code of the refusal; not retryable. */
-  static final String ERROR_COSTING_STALLED = "costCalculationStalled";
+  /** Body flag that tells the stalled answer apart from the plain retryable wait. */
+  static final String BODY_STALLED = "stalled";
   /** {@code messageParams} entry carrying {@link #STALLED_AFTER_MINUTES}. */
   static final String MESSAGE_PARAMS_STALLED_AFTER_MINUTES = "stalledAfterMinutes";
-  private static final int SC_UNPROCESSABLE = 422;
 
-  private static final String FALLBACK_TEXT = "Cost calculation looks stalled: transactions have "
-      + "been waiting for their cost for a long time, so repeating the post will not help. An "
-      + "administrator must check the Costing Background process and the pending transactions.";
-  private static final String HINT = "Retrying will not help. An administrator must check the "
-      + "Costing Background process (its last runs) and the transactions still waiting for cost "
-      + "(M_Transaction with iscostcalculated N): a transaction the process cannot cost, for "
-      + "example a product with no cost for the organisation's costing rule, blocks every one "
-      + "behind it. Nothing was posted.";
+  private static final String FALLBACK_TEXT = "Cost has been pending for more than 10 minutes, "
+      + "usually because a product has no cost set. Fix the missing costs and post the document "
+      + "again.";
+  private static final String HINT = "Do not retry automatically: cost will not be calculated "
+      + "until the missing product costs are fixed. Tell the user, then post again. Nothing was "
+      + "posted.";
   /** Costing queue probe: is any uncalculated stocked transaction older than N minutes? */
   private static final String QUEUE_SQL = "SELECT EXISTS (SELECT 1 FROM m_transaction t "
       + "JOIN m_product p ON p.m_product_id = t.m_product_id "
@@ -89,18 +92,32 @@ final class CostingStall {
    * @return {@code true} when an uncalculated stocked transaction is older than the threshold
    */
   static boolean isQueueStalled(AcctServer acct) {
-    if (StringUtils.isAnyBlank(acct.AD_Client_ID, acct.AD_Org_ID)) {
+    return isQueueStalled(acct.AD_Client_ID, acct.AD_Org_ID);
+  }
+
+  /**
+   * {@link #isQueueStalled(AcctServer)} for a post refused before an accounting server exists: the
+   * cost pre-check of Physical Inventory and Internal Consumption (ETP-6406) knows the document's
+   * client and organisation, not an {@code AcctServer}.
+   *
+   * @param clientId the document's client
+   * @param orgId    the document's organisation
+   * @return {@code true} when an uncalculated stocked transaction is older than the threshold;
+   *     {@code false} when either id is blank or the queue cannot be read
+   */
+  static boolean isQueueStalled(String clientId, String orgId) {
+    if (StringUtils.isAnyBlank(clientId, orgId)) {
       return false;
     }
     try (PreparedStatement ps = OBDal.getInstance().getConnection().prepareStatement(QUEUE_SQL)) {
-      ps.setString(1, acct.AD_Client_ID);
-      ps.setString(2, acct.AD_Org_ID);
+      ps.setString(1, clientId);
+      ps.setString(2, orgId);
       ps.setInt(3, STALLED_AFTER_MINUTES);
       try (ResultSet rs = ps.executeQuery()) {
         return rs.next() && rs.getBoolean(1);
       }
     } catch (Exception e) {
-      log.debug("Could not probe the costing queue of org {}", acct.AD_Org_ID, e);
+      log.debug("Could not probe the costing queue of org {}", orgId, e);
       return false;
     }
   }
@@ -130,8 +147,10 @@ final class CostingStall {
   }
 
   /**
-   * The HTTP answer: 422, the code as {@code error}, {@code retryable:false}, no
-   * {@code retryAfterSeconds} and no {@code Retry-After}, and a hint for an administrator.
+   * The HTTP answer: the same 409 {@code costNotCalculated} as {@link #retryLater}, flagged
+   * {@code stalled:true}, but {@code retryable:false}, no
+   * {@code retryAfterSeconds} and no {@code Retry-After}, and a hint for an administrator
+   * (ETP-6406: one code for one cause; only the retry guidance differs).
    *
    * @param body   the flat body already carrying {@code success}, {@code message} and the identity
    * @param result the stalled post result
@@ -140,12 +159,13 @@ final class CostingStall {
    */
   static NeoResponse answer(JSONObject body, DocumentPostingService.PostResult result)
       throws JSONException {
-    body.put("error", ERROR_COSTING_STALLED);
-    body.put("status", SC_UNPROCESSABLE);
+    body.put("error", DocumentPostingService.ERROR_COST_NOT_CALCULATED);
+    body.put("status", DocumentPostingService.STATUS_RETRY_LATER);
     body.put("detail", result.message());
+    body.put(BODY_STALLED, true);
     body.put("retryable", false);
     body.put("hint", HINT);
-    return NeoResponse.error(SC_UNPROCESSABLE, body);
+    return NeoResponse.error(DocumentPostingService.STATUS_RETRY_LATER, body);
   }
 
   private static final String COST_RETRY_HINT = "Cost is calculated by a background process that "

@@ -21,7 +21,6 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
@@ -82,8 +81,8 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  *
  * <p>Covers:
  * <ul>
- *   <li>{@code handle()} — non-ACTION exit, clone delegation, unknown action, wrong method,
- *       documentAction with null/real receiptId (fillMissingStorageBins paths), and
+ *   <li>{@code handle()} — wrong method,
+ *       documentAction with a real receiptId (fillMissingStorageBins paths), and
  *       missing required params for each action.</li>
  *   <li>{@code handleImportShipmentLines()} — missing recordId, receipt not found, no lines.</li>
  *   <li>{@code handleAvailableShipments()} — missing businessPartner, SQL empty, SQL with rows.</li>
@@ -96,6 +95,9 @@ import com.etendoerp.go.schemaforge.util.NeoActionContract;
  *   <li>{@code actionContracts()} — every declared action is served by {@code handle()}, and the
  *       contract refuses malformed agent calls while accepting the bodies the flow sends.</li>
  * </ul>
+ *
+ * <p>What it shares with the return to vendor (posting/unpost/sifDefaults wiring, the generic
+ * action routing) is covered by {@code AbstractReturnDocumentHeaderHandlerTest}.
  *
  * @covers com.etendoerp.go.schemaforge.ReturnMaterialReceiptHeaderHandler
  * @covers com.etendoerp.go.schemaforge.NeoQuotaCreateCheck
@@ -118,36 +120,7 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
     when(handler.cloneRecordHandler.handle(any())).thenReturn(null);
   }
 
-  // ── handle() — non-ACTION early exit ──────────────────────────────────────
-
-  @Test
-  public void testHandleReturnsNullForNonActionEndpoint() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("GET").endpointType(NeoEndpointType.CRUD).build();
-    assertNull(handler.handle(ctx));
-  }
-
-  // ── handle() — clone handler delegation ───────────────────────────────────
-
-  @Test
-  public void testHandleDelegatesToCloneHandlerAndReturnsItsResponse() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("clone").build();
-    NeoResponse cloneResp = new NeoResponse(200, new JSONObject());
-    when(handler.cloneRecordHandler.handle(ctx)).thenReturn(cloneResp);
-    assertSame(cloneResp, handler.handle(ctx));
-  }
-
   // ── handle() — action routing ─────────────────────────────────────────────
-
-  @Test
-  public void testHandleReturnsNullForUnknownAction() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("unknownAction").build();
-    assertNull(handler.handle(ctx));
-  }
 
   @Test
   public void testHandleReturnsNullForKnownActionWithWrongMethod() {
@@ -158,15 +131,6 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
   }
 
   // ── handle() — documentAction / fillMissingStorageBins ────────────────────
-
-  @Test
-  public void testHandleDocumentActionWithNullReceiptIdReturnsNull() {
-    // fillMissingStorageBins early-returns when receiptId is null
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("documentAction").recordId(null).build();
-    assertNull(handler.handle(ctx));
-  }
 
   @Test
   public void testHandleDocumentActionReceiptNotFoundSkipsFillAndReturnsNull() {
@@ -228,16 +192,6 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
     NeoContext ctx = NeoContext.builder()
         .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
         .fieldName("availableShipmentLines").build();
-    NeoResponse result = handler.handle(ctx);
-    assertNotNull(result);
-    assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
-  }
-
-  @Test
-  public void testHandleCreateReturnInvoiceMissingRecordIdReturnsBadRequest() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("createReturnInvoice").recordId(null).build();
     NeoResponse result = handler.handle(ctx);
     assertNotNull(result);
     assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
@@ -557,6 +511,250 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
       assertNotNull(result);
       assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
     }
+  }
+
+  /**
+   * ETP-6179 CP-12: the SPA asks a validateOnly dry run BEFORE confirming the draft return. A
+   * customer without payment terms/method is refused right there (same 400 and message as the
+   * real call), so the return is never confirmed without its rectificativa. Nothing is saved.
+   */
+  @Test
+  public void testValidateOnlyOnADraftRefusesACustomerWithoutPaymentTermsAndSavesNothing()
+      throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      when(provider.get(Invoice.class)).thenReturn(mock(Invoice.class));
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      ShipmentInOut receipt = draftReceiptWithOneLine(dal);
+      stubRectificativeDocType(dal);
+      BusinessPartner bp = mock(BusinessPartner.class);
+      when(receipt.getBusinessPartner()).thenReturn(bp);
+      when(bp.getPaymentTerms()).thenReturn(null);
+
+      NeoResponse result = handler.handle(NeoContext.builder()
+          .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+          .fieldName("createReturnInvoice").recordId("rec-1")
+          .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+      assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
+      assertEquals(BP_FINANCIALS_MISSING, errorMessage(result));
+      Mockito.verify(dal, Mockito.never()).save(any());
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: a dry run that passes every check answers 200 {validateOnly:true} on the
+   * draft, saving no invoice and completing nothing.
+   */
+  @Test
+  public void testValidateOnlyOnADraftThatPassesAnswersOkAndSavesNothing() throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class);
+         MockedStatic<NeoBackgroundDefaultsService> defaults =
+             Mockito.mockStatic(NeoBackgroundDefaultsService.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      Invoice invoice = mock(Invoice.class);
+      when(provider.get(Invoice.class)).thenReturn(invoice);
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      ShipmentInOut receipt = draftReceiptWithOneLine(dal);
+      stubRectificativeDocType(dal);
+      BusinessPartner bp = mock(BusinessPartner.class);
+      when(receipt.getBusinessPartner()).thenReturn(bp);
+      when(invoice.getCurrency()).thenReturn(mock(org.openbravo.model.common.currency.Currency.class));
+      InvoiceLine il = mock(InvoiceLine.class);
+      when(handler.createDraftInvoiceHandler.createShipmentInvoiceLine(
+          any(), any(), any(), anyLong())).thenReturn(il);
+      when(il.getUnitPrice()).thenReturn(new BigDecimal("10.00"));
+      Invoice source = mock(Invoice.class);
+      Session session = mock(Session.class);
+      when(dal.getSession()).thenReturn(session);
+      Query invoiceQuery = mock(Query.class);
+      when(session.createQuery(anyString(), eq(Invoice.class))).thenReturn(invoiceQuery);
+      when(invoiceQuery.setParameter(anyString(), any())).thenReturn(invoiceQuery);
+      when(invoiceQuery.setMaxResults(anyInt())).thenReturn(invoiceQuery);
+      when(invoiceQuery.list()).thenReturn(Collections.singletonList(source));
+      ShipmentInOutLine line = receipt.getMaterialMgmtShipmentInOutLineList().get(0);
+      when(line.getCanceledInoutLine()).thenReturn(mock(ShipmentInOutLine.class));
+
+      NeoResponse result = handler.handle(NeoContext.builder()
+          .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+          .fieldName("createReturnInvoice").recordId("rec-1")
+          .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+      assertEquals(200, result.getHttpStatus());
+      JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+      assertTrue(data.getBoolean("validateOnly"));
+      assertEquals("inv-src-1", data.getJSONArray("rectifiedInvoices").getString(0));
+      Mockito.verify(dal, Mockito.never()).save(any());
+      Mockito.verify(dal, Mockito.never()).flush();
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: only the JSON boolean {@code true} is a dry run; anything else reads as no.
+   */
+  @Test
+  public void testIsValidateOnlyAcceptsOnlyTheJsonBooleanTrue() throws Exception {
+    assertTrue(ReturnInvoiceSupport.isValidateOnly(new JSONObject().put("validateOnly", true)));
+    assertFalse(ReturnInvoiceSupport.isValidateOnly(null));
+    assertFalse(ReturnInvoiceSupport.isValidateOnly(new JSONObject()));
+    for (Object value : new Object[] {false, "true", 1, "1", JSONObject.NULL}) {
+      assertFalse(String.valueOf(value),
+          ReturnInvoiceSupport.isValidateOnly(new JSONObject().put("validateOnly", value)));
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: a draft return without a real dry run (no flag, false, or a non-boolean such
+   * as the string "true" or 1) is still refused 400 before anything is read or saved; so is a
+   * dry run on a status other than draft or completed.
+   */
+  @Test
+  public void testCreateReturnInvoiceOnANonCompletedReturnWithoutARealDryRunIsStill400()
+      throws Exception {
+    Object[][] cases = {
+        {"DR", new JSONObject()},
+        {"DR", new JSONObject().put("validateOnly", false)},
+        {"DR", new JSONObject().put("validateOnly", "true")},
+        {"DR", new JSONObject().put("validateOnly", 1)},
+        {"VO", new JSONObject().put("validateOnly", true)},
+    };
+    for (Object[] c : cases) {
+      try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+           MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class)) {
+        OBDal dal = mock(OBDal.class);
+        dalMock.when(OBDal::getInstance).thenReturn(dal);
+        ShipmentInOut receipt = mock(ShipmentInOut.class);
+        when(dal.get(ShipmentInOut.class, "rec-1")).thenReturn(receipt);
+        when(receipt.getDocumentStatus()).thenReturn((String) c[0]);
+
+        NeoResponse result = handler.handle(NeoContext.builder()
+            .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+            .fieldName("createReturnInvoice").recordId("rec-1")
+            .requestBody((JSONObject) c[1]).build());
+
+        String label = c[0] + " " + c[1];
+        assertEquals(label, HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
+        assertEquals(label, "Receipt must be completed before creating a return invoice",
+            errorMessage(result));
+        Mockito.verify(receipt, Mockito.never()).getMaterialMgmtShipmentInOutLineList();
+        Mockito.verify(dal, Mockito.never()).save(any());
+      }
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: a dry run is not limited to drafts. On a completed return it answers 200
+   * {validateOnly:true, rectifiedInvoices} and creates nothing: no save, no flush, no link, no
+   * completion.
+   */
+  @Test
+  public void testValidateOnlyOnACompletedReturnAnswersOkAndCreatesNothing() throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      mockCreateReturnInvoiceFlow(dal, provider, "ret-inv-dry");
+
+      try (CompletionMocks completion = new CompletionMocks(dal, completionSuccess())) {
+        NeoResponse result = handler.handle(NeoContext.builder()
+            .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+            .fieldName("createReturnInvoice").recordId("rec-1")
+            .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+        assertEquals(200, result.getHttpStatus());
+        JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+        assertTrue(data.getBoolean("validateOnly"));
+        assertEquals(1, data.getJSONArray("rectifiedInvoices").length());
+        assertEquals("inv-src-1", data.getJSONArray("rectifiedInvoices").getString(0));
+        assertFalse("a dry run reports no created invoice", data.has("id"));
+        Mockito.verify(dal, Mockito.never()).save(any());
+        Mockito.verify(dal, Mockito.never()).flush();
+        Mockito.verify(provider, Mockito.never()).get(ReversedInvoice.class);
+        Mockito.verify(completion.processInvoiceUtil, Mockito.never())
+            .process(anyString(), anyString(), anyString(), anyString(), anyString(), any(), any());
+      }
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: validateOnly given as a non-boolean (the string "true", the number 1) is not
+   * a dry run: on a completed return it runs the real creation and completes the invoice.
+   */
+  @Test
+  public void testNonBooleanValidateOnlyRunsTheRealCreation() throws Exception {
+    for (Object flag : new Object[] {"true", 1}) {
+      try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+           MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+           MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+        OBDal dal = mock(OBDal.class);
+        dalMock.when(OBDal::getInstance).thenReturn(dal);
+        OBProvider provider = mock(OBProvider.class);
+        providerMock.when(OBProvider::getInstance).thenReturn(provider);
+        stubReturnInvoiceQueries(dal, "inv-src-1");
+        Invoice invoice = mockCreateReturnInvoiceFlow(dal, provider, "ret-inv-real");
+
+        try (CompletionMocks completion = new CompletionMocks(dal, completionSuccess())) {
+          mockCompletedInvoice(dal, "ret-inv-real", "REC-REAL", "CO");
+
+          NeoResponse result = handler.handle(NeoContext.builder()
+              .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+              .fieldName("createReturnInvoice").recordId("rec-1")
+              .requestBody(new JSONObject().put("validateOnly", flag)).build());
+
+          String label = String.valueOf(flag);
+          assertEquals(label, 200, result.getHttpStatus());
+          JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+          assertEquals(label, "ret-inv-real", data.getString("id"));
+          assertFalse(label, data.has("validateOnly"));
+          Mockito.verify(dal).save(invoice);
+          Mockito.verify(completion.processInvoiceUtil)
+              .process(eq("ret-inv-real"), eq("CO"), anyString(), anyString(), anyString(), any(),
+                  any());
+        }
+      }
+    }
+  }
+
+  private static ShipmentInOut draftReceiptWithOneLine(OBDal dal) {
+    ShipmentInOut receipt = mock(ShipmentInOut.class);
+    when(dal.get(ShipmentInOut.class, "rec-1")).thenReturn(receipt);
+    when(receipt.getDocumentStatus()).thenReturn("DR");
+    ShipmentInOutLine line = mock(ShipmentInOutLine.class);
+    when(line.getProduct()).thenReturn(mock(Product.class));
+    when(line.getMovementQuantity()).thenReturn(new BigDecimal("5.00"));
+    when(receipt.getMaterialMgmtShipmentInOutLineList())
+        .thenReturn(Collections.singletonList(line));
+    Organization org = mock(Organization.class);
+    when(receipt.getOrganization()).thenReturn(org);
+    when(org.getId()).thenReturn("org-1");
+    return receipt;
+  }
+
+  @SuppressWarnings("unchecked")
+  private static void stubRectificativeDocType(OBDal dal) {
+    DocumentType docType = mock(DocumentType.class);
+    Organization docOrg = mock(Organization.class);
+    when(docType.getOrganization()).thenReturn(docOrg);
+    when(docOrg.getId()).thenReturn("org-1");
+    OBCriteria<DocumentType> criteria = mock(OBCriteria.class);
+    when(dal.createCriteria(DocumentType.class)).thenReturn(criteria);
+    when(criteria.add(any())).thenReturn(criteria);
+    when(criteria.addOrderBy(anyString(), anyBoolean())).thenReturn(criteria);
+    when(criteria.list()).thenReturn(Collections.singletonList(docType));
   }
 
   @Test
@@ -1090,36 +1288,7 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
     }
   }
 
-  @Test
-  public void handleRectifiableInvoices_missingRecordIdReturnsBadRequest() {
-    NeoResponse result = handler.handle(NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("rectifiableInvoices").build());
-    assertNotNull(result);
-    assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
-  }
-
-
   // ── ETP-5712: discoverability, response shape, duplicates, zero-amount guard ──────
-
-  /**
-   * ETP-5712: confirming a return does NOT create the factura rectificativa, and an agent that
-   * reads only {@code documentAction} must learn that and the call that does. The goods
-   * receipt/shipment keep their own text ({@link InOutCompletionContract#CONTRACT}).
-   */
-  @Test
-  public void testDocumentActionDescriptionSaysConfirmingDoesNotCreateTheRectificativa() {
-    String text = handler.actionContracts().get("documentAction").getDescription();
-
-    assertTrue(text, text.contains("DRAFT"));
-    assertTrue(text, text.contains("createReturnInvoice"));
-    assertTrue(text, text.contains("factura rectificativa"));
-    assertTrue(text, text.contains("does NOT create"));
-    assertFalse("the return text must not be the goods receipt/shipment one",
-        text.contains("createGoodsReceipt"));
-    assertFalse("the shared goods receipt/shipment contract stays untouched",
-        InOutCompletionContract.CONTRACT.getDescription().contains("createReturnInvoice"));
-  }
 
   /** ETP-5712: the createReturnInvoice description warns about duplicates and lists the response. */
   @Test
@@ -1211,7 +1380,9 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
       throws Exception {
     for (JSONObject body : new JSONObject[] {null, new JSONObject().put("allowDuplicate", false),
         new JSONObject().put("allowDuplicate", true),
-        new JSONObject().put("allowDuplicate", "true"), new JSONObject().put("allowDuplicate", 1)}) {
+        new JSONObject().put("allowDuplicate", "true"), new JSONObject().put("allowDuplicate", 1),
+        // ETP-6179 CP-12: a dry run judges the one-per-return rule exactly as the real call.
+        new JSONObject().put("validateOnly", true)}) {
       try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
            MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
            MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
@@ -1407,13 +1578,6 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
   }
 
   // ── afterHandle() — guard conditions ──────────────────────────────────────
-
-  @Test
-  public void testAfterHandleReturnsNullForNonGetMethod() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION).build();
-    assertNull(handler.afterHandle(ctx));
-  }
 
   @Test
   public void testAfterHandleReturnsNullWhenNoPreviousResult() {
@@ -2018,39 +2182,7 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
     }
   }
 
-  // ── ETP-5714: the unpost gate is wired in front of the posting service ─────
-
-  /** The behavior of the gate is covered in {@code GoodsPostingContractsTest}; this is the wiring. */
-  @Test
-  public void handle_unpostGateRunsBeforeThePostingService() throws Exception {
-    com.etendoerp.go.schemaforge.handlers.DocumentPostingService service =
-        mock(com.etendoerp.go.schemaforge.handlers.DocumentPostingService.class);
-    NeoContext ctx = NeoContext.builder().httpMethod("POST")
-        .endpointType(NeoEndpointType.ACTION).fieldName("unpost").recordId("r-1").build();
-    NeoResponse refusal = NeoResponse.error(422, "not posted");
-    ReturnMaterialReceiptHeaderHandler h = new ReturnMaterialReceiptHeaderHandler();
-    h.setPostingService(service);
-
-    try (MockedStatic<GoodsPostingContracts> gate = Mockito.mockStatic(GoodsPostingContracts.class)) {
-      gate.when(() -> GoodsPostingContracts.checkUnpost(ctx)).thenReturn(refusal);
-
-      assertSame(refusal, h.handle(ctx));
-      Mockito.verify(service, Mockito.never()).handleAction(any());
-    }
-  }
-
   // ── sifDefaults: the SIF fields of its factura rectificativa (ETP-6179) ──
-
-  /** sifDefaults is declared as a read action that creates nothing and documents its answer. */
-  @Test
-  public void actionContracts_declaresSifDefaultsAsAReadOnlyPreview() {
-    java.util.Map<String, NeoActionContract> contracts = handler.actionContracts();
-
-    InvoiceSifPreviewTestSupport.assertReadOnlySifDefaultsContract(
-        contracts.get(InvoiceSifPreset.ACTION_SIF_DEFAULTS));
-    assertTrue(contracts.get("createReturnInvoice").getParams().stream()
-        .anyMatch(p -> InvoiceSifPreset.PARAM_SIF_FIELDS.equals(p.getName())));
-  }
 
   /**
    * sifDefaults on a customer return previews the factura rectificativa createReturnInvoice would
@@ -2084,20 +2216,6 @@ public class ReturnMaterialReceiptHeaderHandlerTest {
       assertEquals("R1", fields.getString(Invoice.PROPERTY_TBAIREVERSEINVOICECODE));
       assertEquals("R1", fields.getString(Invoice.PROPERTY_ETVFACINVTYPE));
       Mockito.verify(mocks.dal, Mockito.never()).save(any());
-    }
-  }
-
-  /** sifDefaults without a record, or on a return that does not exist, is refused. */
-  @Test
-  public void handle_sifDefaultsRefusesAMissingReturn() throws Exception {
-    try (InvoiceSifPreviewTestSupport.PreviewMocks mocks =
-        new InvoiceSifPreviewTestSupport.PreviewMocks(true)) {
-      assertEquals(HttpServletResponse.SC_BAD_REQUEST, handler.handle(
-          InvoiceSifPreviewTestSupport.sifDefaults("return-material-receipt", null))
-          .getHttpStatus());
-      assertEquals(HttpServletResponse.SC_NOT_FOUND, handler.handle(
-          InvoiceSifPreviewTestSupport.sifDefaults("return-material-receipt", "missing"))
-          .getHttpStatus());
     }
   }
 

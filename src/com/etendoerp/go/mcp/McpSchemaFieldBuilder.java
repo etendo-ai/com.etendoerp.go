@@ -31,6 +31,7 @@ import org.hibernate.criterion.Restrictions;
 import org.openbravo.base.model.Entity;
 import org.openbravo.base.model.ModelProvider;
 import org.openbravo.base.model.Property;
+import org.openbravo.base.structure.BaseOBObject;
 import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.model.ad.datamodel.Column;
@@ -376,7 +377,7 @@ final class McpSchemaFieldBuilder {
     if (propName == null || !requiredWhenByField.containsKey(propName)) {
       return;
     }
-    fieldObj.put("userRequired", true);
+    fieldObj.put(KEY_USER_REQUIRED, true);
     String requiredWhen = requiredWhenByField.get(propName);
     if (requiredWhen != null && !requiredWhen.trim().isEmpty()) {
       fieldObj.put("requiredWhen", requiredWhen.trim());
@@ -757,12 +758,39 @@ final class McpSchemaFieldBuilder {
    * ETP-5848: the column's length on a text field, so an agent does not learn it from a
    * "Value too long … maximum allowed 40" refusal after the create. Text only: on any other type
    * the AD length is the storage of an id, a number or a date, not something the caller types.
+   *
+   * <p><b>ETP-5806 CP-6b — the AD column is not always the enforced cap.</b> A column whose write
+   * path validates against a narrower limit than {@code AD_Column.FIELDLENGTH} must publish the
+   * narrower one, or the schema promises a width the create then refuses: {@code EM_OBSEPA_StrtNm}
+   * is {@code VARCHAR(70)} on purpose, while {@code StructuredAddressComposer} rejects a street
+   * over 60 because that is what fits the composed {@code C_Location.Address1} line, and a
+   * 61-character street therefore came back {@code 400 validation_error} after {@code
+   * etendo_schema} had advertised {@code maxLength: 70}. The override is resolved per column
+   * through {@link NeoSelectorPolicy#maxLengthOverride} — structural, naming no spec and no
+   * entity, so it applies identically on the wrapper path ({@code buildVirtualAddressFields}) and
+   * on the direct table walk ({@code buildSchemaFieldsArray}), for every view.
+   *
+   * <p>The published value is the <b>narrower</b> of the two, never the override alone: the
+   * override says what the write path enforces today, and the column says what the row can hold.
+   * If the column were ever narrowed below its override (shrinking {@code EM_OBSEPA_StrtNm} to 40
+   * would do it), publishing 60 would reintroduce exactly the bug above with the roles reversed —
+   * a schema promising a width the insert refuses.
    */
   static void addMaxLength(JSONObject fieldObj, Column col, String type) throws JSONException {
-    Long length = col.getLength();
-    if (McpConstants.TYPE_STRING.equals(type) && length != null && length > 0) {
-      fieldObj.put(KEY_MAX_LENGTH, length.longValue());
+    if (!McpConstants.TYPE_STRING.equals(type)) {
+      return;
     }
+    Integer enforced = NeoSelectorPolicy.maxLengthOverride(col.getDBColumnName());
+    Long length = col.getLength();
+    boolean hasLength = length != null && length > 0;
+    if (enforced == null) {
+      if (hasLength) {
+        fieldObj.put(KEY_MAX_LENGTH, length.longValue());
+      }
+      return;
+    }
+    fieldObj.put(KEY_MAX_LENGTH,
+        hasLength ? Math.min(length, enforced.longValue()) : enforced.longValue());
   }
 
   /**
@@ -791,19 +819,16 @@ final class McpSchemaFieldBuilder {
     // ETP-5669: the field (DAL property) name, which customizations see; "column" keeps the DB name.
     fieldObj.put("action", fieldObj.optString("name", col.getDBColumnName()));
     McpSchemaActionFields.addActionValues(fieldObj, col);
-    // Resolve process info — mirror NeoButtonActionHelper / NeoProcessService logic
-    Process classicProcess = col.getProcess();
-    org.openbravo.client.application.Process obuiappProcess = col.getOBUIAPPProcess();
-    if (classicProcess == null && obuiappProcess == null) {
-      obuiappProcess = NeoAccessHelper.resolveFallbackObuiappProcess(col);
-    }
+    // Resolve process info — the same resolution the invokability verdict reads
+    // (McpSchemaActionFields.processOf), mirroring NeoButtonActionHelper / NeoProcessService.
+    BaseOBObject process = McpSchemaActionFields.processOf(col);
     String processName = null;
-    if (obuiappProcess != null) {
+    if (process instanceof org.openbravo.client.application.Process obuiappProcess) {
       fieldObj.put("processType", "OBUIAPP");
       processName = obuiappProcess.getName();
       fieldObj.put("processName", processName != null ? processName : "");
       fieldObj.put("processId", obuiappProcess.getId());
-    } else if (classicProcess != null) {
+    } else if (process instanceof Process classicProcess) {
       fieldObj.put("processType", "Classic");
       processName = classicProcess.getName();
       fieldObj.put("processName", processName != null ? processName : "");
@@ -811,7 +836,7 @@ final class McpSchemaFieldBuilder {
       McpSchemaActionFields.addProcessParameters(fieldObj, classicProcess);
     }
     applyActionLabelFallback(fieldObj, col, processName);
-    McpSchemaActionFields.addInvokability(fieldObj, visibility, processName != null, hiddenInTab);
+    McpSchemaActionFields.addInvokability(fieldObj, visibility, process != null, hiddenInTab);
   }
 
   /**
@@ -839,7 +864,7 @@ final class McpSchemaFieldBuilder {
    * silently retire those actions. Only an explicit {@code isDisplayed = 'N'} blocks. Mirrors
    * {@link #loadFieldLabels}: first active field for the column wins.</p>
    */
-  private static boolean isHiddenButtonField(Tab adTab, Column col) {
+  static boolean isHiddenButtonField(Tab adTab, Column col) {
     if (adTab == null) {
       return false;
     }

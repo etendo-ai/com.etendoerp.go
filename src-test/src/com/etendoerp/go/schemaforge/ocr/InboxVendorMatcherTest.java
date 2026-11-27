@@ -177,6 +177,49 @@ class InboxVendorMatcherTest {
     assertFalse(vendor.has("id"));
     assertEquals(1, vendor.getJSONArray(CANDIDATES).length());
     assertEquals("A28000727", vendor.getJSONArray(CANDIDATES).getJSONObject(0).getString("taxId"));
+    assertTrue(vendor.getJSONArray(CANDIDATES).getJSONObject(0).has("probable"));
+    assertFalse(vendor.getJSONArray(CANDIDATES).getJSONObject(0).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("every candidate carries probable explicitly: true on the best strong one only")
+  void probableIsExplicitOnEveryCandidate() throws Exception {
+    Party weak = new Party("V4", "Acme S.L. Weak");
+    lookups.byName = List.of(weak, new Party("V3", "Acme S.L. Logistics"));
+    lookups.storedTaxIds.put("V4", "A28000727");
+
+    JSONArray candidates = matcher.match("Acme", TAX_ID).getJSONArray(CANDIDATES);
+
+    assertEquals("V3", candidates.getJSONObject(0).getString("id"));
+    assertTrue(candidates.getJSONObject(0).getBoolean("probable"));
+    assertEquals("V4", candidates.getJSONObject(1).getString("id"));
+    assertFalse(candidates.getJSONObject(1).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("all exact names contradict the tax id: strong partial rows still win over new")
+  void strongPartialRowsBeatAnAllWeakExactSet() throws Exception {
+    lookups.byName = List.of(ACME, ACME_TWIN, new Party("V3", "Acme S.L. Logistics"));
+    lookups.storedTaxIds.put("V1", "A28000727");
+    lookups.storedTaxIds.put("V2", "A28000728");
+
+    JSONObject vendor = matcher.match("Acme S.L.", TAX_ID);
+
+    assertEquals("ambiguous", vendor.getString(STATE));
+    assertEquals("V3", vendor.getJSONArray(CANDIDATES).getJSONObject(0).getString("id"));
+    assertTrue(vendor.getJSONArray(CANDIDATES).getJSONObject(0).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("every partial hit contradicts the tax id: new, no candidates")
+  void allWeakPartialRowsAreNew() throws Exception {
+    lookups.byName = List.of(new Party("V3", "Acme S.L. Logistics"));
+    lookups.storedTaxIds.put("V3", "A28000727");
+
+    JSONObject vendor = matcher.match("Acme", TAX_ID);
+
+    assertEquals("new", vendor.getString(STATE));
+    assertEquals(0, vendor.getJSONArray(CANDIDATES).length());
   }
 
   @Test
@@ -239,5 +282,214 @@ class InboxVendorMatcherTest {
   @DisplayName("a tax id with no name that nobody holds is none: there is nothing to create a vendor from")
   void aTaxIdAloneThatMatchesNothingIsNone() throws Exception {
     assertEquals("none", matcher.match("", TAX_ID).getString(STATE));
+  }
+
+  // ---------------------------------------------------------------- tiers, order and cap (ETP-6051)
+
+  private static List<String> ids(JSONArray candidates) throws Exception {
+    List<String> out = new ArrayList<>();
+    for (int i = 0; i < candidates.length(); i++) {
+      out.add(candidates.getJSONObject(i).getString("id"));
+    }
+    return out;
+  }
+
+  @Test
+  @DisplayName("the stored tax id with a VAT prefix, spaces or lower case is the printed one: exact name linked")
+  void storedTaxIdSpellingsAreTheSameCompany() throws Exception {
+    for (String stored : new String[] { "es b81639719", "ES B-816 39719", "b81639719", "  eS-B81639719 " }) {
+      lookups.byName = List.of(ACME);
+      lookups.storedTaxIds.put("V1", stored);
+
+      JSONObject vendor = matcher.match("Acme S.L.", "B 81639719");
+
+      assertEquals("linked", vendor.getString(STATE), stored);
+    }
+  }
+
+  @Test
+  @DisplayName("a printed tax id with prefix, lower case and spaces finds the vendor stored under the cleaned id")
+  void printedTaxIdSpellingsAreCleaned() throws Exception {
+    lookups.byTaxId.put("ESB81639719", List.of(ACME));
+
+    JSONObject vendor = matcher.match("", "es b 816-39719");
+
+    assertEquals("linked", vendor.getString(STATE));
+    assertEquals("taxId", vendor.getString(MATCHED_BY));
+  }
+
+  @Test
+  @DisplayName("partial names, tax id missing on the printed side: ambiguous, closest first, probable only on it")
+  void partialNameWithoutAPrintedTaxIdOrdersByProximity() throws Exception {
+    Party far = new Party("V3", "Acme S.L. Logistics International");
+    Party close = new Party("V4", "Acme S.L. Log");
+    lookups.byName = List.of(far, close, new Party("V5", "Acme S.L."));
+    lookups.storedTaxIds.put("V3", "A28000727");
+    lookups.storedTaxIds.put("V4", "A28000728");
+
+    JSONObject vendor = matcher.match("Acme S.L. Lo", "");
+
+    assertEquals("ambiguous", vendor.getString(STATE));
+    JSONArray candidates = vendor.getJSONArray(CANDIDATES);
+    assertEquals(List.of("V4", "V5", "V3"), ids(candidates));
+    assertTrue(candidates.getJSONObject(0).getBoolean("probable"));
+    for (int i = 1; i < candidates.length(); i++) {
+      assertFalse(candidates.getJSONObject(i).getBoolean("probable"));
+    }
+  }
+
+  @Test
+  @DisplayName("several equally exact names are listed alone and none is probable; partial rows are not mixed in")
+  void severalExactNamesAreListedWithoutThePartialRows() throws Exception {
+    lookups.byName = List.of(new Party("V3", "Acme S.L. Logistics"), ACME, ACME_TWIN);
+
+    JSONArray candidates = matcher.match("Acme S.L.", "").getJSONArray(CANDIDATES);
+
+    assertEquals(List.of("V1", "V2"), ids(candidates));
+    assertFalse(candidates.getJSONObject(0).getBoolean("probable"));
+    assertFalse(candidates.getJSONObject(1).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("two equally close partial names tie: no candidate is probable")
+  void tiedPartialNamesAreNeverProbable() throws Exception {
+    lookups.byName = List.of(new Party("V3", "Acme S.L. Aa"), new Party("V4", "Acme S.L. Bb"));
+
+    JSONArray candidates = matcher.match("Acme S.L.", "").getJSONArray(CANDIDATES);
+
+    assertEquals(2, candidates.length());
+    assertFalse(candidates.getJSONObject(0).getBoolean("probable"));
+    assertFalse(candidates.getJSONObject(1).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("two vendors with the same tax id: no candidate is probable")
+  void sameTaxIdVendorsAreNeverProbable() throws Exception {
+    lookups.byTaxId.put(TAX_ID, List.of(ACME, new Party("V2", "Other")));
+
+    JSONArray candidates = matcher.match("x", TAX_ID).getJSONArray(CANDIDATES);
+
+    assertFalse(candidates.getJSONObject(0).getBoolean("probable"));
+    assertFalse(candidates.getJSONObject(1).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("a strong candidate among weak ones is probable: weak never competes in a tie")
+  void strongAmongWeakIsProbable() throws Exception {
+    lookups.byName = List.of(new Party("W1", "Acme S.L. Aa"), new Party("S1", "Acme S.L. Zzzzzz"),
+        new Party("W2", "Acme S.L. Bb"));
+    lookups.storedTaxIds.put("W1", "A28000727");
+    lookups.storedTaxIds.put("W2", "A28000728");
+
+    JSONArray candidates = matcher.match("Acme S.L.", TAX_ID).getJSONArray(CANDIDATES);
+
+    assertEquals("S1", candidates.getJSONObject(0).getString("id"));
+    assertTrue(candidates.getJSONObject(0).getBoolean("probable"));
+    assertFalse(candidates.getJSONObject(1).getBoolean("probable"));
+    assertFalse(candidates.getJSONObject(2).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("partial name, tax id missing on the stored side: not a conflict, ambiguous with probable on the best")
+  void partialNameWithoutAStoredTaxIdIsStrong() throws Exception {
+    lookups.byName = List.of(new Party("V3", "Acme S.L. Logistics"), new Party("V4", "Acme S.L. Log"));
+
+    JSONObject vendor = matcher.match("Acme S.L.", TAX_ID);
+
+    assertEquals("ambiguous", vendor.getString(STATE));
+    JSONArray candidates = vendor.getJSONArray(CANDIDATES);
+    assertEquals(List.of("V4", "V3"), ids(candidates));
+    assertTrue(candidates.getJSONObject(0).getBoolean("probable"));
+    assertFalse(candidates.getJSONObject(1).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("mixed tiers: strong rows first (best flagged), weak rows after, never flagged, each tier ordered")
+  void mixedTiersListStrongFirst() throws Exception {
+    lookups.byName = List.of(new Party("W1", "Acme S.L. Weak Long Name"), new Party("S1", "Acme S.L. Strong Long"),
+        new Party("W2", "Acme S.L. W"), new Party("S2", "Acme S.L. S"));
+    lookups.storedTaxIds.put("W1", "A28000727");
+    lookups.storedTaxIds.put("W2", "A28000728");
+    lookups.storedTaxIds.put("S1", "ES" + TAX_ID);
+
+    JSONObject vendor = matcher.match("Acme S.L.", TAX_ID);
+
+    JSONArray candidates = vendor.getJSONArray(CANDIDATES);
+    assertEquals(List.of("S2", "S1", "W2", "W1"), ids(candidates));
+    assertTrue(candidates.getJSONObject(0).getBoolean("probable"));
+    for (int i = 1; i < candidates.length(); i++) {
+      assertFalse(candidates.getJSONObject(i).getBoolean("probable"), "candidate " + i);
+    }
+  }
+
+  @Test
+  @DisplayName("a missing tax id on either side never ends as new while some row has no conflict")
+  void aMissingTaxIdNeverEndsAsNew() throws Exception {
+    lookups.byName = List.of(new Party("V3", "Acme S.L. Logistics"));
+    lookups.storedTaxIds.put("V3", "A28000727");
+    assertEquals("ambiguous", matcher.match("Acme", "").getString(STATE));
+
+    lookups.storedTaxIds.clear();
+    assertEquals("ambiguous", matcher.match("Acme", TAX_ID).getString(STATE));
+  }
+
+  @Test
+  @DisplayName("the cap of ten is applied after ordering: the best row, last in the search, is still kept first")
+  void theCapKeepsTheBestAfterOrdering() throws Exception {
+    List<Party> rows = new ArrayList<>();
+    for (int i = 0; i < 14; i++) {
+      rows.add(new Party("V" + i, "Acme S.L. Logistics Extra Long " + i));
+    }
+    rows.add(new Party("BEST", "Acme S.L. X"));
+    lookups.byName = rows;
+
+    JSONArray candidates = matcher.match("Acme S.L.", "").getJSONArray(CANDIDATES);
+
+    assertEquals(10, candidates.length());
+    assertEquals("BEST", candidates.getJSONObject(0).getString("id"));
+    assertTrue(candidates.getJSONObject(0).getBoolean("probable"));
+  }
+
+  @Test
+  @DisplayName("more than twenty search rows: the one without a tax id conflict beyond the first twenty is found")
+  void aStrongRowBeyondTheTwentiethIsFound() throws Exception {
+    List<Party> rows = new ArrayList<>();
+    for (int i = 0; i < 30; i++) {
+      Party party = new Party("W" + i, "Acme S.L. Weak " + i);
+      rows.add(party);
+      lookups.storedTaxIds.put(party.id(), "A28000727");
+    }
+    rows.add(new Party("STRONG", "Acme S.L. Strong"));
+    lookups.byName = rows;
+
+    JSONObject vendor = matcher.match("Acme S.L.", TAX_ID);
+
+    assertEquals("ambiguous", vendor.getString(STATE));
+    assertEquals("STRONG", vendor.getJSONArray(CANDIDATES).getJSONObject(0).getString("id"));
+    assertEquals(List.of(100), lookups.nameSearchLimits, "the search is wide enough to reach it");
+  }
+
+  @Test
+  @DisplayName("every candidate of every ambiguous result carries a boolean probable")
+  void everyCandidateCarriesAnExplicitBooleanProbable() throws Exception {
+    lookups.byTaxId.put(TAX_ID, List.of(ACME, new Party("V2", "Other")));
+    assertAllBoolean(matcher.match("x", TAX_ID));
+
+    lookups = new InboxFakeLookups();
+    matcher = new InboxVendorMatcher(lookups);
+    lookups.byName = List.of(ACME, ACME_TWIN);
+    assertAllBoolean(matcher.match("Acme S.L.", ""));
+
+    lookups.byName = List.of(ACME);
+    lookups.storedTaxIds.put("V1", "A28000727");
+    assertAllBoolean(matcher.match("Acme S.L.", TAX_ID));
+  }
+
+  private static void assertAllBoolean(JSONObject vendor) throws Exception {
+    JSONArray candidates = vendor.getJSONArray(CANDIDATES);
+    assertTrue(candidates.length() > 0);
+    for (int i = 0; i < candidates.length(); i++) {
+      assertTrue(candidates.getJSONObject(i).get("probable") instanceof Boolean);
+    }
   }
 }

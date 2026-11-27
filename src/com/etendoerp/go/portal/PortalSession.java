@@ -17,6 +17,10 @@
 
 package com.etendoerp.go.portal;
 
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+
 /**
  * The scope one validated portal link is allowed to see: exactly one tenant and exactly one
  * Business Partner.
@@ -58,6 +62,14 @@ public final class PortalSession {
   }
 
   /**
+   * @return the organization the link's document belongs to: its currency is the company currency
+   *     the portal's multi-currency totals are converted into (ETP-6209 QA CP-47)
+   */
+  public String getOrganizationId() {
+    return link.getOrganizationId();
+  }
+
+  /**
    * @return the Business Partner every query of this session must be filtered by
    */
   public String getBusinessPartnerId() {
@@ -90,6 +102,20 @@ public final class PortalSession {
    */
   public String getEntryDocumentId() {
     return link.getRecordId();
+  }
+
+  /**
+   * The addresses the portal was accessed with: the To and CC of the email that carried the link
+   * this session was validated from (a renewal and a decision entry copy their source's). Whoever
+   * opened the link is one of them; which one cannot be known, so every check made "for the
+   * accessing email" treats the whole set as that email (ETP-6209 QA CP-49).
+   *
+   * @return To then CC, possibly empty, never {@code null}
+   */
+  public List<String> getAccessRecipients() {
+    List<String> all = new ArrayList<>(link.getRecipientsTo());
+    all.addAll(link.getRecipientsCc());
+    return Collections.unmodifiableList(all);
   }
 
   /**

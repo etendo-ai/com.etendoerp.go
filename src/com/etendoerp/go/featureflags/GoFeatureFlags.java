@@ -197,33 +197,10 @@ public final class GoFeatureFlags {
       "environment-access-enforcement-off";
 
   /**
-   * ETP-5640 — kill switch for the stateless MCP era (spec 2026-07-28). <b>Inverted on
-   * purpose:</b> {@code true} turns the modern era <em>off</em> and {@code /sws/mcp} answers
-   * exactly as before it existed — {@code server/discover} gets {@code -32601}, per-request
-   * {@code _meta} is ignored and every request is served under the {@code initialize}-based era.
-   * Unset or {@code false} is the normal state: the server is dual-era.
-   *
-   * <p>The inversion follows from this class's failure behaviour: every flag resolves to
-   * {@code false} when it is missing, when the hosted control plane is unreachable or when
-   * evaluation fails. A flag that <em>enabled</em> the modern era would switch it off on any
-   * control-plane hiccup; this one leaves the default in place and only a deliberate {@code true}
-   * rolls back — live without a restart on a hosted arm (Datadog or ConfigCat); on the local arm
-   * the value comes from {@code etendo.go.flags.mcp-modern-era-disabled} and needs a restart.
-   *
-   * <p><b>Environment level only — never target it per account.</b> MCP clients cache the era per
-   * origin, and one origin serves every tenant, so a per-account answer would hand one cached
-   * decision to callers the flag treats differently. It is evaluated with an empty context.
-   *
-   * <p><b>Backend-only.</b> Nothing in the browser reads it; never add it to the web client's
-   * {@code flag-keys.js}. Its only caller is {@code McpRequestEra}. Retire it (keeping the modern
-   * path) once the modern era is stable in production.
-   */
-  public static final String FLAG_MCP_MODERN_ERA_DISABLED = "mcp-modern-era-disabled";
-
-  /**
-   * ETP-5676 — kill switch for the per-batch redundant-callout skip. <b>Inverted on purpose</b>,
-   * for the same reason as {@link #FLAG_MCP_MODERN_ERA_DISABLED}: unset or {@code false} is the
-   * normal state, in which a batch sent with {@code _skipRedundantCallouts: true} may skip a
+   * ETP-5676 — kill switch for the per-batch redundant-callout skip. <b>Inverted on purpose:</b>
+   * every flag resolves to {@code false} when it is missing or evaluation fails, so unset or
+   * {@code false} must be the normal state, in which a batch sent with
+   * {@code _skipRedundantCallouts: true} may skip a
    * create-cascade callout whose outputs an earlier operation of the same batch proved discarded.
    * {@code true} turns the skip off for every batch, whatever the request asks, so each callout
    * runs as on a batch without the option. Live within one ConfigCat poll where
@@ -304,7 +281,7 @@ public final class GoFeatureFlags {
    * request before it shipped (TTL 2026-11-15 — by then the feature must be live, or this flag is
    * reclassified as a permanent toggle).
    *
-   * <p><b>Positive polarity, not inverted</b> — unlike {@link #FLAG_MCP_MODERN_ERA_DISABLED} or
+   * <p><b>Positive polarity, not inverted</b> — unlike
    * {@link #FLAG_BATCH_CALLOUT_SKIP_DISABLED}. {@code true} = feature visible/active; the default
    * ({@code false}, every failure of this class) is "hidden", which is the required pre-launch
    * state.
@@ -556,9 +533,36 @@ public final class GoFeatureFlags {
    * {@code ETGO_FLAG_MCP_ROUTINES} is a plain per-environment boolean. Its only evaluator is
    * {@code McpRoutinesFlag}.
    *
-   * <p><b>Backend-only</b>: never add it to {@code flag-keys.js}. TTL 2027-03-31 (placeholder).
+   * <p><b>Backend-only</b>: never add it to {@code flag-keys.js}. TTL 2026-12-01.
    */
   public static final String FLAG_MCP_ROUTINES = "mcp-routines";
+
+  /**
+   * ETP-6365 — the redesigned <b>Currency Conversion</b> window: manual conversion rates written
+   * through the {@code conversion-rates} actions. Positive polarity: {@code true} = the new
+   * behaviour; the default and every failure read {@code false}, which is the window as it was
+   * before ETP-6365 (read-only).
+   *
+   * <p><b>What it gates.</b> On the {@code conversion-rates/conversionRate} customization
+   * ({@code ConversionRateHandler}): the write actions {@code createManualCurrency},
+   * {@code createManualRate} and {@code updateManualRate} (each writes the rate and its inverse),
+   * their dry run {@code previewManualRate}, the {@code DELETE} of a rate and any generic create or
+   * update — off, 403 {@code feature_disabled} ({@code ETGO_CurrencyConversionV2Disabled}) on
+   * every channel (REST single, batch, MCP), and the customization stops declaring those actions
+   * to the MCP. <b>Not gated:</b> the reads, {@code serverClock}, {@code currentRates},
+   * {@code manualCurrencyOptions} and the {@code etgoRateStatus} column.
+   *
+   * <p><b>One reader.</b> Only {@code CurrencyConversionV2Flag} reads this key, evaluated per
+   * request and never cached. <b>Targeted per account</b>: the {@code ETGO_ACCOUNT} email of the
+   * request user, resolved as {@link #FLAG_BP_PORTAL_LINK} does; no account, no email or a failed
+   * lookup reads off. Locally {@code etendo.go.flags.currency-conversion-v2} /
+   * {@code ETGO_FLAG_CURRENCY_CONVERSION_V2}.
+   *
+   * <p><b>Backend-only</b>: never add it to {@code flag-keys.js}. The web client reads
+   * {@code capabilities.currencyConversionV2} off {@code SFWindowAccessMap} and never evaluates
+   * the flag. TTL 2027-03-31 (placeholder).
+   */
+  public static final String FLAG_CURRENCY_CONVERSION_V2 = "currency-conversion-v2";
 
   /**
    * ConfigCat SDK key. Set ⇒ flags come from ConfigCat and can be flipped without a restart; unset

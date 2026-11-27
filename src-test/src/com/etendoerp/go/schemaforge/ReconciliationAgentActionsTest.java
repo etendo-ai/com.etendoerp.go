@@ -618,23 +618,26 @@ class ReconciliationAgentActionsTest {
     }
 
     /**
-     * ETP-5581: the panel's "No es un rebote" ({@code dismissPair}) is UI-only, so an agent naming
-     * it gets the contract's 422 unknown action, which does not list it, and nothing runs — not
-     * even the {@code runPostAction} envelope the SPA route goes through.
+     * The panel's "No es un rechazo" ({@code dismissPair}) and its undo
+     * ({@code restoreBounceSuggestion}) are UI-only, so an agent naming either gets the contract's
+     * 422 unknown action, which does not list it, and nothing runs — not even the
+     * {@code runPostAction} envelope the SPA route goes through.
      *
+     * @param action the UI-only action
      * @throws Exception when the answer cannot be read
      */
-    @Test
-    @DisplayName("dismissPair is not an agent action → 422 unknown action, nothing runs")
-    void dismissPairIsRefusedToAgents() throws Exception {
-      NeoResponse response = handler.handle(actionContext("dismissPair", ACC_ID,
+    @ParameterizedTest(name = "{0}")
+    @ValueSource(strings = { "dismissPair", "restoreBounceSuggestion" })
+    @DisplayName("the UI-only bounce actions are not agent actions → 422 unknown action, nothing runs")
+    void uiOnlyBounceActionsAreRefusedToAgents(String action) throws Exception {
+      NeoResponse response = handler.handle(actionContext(action, ACC_ID,
           new JSONObject().put("statementLineId", LINE_ID)));
 
       assertEquals(422, response.getHttpStatus());
       JSONObject error = response.getBody().getJSONObject("error");
-      assertTrue(error.getString("message").contains("Unknown action 'dismissPair'"),
+      assertTrue(error.getString("message").contains("Unknown action '" + action + "'"),
           error.toString());
-      assertFalse(strings(error.getJSONArray("availableActions")).contains("dismissPair"));
+      assertFalse(strings(error.getJSONArray("availableActions")).contains(action));
       assertNoRouteCalled();
       support.verify(() -> ReconciliationHandlerSupport.runPostAction(any(), any(), anyString()),
           never());
@@ -747,16 +750,19 @@ class ReconciliationAgentActionsTest {
     }
 
     /**
-     * ETP-5581: the SPA's {@code POST ?action=dismissPair} is routed to the bounce-pair service and
-     * runs inside the same {@code runPostAction} envelope as every other SPA write (admin mode and
-     * the rollback of a refusal), with the very same context and the action name.
+     * The SPA's {@code POST ?action=dismissPair} and {@code ?action=restoreBounceSuggestion} are
+     * routed to the bounce services and run inside the same {@code runPostAction} envelope as every
+     * other SPA write (admin mode and the rollback of a refusal), with the very same context and
+     * the action name.
      *
+     * @param action the UI-only action
      * @throws Exception when the body cannot be written
      */
-    @Test
-    @DisplayName("POST ?action=dismissPair runs through runPostAction with the same context")
-    void spaDismissPairRunsThroughRunPostAction() throws Exception {
-      NeoResponse sentinel = NeoResponse.error(299, "dismissPair");
+    @ParameterizedTest(name = "POST ?action={0}")
+    @ValueSource(strings = { "dismissPair", "restoreBounceSuggestion" })
+    @DisplayName("POST ?action=dismissPair / restoreBounceSuggestion run through runPostAction with the same context")
+    void spaUiOnlyBounceActionsRunThroughRunPostAction(String action) throws Exception {
+      NeoResponse sentinel = NeoResponse.error(299, action);
       List<Object[]> received = new ArrayList<>();
       support.when(() -> ReconciliationHandlerSupport.runPostAction(any(), any(), anyString()))
           .thenAnswer(inv -> {
@@ -764,7 +770,7 @@ class ReconciliationAgentActionsTest {
                 inv.getArgument(2) });
             return sentinel;
           });
-      NeoContext ctx = spaContext("POST", "dismissPair",
+      NeoContext ctx = spaContext("POST", action,
           new JSONObject().put("financialAccountId", ACC_ID).put("statementLineId", LINE_ID),
           null);
 
@@ -773,7 +779,7 @@ class ReconciliationAgentActionsTest {
       assertEquals(1, received.size());
       assertSame(handler, received.get(0)[0]);
       assertSame(ctx, received.get(0)[1]);
-      assertEquals("dismissPair", received.get(0)[2]);
+      assertEquals(action, received.get(0)[2]);
       assertNoRouteCalled();
       access.verifyNoInteractions();
     }

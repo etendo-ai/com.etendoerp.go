@@ -25,6 +25,10 @@
         <default/>
         <onCreateDefault/>
       </column>
+      <column name="EM_ETGO_BOUNCE_DISMISSED" primaryKey="false" required="false" type="TIMESTAMP" size="7" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
       <foreign-key foreignTable="FIN_BANKSTATEMENTLINE" name="EM_ETGO_BSL_BOUNCE_PAIR_FK" onDelete="setnull">
         <reference local="EM_ETGO_BOUNCE_PAIR_LINE_ID" foreign="FIN_BANKSTATEMENTLINE_ID"/>
       </foreign-key>

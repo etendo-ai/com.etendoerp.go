@@ -27,10 +27,13 @@ import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 import org.apache.commons.lang3.StringUtils;
@@ -56,6 +59,7 @@ import org.openbravo.model.financialmgmt.tax.TaxRate;
 
 import com.etendoerp.go.schemaforge.AnonymousAttachmentStreamer;
 import com.etendoerp.go.schemaforge.QuotationPrintableData;
+import com.etendoerp.go.schemaforge.email.EmailRecipientSet;
 
 /**
  * The customer portal's document reads (ETP-6209, plan §B.3–§B.7): the home aggregates, the list
@@ -63,7 +67,7 @@ import com.etendoerp.go.schemaforge.QuotationPrintableData;
  *
  * <pre>
  * GET /sws/portal/home?months=                          balances, tiles, recent, paid, chart
- * GET /sws/portal/search?q=                             documents of every kind matching q
+ * GET /sws/portal/search?q=                             matches of every kind, merged and per kind
  * GET /sws/portal/documents?type=&amp;group=&amp;status=&amp;dateFrom=&amp;dateTo=&amp;q=&amp;limit=&amp;offset=
  * GET /sws/portal/documents/{kind}/{id}                 header, lines, taxes, payments, links
  * GET /sws/portal/documents/{kind}/{id}/pdf             the main attachment, streamed
@@ -87,10 +91,13 @@ final class PortalDocumentsEndpoint {
   private static final int MAX_LIMIT = 200;
   private static final int RECENT_LIMIT = 5;
   private static final int SEARCH_LIMIT = 8;
+  /** A kind's newest matches in each group of the header search. */
+  private static final int SEARCH_GROUP_LIMIT = 5;
   /** Chart periods the home offers ("Últimos 3 / 6 / 12 meses"); anything else is 12. */
   private static final List<Integer> CHART_MONTHS = List.of(3, 6, 12);
   private static final int DEFAULT_CHART_MONTHS = 12;
   private static final String KIND = "kind";
+  private static final String DOCUMENTS = "documents";
   private static final String ID = "id";
   private static final String CURRENCY = "currency";
   private static final String COUNT = "count";
@@ -101,6 +108,10 @@ final class PortalDocumentsEndpoint {
   private static final String DESCRIPTION = "description";
   private static final String OUTSTANDING_AMOUNT = "outstandingAmount";
   private static final String DUE_DATE = "dueDate";
+  /** Every address a decision's confirmation goes to (ETP-6209 QA CP-45). */
+  static final String CONFIRMATION_RECIPIENTS = "confirmationRecipients";
+  /** Whether the session can accept / reject the quotation now (ETP-6209 QA CP-49). */
+  private static final String CAN_DECIDE = "canDecide";
 
   private PortalDocumentsEndpoint() {
   }
@@ -125,15 +136,21 @@ final class PortalDocumentsEndpoint {
     JSONObject body = new JSONObject();
 
     JSONArray balances = new JSONArray();
+    Map<String, BigDecimal> outstandingByIso = new LinkedHashMap<>();
     Map<String, Object[]> overdue = new HashMap<>();
+    Map<String, BigDecimal> overdueByIso = new LinkedHashMap<>();
     for (Object[] row : PortalDocumentQuery.overdueByCurrency(session, today)) {
       overdue.put((String) row[0], row);
+      overdueByIso.merge(StringUtils.defaultString((String) row[0]),
+          PortalDocumentQuery.amount(row[1]), BigDecimal::add);
     }
     for (Object[] row : PortalDocumentQuery.outstandingByCurrency(session)) {
       JSONObject balance = new JSONObject();
       String currency = (String) row[0];
       balance.put(CURRENCY, StringUtils.defaultString(currency));
       balance.put("outstanding", PortalDocumentQuery.amount(row[1]));
+      outstandingByIso.merge(StringUtils.defaultString(currency),
+          PortalDocumentQuery.amount(row[1]), BigDecimal::add);
       balance.put("pendingCount", ((Number) row[2]).longValue());
       Object[] late = overdue.get(currency);
       balance.put(OVERDUE, late == null ? BigDecimal.ZERO : PortalDocumentQuery.amount(late[1]));
@@ -142,6 +159,12 @@ final class PortalDocumentsEndpoint {
       balances.put(balance);
     }
     body.put("balances", balances);
+    // QA CP-47: "Tu saldo" as one amount in the company currency, approximate when a foreign
+    // currency was converted (the app's rule); balances[] keeps the per-currency figures.
+    PortalCurrencyTotals converter = PortalCurrencyTotals.of(session);
+    body.put("convertedBalance", converter.convert(outstandingByIso));
+    // The overdue part of it, by the same rule (null when nothing is overdue).
+    body.put("convertedOverdue", converter.convert(overdueByIso));
 
     long overdueInvoices = 0;
     for (Object[] row : overdue.values()) {
@@ -168,7 +191,10 @@ final class PortalDocumentsEndpoint {
     // "Pagado este año": paid on the invoices issued this calendar year, per currency.
     LocalDate firstOfYear = LocalDate.now().withDayOfYear(1);
     JSONArray paid = new JSONArray();
+    Map<String, BigDecimal> paidByIso = new LinkedHashMap<>();
     for (Object[] row : PortalDocumentQuery.paidSince(session, toDate(firstOfYear))) {
+      paidByIso.merge(StringUtils.defaultString((String) row[0]),
+          PortalDocumentQuery.amount(row[1]), BigDecimal::add);
       JSONObject entry = new JSONObject();
       entry.put(CURRENCY, StringUtils.defaultString((String) row[0]));
       entry.put("paid", PortalDocumentQuery.amount(row[1]));
@@ -176,6 +202,7 @@ final class PortalDocumentsEndpoint {
       paid.put(entry);
     }
     body.put("paidThisYear", paid);
+    body.put("convertedPaidThisYear", converter.convert(paidByIso));
 
     long[] year = PortalDocumentQuery.invoicesSince(session, toDate(firstOfYear), today);
     JSONObject yearInvoices = new JSONObject();
@@ -231,19 +258,46 @@ final class PortalDocumentsEndpoint {
   }
 
   /**
-   * The header search across every kind: newest matches first, at most {@value #SEARCH_LIMIT}.
-   * A blank query answers an empty list.
+   * The header search across every kind. {@code documents}: the newest matches of all kinds, at
+   * most {@value #SEARCH_LIMIT}. {@code groups}: one entry per kind with at least one match, in
+   * kind order, holding how many match in all ({@code count}) and the kind's
+   * {@value #SEARCH_GROUP_LIMIT} newest, so one kind cannot crowd the others out. A blank query
+   * answers both empty.
    */
   static JSONObject search(PortalSession session, String search) throws JSONException {
-    List<BaseOBObject> documents = PortalDocumentQuery.search(session, search, SEARCH_LIMIT);
-    Map<String, Object[]> schedules = PortalDocumentQuery.invoiceSchedules(invoiceIds(documents),
-        today());
-    JSONArray rows = new JSONArray();
-    for (BaseOBObject document : documents) {
-      rows.put(row(document, schedules));
+    PortalDocumentQuery.SearchResult result = PortalDocumentQuery.search(session, search,
+        SEARCH_LIMIT, SEARCH_GROUP_LIMIT);
+    Set<BaseOBObject> shown = new LinkedHashSet<>(result.documents);
+    for (PortalDocumentQuery.KindMatches matches : result.groups) {
+      shown.addAll(matches.documents);
+    }
+    // One grouped schedule query for every invoice the answer shows, whichever list it is in, and
+    // one row per document even when it is both in the merged list and in its kind's group.
+    Map<String, Object[]> schedules = PortalDocumentQuery.invoiceSchedules(
+        invoiceIds(new ArrayList<>(shown)), today());
+    Map<BaseOBObject, JSONObject> rows = new HashMap<>();
+    for (BaseOBObject document : shown) {
+      rows.put(document, row(document, schedules));
     }
     JSONObject body = new JSONObject();
-    body.put("documents", rows);
+    JSONArray documents = new JSONArray();
+    for (BaseOBObject document : result.documents) {
+      documents.put(rows.get(document));
+    }
+    body.put(DOCUMENTS, documents);
+    JSONArray groups = new JSONArray();
+    for (PortalDocumentQuery.KindMatches matches : result.groups) {
+      JSONArray groupRows = new JSONArray();
+      for (BaseOBObject document : matches.documents) {
+        groupRows.put(rows.get(document));
+      }
+      JSONObject group = new JSONObject();
+      group.put(KIND, matches.kind.name());
+      group.put(COUNT, matches.count);
+      group.put(DOCUMENTS, groupRows);
+      groups.put(group);
+    }
+    body.put("groups", groups);
     return body;
   }
 
@@ -285,6 +339,15 @@ final class PortalDocumentsEndpoint {
 
   // ─── List ────────────────────────────────────────────────────────────────
 
+  /** {@code subtype}: {@code creditNote} → TRUE, {@code invoice} → FALSE, anything else → both. */
+  static Boolean creditNoteFilter(String subtype) {
+    String normalized = StringUtils.trimToEmpty(subtype);
+    if ("creditNote".equalsIgnoreCase(normalized)) {
+      return Boolean.TRUE;
+    }
+    return "invoice".equalsIgnoreCase(normalized) ? Boolean.FALSE : null;
+  }
+
   /**
    * The {@code status} parameter as a list: each value trimmed ({@code ?status=CO, CL}), blanks
    * dropped; empty (no filter) when nothing is left.
@@ -297,6 +360,25 @@ final class PortalDocumentsEndpoint {
         .map(StringUtils::trimToNull)
         .filter(Objects::nonNull)
         .collect(Collectors.toList());
+  }
+
+  /**
+   * Adds {@code canDecide} to each quotation row (ETP-6209 QA CP-49): pending, not expired, and
+   * sent to the email the portal was accessed with — the rule the decision endpoint enforces.
+   */
+  private static void markDecidable(PortalSession session, List<BaseOBObject> documents,
+      JSONArray rows) throws JSONException {
+    List<Order> quotations = new ArrayList<>();
+    for (BaseOBObject document : documents) {
+      if (document instanceof Order) {
+        quotations.add((Order) document);
+      }
+    }
+    Set<String> decidable = new PortalDecisionService().decidableIds(session, quotations);
+    for (int i = 0; i < rows.length(); i++) {
+      JSONObject row = rows.getJSONObject(i);
+      row.put(CAN_DECIDE, decidable.contains(row.optString(ID)));
+    }
   }
 
   /** The page's rows; a quotation turned into an order also names that order. */
@@ -334,6 +416,18 @@ final class PortalDocumentsEndpoint {
   static JSONObject list(PortalSession session, String type, String groupCode, String status,
       String dateFrom, String dateTo, String search, String limitParam, String offsetParam)
       throws JSONException {
+    return list(session, type, null, groupCode, status, dateFrom, dateTo, search, limitParam,
+        offsetParam);
+  }
+
+  /**
+   * As above, with the invoices' "tipo" quick filter ({@code subtype}, ETP-6209 QA CP-16):
+   * {@code invoice} or {@code creditNote}; blank, unknown or on another kind means both.
+   */
+  @SuppressWarnings("java:S107")
+  static JSONObject list(PortalSession session, String type, String subtype, String groupCode,
+      String status, String dateFrom, String dateTo, String search, String limitParam,
+      String offsetParam) throws JSONException {
     PortalDocumentKind kind = kindOf(type);
     if (kind == null) {
       return null;
@@ -345,7 +439,8 @@ final class PortalDocumentsEndpoint {
     List<String> statuses = parseStatuses(status);
     PortalDocumentQuery.Group group = PortalDocumentQuery.group(kind, groupCode);
     PortalDocumentQuery.Filter filter = new PortalDocumentQuery.Filter(
-        group == null && !statuses.isEmpty() ? statuses : null, from, toExclusive, search, group, today());
+        group == null && !statuses.isEmpty() ? statuses : null, from, toExclusive, search, group,
+        today(), kind == PortalDocumentKind.INVOICE ? creditNoteFilter(subtype) : null);
     int limit = Math.min(Math.max(parseInt(limitParam, DEFAULT_LIMIT), 1), MAX_LIMIT);
     int offset = Math.max(parseInt(offsetParam, 0), 0);
 
@@ -357,10 +452,40 @@ final class PortalDocumentsEndpoint {
         ? PortalDocumentQuery.ordersOfQuotations(session, ids(documents))
         : Collections.emptyMap();
     JSONArray rows = listRows(documents, schedules, orders);
+    if (kind == PortalDocumentKind.QUOTATION) {
+      markDecidable(session, documents, rows);
+    }
+    JSONObject body = new JSONObject();
+    long totalCount = putTotals(body, session, kind, filter);
+    body.put("type", kind.name());
+    body.put(DOCUMENTS, rows);
+    body.put("totalCount", totalCount);
+    body.put("offset", offset);
+    body.put("limit", limit);
+    body.put("statuses", new JSONArray(PortalDocumentQuery.visibleStatuses(kind)));
+    body.put("groups", new JSONArray(PortalDocumentQuery.groupCodes(kind)));
+    body.put("group", group == null ? JSONObject.NULL : StringUtils.trimToNull(groupCode));
+    return body;
+  }
+
+  /**
+   * The list's {@code totals} per currency and, QA CP-47, {@code convertedTotal}: the filtered
+   * rows' grand total as one amount in the company currency, approximate when a foreign currency
+   * was converted (the app's rule); {@code null} for a kind without amounts.
+   *
+   * @return the number of documents the filter matches
+   */
+  private static long putTotals(JSONObject body, PortalSession session, PortalDocumentKind kind,
+      PortalDocumentQuery.Filter filter) throws JSONException {
     long totalCount = 0;
     JSONArray totals = new JSONArray();
+    Map<String, BigDecimal> grandTotalByIso = new LinkedHashMap<>();
     for (Object[] total : PortalDocumentQuery.totals(session, kind, filter)) {
       long count = ((Number) total[1]).longValue();
+      if (total[3] != null) {
+        grandTotalByIso.merge(StringUtils.defaultString((String) total[0]),
+            PortalDocumentQuery.amount(total[3]), BigDecimal::add);
+      }
       totalCount += count;
       JSONObject entry = new JSONObject();
       entry.put(CURRENCY, StringUtils.defaultString((String) total[0]));
@@ -369,17 +494,10 @@ final class PortalDocumentsEndpoint {
       entry.put(GRAND_TOTAL, total[3] == null ? JSONObject.NULL : total[3]);
       totals.put(entry);
     }
-    JSONObject body = new JSONObject();
-    body.put("type", kind.name());
-    body.put("documents", rows);
-    body.put("totalCount", totalCount);
-    body.put("offset", offset);
-    body.put("limit", limit);
-    body.put("statuses", new JSONArray(PortalDocumentQuery.visibleStatuses(kind)));
-    body.put("groups", new JSONArray(PortalDocumentQuery.groupCodes(kind)));
-    body.put("group", group == null ? JSONObject.NULL : StringUtils.trimToNull(groupCode));
     body.put("totals", totals);
-    return body;
+    body.put("convertedTotal", grandTotalByIso.isEmpty() ? JSONObject.NULL
+        : PortalCurrencyTotals.of(session).convert(grandTotalByIso));
+    return totalCount;
   }
 
   // ─── Detail ──────────────────────────────────────────────────────────────
@@ -431,7 +549,10 @@ final class PortalDocumentsEndpoint {
     body.put("hasPdf", mainAttachment(session, kind, id) != null
         || PortalPrintable.isRenderable(kind));
     if (kind == PortalDocumentKind.QUOTATION && document instanceof Order) {
-      body.put("decision", decisionOf(session, (Order) document));
+      JSONObject decision = decisionOf(session, (Order) document);
+      body.put("decision", decision);
+      // The list row's flag, on the detail too (QA CP-49): one shape for the SPA.
+      body.put(CAN_DECIDE, decision.getBoolean(CAN_DECIDE));
     }
     return body;
   }
@@ -459,14 +580,18 @@ final class PortalDocumentsEndpoint {
     PortalDecisionService decisions = new PortalDecisionService();
     PortalDecisionService.Blocked blocked = decisions.blockedReason(session, quotation);
     JSONObject decision = new JSONObject();
-    decision.put("canDecide", blocked == null);
+    decision.put(CAN_DECIDE, blocked == null);
     decision.put("blockedReason", blocked == null ? JSONObject.NULL : blocked.getCode());
     decision.put("acceptAvailable", PortalDecisionService.ACCEPT_AVAILABLE);
     if (blocked == null) {
       // Where the confirmation will go, in full as in the request's answer: the accept / reject
-      // popups name it before the customer sends anything (ETP-6209 redesign, Figma).
-      decision.put("email", StringUtils.trimToEmpty(
-          decisions.confirmationRecipient(session.getRootLinkId())));
+      // popups name it before the customer sends anything (ETP-6209 redesign, Figma). Since QA
+      // CP-45 that is every To of the quotation's original send (never CC); `email` is the first.
+      EmailRecipientSet recipients = PortalQuotationSends.originalSend(session, quotation.getId())
+          .map(PortalQuotationSends::recipientsOf).orElse(null);
+      List<String> to = recipients == null ? Collections.emptyList() : recipients.getTo();
+      decision.put("email", to.isEmpty() ? "" : to.get(0));
+      decision.put(CONFIRMATION_RECIPIENTS, new JSONArray(to));
     }
     return decision;
   }

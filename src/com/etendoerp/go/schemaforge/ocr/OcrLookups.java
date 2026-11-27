@@ -18,6 +18,7 @@
 package com.etendoerp.go.schemaforge.ocr;
 
 import java.math.BigDecimal;
+import java.time.LocalDate;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -558,9 +559,10 @@ public interface OcrLookups {
   }
 
   /**
-   * The currency a document of this vendor is expressed in (ETP-6050): the vendor's purchase price
-   * list currency, else the organization's, else the client's (what the purchase invoice header
-   * ends up with). {@code null} vendor: the organization's.
+   * The default currency of a new document (ETP-6050): the organization's, else the client's, as the
+   * purchase invoice header defaults it. The vendor and its price list infer nothing (a price list's
+   * own currency is a Classic leftover in GO; the user changes the currency directly), so
+   * {@code vendorId} is ignored by the purchase implementation.
    *
    * <p>Default: unknown, so the amounts are rounded to two decimals.</p>
    *
@@ -572,9 +574,9 @@ public interface OcrLookups {
   }
 
   /**
-   * As {@link #documentCurrency(String)}, with the organization of the document: the fallback after
-   * the vendor's price list is THAT organization's currency (the one the invoice created from the
-   * row will have), not the current one of the session.
+   * As {@link #documentCurrency(String)}, with the organization of the document: the organization
+   * is THAT one (the one the invoice created from the row will have), not the current one of the
+   * session.
    *
    * <p>Default: the one-argument answer.</p>
    *
@@ -584,6 +586,81 @@ public interface OcrLookups {
    */
   default Optional<DocCurrency> documentCurrency(String vendorId, String organizationId) {
     return documentCurrency(vendorId);
+  }
+
+  /** The purchase price list that prices a document: id and whether it includes tax. */
+  record PurchasePriceList(String id, boolean includesTax) {
+  }
+
+  /**
+   * The purchase price list a document of this vendor is priced with (ETP-6051): the vendor's
+   * purchase list, else the default purchase list (also for a new vendor or none), tenant-visible,
+   * deterministic when several defaults exist.
+   *
+   * <p>Default: unknown.</p>
+   *
+   * @param vendorId the linked vendor, may be {@code null}
+   * @return the list, empty when none can be found or the lookup failed
+   */
+  default Optional<PurchasePriceList> documentPriceList(String vendorId) {
+    return Optional.empty();
+  }
+
+  /**
+   * The standard price of a product in a price list as the product selector displays it (ETP-6051):
+   * latest active version valid now, active product row.
+   *
+   * <p>Default: unknown.</p>
+   *
+   * @param priceListId the price list
+   * @param productId   the product
+   * @return the standard price ({@code 0} possible), empty when the product has no row there or the
+   *         lookup failed
+   */
+  default Optional<BigDecimal> productStandardPrice(String priceListId, String productId) {
+    return Optional.empty();
+  }
+
+  /**
+   * The currency of an organization (the client's when it has none) (ETP-6051).
+   *
+   * <p>Default: unknown.</p>
+   *
+   * @param organizationId the organization of the document
+   * @return the currency id, empty when unknown
+   */
+  default Optional<String> organizationCurrencyId(String organizationId) {
+    return Optional.empty();
+  }
+
+  /**
+   * The decimals a UNIT PRICE of this currency is rounded to ({@code C_Currency.PricePrecision}),
+   * the order-line rule of ETP-6177 (ETP-6051). Not the amount scale of {@link DocCurrency}.
+   *
+   * <p>Default: unknown.</p>
+   *
+   * @param currencyId the currency
+   * @return the scale, empty when the currency is unknown or has none
+   */
+  default Optional<Integer> priceScale(String currencyId) {
+    return Optional.empty();
+  }
+
+  /**
+   * The org-to-document multiply rate valid on a date (ETP-6051), the one the invoice header and
+   * the {@code exchangeRate} blocker use. Positive, or empty when none is valid.
+   *
+   * <p>Default: none.</p>
+   *
+   * @param organizationId the organization of the document
+   * @param clientId       the client of the document
+   * @param toCurrencyId   the document currency
+   * @param date           the invoice date
+   * @return the rate, empty when none is valid or the lookup failed
+   */
+  default Optional<BigDecimal> conversionRate(String organizationId, String clientId,
+      String toCurrencyId, LocalDate date) {
+    return Optional.empty();
   }
 
   /**
@@ -596,6 +673,34 @@ public interface OcrLookups {
    */
   default Optional<DocCurrency> currencyById(String currencyId) {
     return Optional.empty();
+  }
+
+  /**
+   * The active currency of the tenant with this ISO 4217 code (ETP-6051).
+   *
+   * <p>Default: unknown.</p>
+   *
+   * @param isoCode the ISO code, uppercase
+   * @return the currency, empty when none is active or the lookup failed
+   */
+  default Optional<DocCurrency> currencyByCode(String isoCode) {
+    return Optional.empty();
+  }
+
+  /**
+   * The active currencies whose symbol is exactly {@code symbol}, restricted to those a document of
+   * the organization could be switched to: the organization currency plus every currency with a
+   * conversion range to or from it on any date (ETP-6051). A symbol such as {@code $} usually
+   * returns several; the caller accepts only a single match.
+   *
+   * <p>Default: none.</p>
+   *
+   * @param symbol         the symbol as printed
+   * @param organizationId the organization of the document, {@code null} for the session's
+   * @return the matching currencies, empty when none or the lookup failed
+   */
+  default List<DocCurrency> currenciesBySymbol(String symbol, String organizationId) {
+    return List.of();
   }
 
   /**

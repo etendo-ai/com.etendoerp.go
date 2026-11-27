@@ -49,7 +49,7 @@ import org.openbravo.module.remittance.utility.RemittanceStatusUtil;
 
 /**
  * Real-database acceptance of the REM trigger {@code REM_REMITTANCE_TRG} as ETP-6247 left it: it
- * only FREEZES the SEPA values (IBAN, creditor identifier, direct debit scheme, financed flag) once
+ * only FREEZES the SEPA values (IBAN, creditor identifier, direct debit scheme) once
  * the remittance is processed, inside the test transaction, rolled back after each test. It no
  * longer copies nor defaults anything: the Classic callout
  * {@code RemittanceSepaDefaultsCallout} and the GO write path ({@link RemittanceHeaderWrites}) do.
@@ -60,7 +60,7 @@ import org.openbravo.module.remittance.utility.RemittanceStatusUtil;
  *       {@code B2B});</li>
  *   <li>update while not processed: a change of the account or the type re-copies nothing, so a
  *       value typed by hand survives;</li>
- *   <li>once processed: the IBAN, the identifier, the scheme and the financed flag are frozen,
+ *   <li>once processed: the IBAN, the identifier and the scheme are frozen,
  *       and nothing else REM writes on it (status, posting, reactivation) is refused, with or
  *       without SEPA values (a remittance from before they existed has them all NULL).</li>
  * </ul>
@@ -139,7 +139,6 @@ public class RemittanceTriggerIntegrationTest extends WeldBaseTest {
       assertNull(remittance.getIBAN());
       assertNull(remittance.getCreditorIdentifier());
       assertNull(remittance.getDirectDebitScheme());
-      assertFalse(remittance.isFinanced());
     }
     assertEquals("CORE", RemittanceSepaOptions.scheme(collection));
   }
@@ -150,13 +149,11 @@ public class RemittanceTriggerIntegrationTest extends WeldBaseTest {
       r.setIBAN(TYPED_IBAN);
       r.setCreditorIdentifier(TYPED_CREDITOR_ID);
       r.setDirectDebitScheme("B2B");
-      r.setFinanced(true);
     });
 
     assertEquals(TYPED_IBAN, remittance.getIBAN());
     assertEquals(TYPED_CREDITOR_ID, remittance.getCreditorIdentifier());
     assertEquals("B2B", remittance.getDirectDebitScheme());
-    assertTrue(remittance.isFinanced());
   }
 
   // ---------------------------------------------------------------- update while not processed
@@ -208,7 +205,6 @@ public class RemittanceTriggerIntegrationTest extends WeldBaseTest {
     assertRefused("update rem_remittance set creditor_identifier = null"
         + " where rem_remittance_id = ?", id);
     assertRefused("update rem_remittance set dd_scheme = ? where rem_remittance_id = ?", "B2B", id);
-    assertRefused("update rem_remittance set isfinanced = 'Y' where rem_remittance_id = ?", id);
     assertRefused("update rem_remittance set fin_financial_account_id = ?"
         + " where rem_remittance_id = ?", accountBId, id);
     // Nothing else of the SEPA values changed, so an update that leaves them is accepted.
@@ -267,7 +263,6 @@ public class RemittanceTriggerIntegrationTest extends WeldBaseTest {
     assertNull("nothing is filled in on the way", legacy.getIBAN());
     assertNull(legacy.getCreditorIdentifier());
     assertNull(legacy.getDirectDebitScheme());
-    assertFalse(legacy.isFinanced());
   }
 
   // ---------------------------------------------------------------- scheme check

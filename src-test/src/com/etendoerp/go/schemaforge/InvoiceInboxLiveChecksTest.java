@@ -268,7 +268,7 @@ class InvoiceInboxLiveChecksTest {
   }
 
   @Test
-  @DisplayName("without a stored currency it is derived with the LINKED vendor only, and the row's organization")
+  @DisplayName("without a stored currency the default is asked with the LINKED vendor only (it infers nothing), and the row's organization")
   void theDerivedCurrency() throws Exception {
     when(lookups.documentCurrency("V1", "ORG-1")).thenReturn(
         Optional.of(new DocCurrency("USD", "USD", "$", 2)));
@@ -291,5 +291,33 @@ class InvoiceInboxLiveChecksTest {
 
     review.when(() -> InvoiceInboxReview.lookupsFor(any())).thenReturn(Optional.empty());
     assertNull(InvoiceInboxLiveChecks.documentCurrencyId(new JSONObject("{}"), row, "ORG-1"));
+  }
+
+  @Test
+  @DisplayName("a printed currency the tenant does not have adds exchangeRate on its own, with no rate lookup")
+  void anUnavailablePrintedCurrencyAddsTheExchangeRateGap() throws Exception {
+    currencies("EUR", "EUR");
+    rateIs(new BigDecimal("1.08"));
+
+    assertEquals(List.of("exchangeRate"), InvoiceInboxLiveChecks.extraMissing(
+        document(LINKED_OK, ",currencyUnavailable:'CHF'"), row));
+    assertTrue(InvoiceInboxLiveChecks.extraMissing(
+        document(LINKED_OK, ",currencyUnavailable:'  '"), row).isEmpty(), "blank is not a flag");
+    assertTrue(InvoiceInboxLiveChecks.extraMissing(
+        document(LINKED_OK, ",currencyUnavailable:''"), row).isEmpty());
+  }
+
+  @Test
+  @DisplayName("a currency chosen by hand, foreign and with no rate on the date, still adds exchangeRate")
+  void aManualForeignCurrencyWithoutARateAddsTheGap() throws Exception {
+    currencies("EUR", null);
+    rateIs(null);
+
+    assertEquals(List.of("exchangeRate"), InvoiceInboxLiveChecks.extraMissing(
+        document(LINKED_OK, ",currencyId:'USD',currencySource:'manual'"), row));
+
+    rateIs(new BigDecimal("1.08"));
+    assertTrue(InvoiceInboxLiveChecks.extraMissing(
+        document(LINKED_OK, ",currencyId:'USD',currencySource:'manual'"), row).isEmpty());
   }
 }

@@ -31,7 +31,6 @@ import org.apache.commons.lang3.StringUtils;
 import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 import org.openbravo.dal.service.OBDal;
-import org.openbravo.model.ad.utility.Attachment;
 import org.openbravo.model.common.businesspartner.BusinessPartner;
 import org.openbravo.model.common.enterprise.Organization;
 import org.openbravo.model.common.enterprise.OrganizationInformation;
@@ -63,8 +62,9 @@ import org.openbravo.sepa.iso20022.util.SEPAUtil;
  * </ul>
  *
  * <p>The answer also carries the {@code summary} the confirm dialog shows (distinct invoices,
- * lines, total, currency, due date) and the {@code latestFile}: the record's main {@code .xml}
- * attachment, when there is one.
+ * lines, total, currency, due date) and {@code returnedCount}: the receipts the bank returned,
+ * which a download still lists (Classic's generator writes every instruction), so the SPA can warn
+ * before the user downloads. The file itself is never stored (ETP-6247).
  */
 final class RemittanceFileReadiness {
 
@@ -93,13 +93,11 @@ final class RemittanceFileReadiness {
   static final String KEY_SCHEME = "scheme";
   static final String KEY_PROBLEMS = "problems";
   static final String KEY_SUMMARY = "summary";
-  static final String KEY_LATEST_FILE = "latestFile";
-  static final String KEY_ATTACHMENT_ID = "attachmentId";
-  static final String KEY_FILE_NAME = "fileName";
+  /** ETP-6247: the returned receipts a download of the file still lists. */
+  static final String KEY_RETURNED_COUNT = "returnedCount";
 
   /** {@code C_Currency_ID} of the euro, the only currency SEPA files carry. */
   static final String EUR_ID = "102";
-  private static final String XML_SUFFIX = ".xml";
 
   private RemittanceFileReadiness() {
   }
@@ -170,7 +168,7 @@ final class RemittanceFileReadiness {
    * The {@code fileReadiness} answer.
    *
    * @param remittance the remittance
-   * @return {@code {ready, scheme, problems, summary, latestFile}}
+   * @return {@code {ready, scheme, problems, summary, returnedCount}}
    */
   static JSONObject body(Remittance remittance) throws JSONException {
     Result result = evaluate(remittance);
@@ -179,28 +177,8 @@ final class RemittanceFileReadiness {
     body.put(KEY_SCHEME, result.scheme != null ? result.scheme : JSONObject.NULL);
     body.put(KEY_PROBLEMS, result.problems.toJson());
     body.put(KEY_SUMMARY, summary(remittance, result));
-    JSONObject latest = latestFile(remittance);
-    body.put(KEY_LATEST_FILE, latest != null ? latest : JSONObject.NULL);
+    body.put(KEY_RETURNED_COUNT, RemittanceReturnState.returnedCount(remittance));
     return body;
-  }
-
-  /**
-   * The record's main {@code .xml} attachment, as {@code {attachmentId, fileName}}.
-   *
-   * @param remittance the remittance
-   * @return the file, or {@code null} when the remittance has no generated file
-   */
-  static JSONObject latestFile(Remittance remittance) throws JSONException {
-    Attachment main = NeoAttachmentsHelper.findMainAttachment(
-        RemittanceSepaProvisioning.REMITTANCE_TABLE_ID, remittance.getId());
-    if (main == null || main.getName() == null
-        || !main.getName().toLowerCase(Locale.ROOT).endsWith(XML_SUFFIX)) {
-      return null;
-    }
-    JSONObject file = new JSONObject();
-    file.put(KEY_ATTACHMENT_ID, main.getId());
-    file.put(KEY_FILE_NAME, main.getName());
-    return file;
   }
 
   // ---------------------------------------------------------------------------

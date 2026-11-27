@@ -27,7 +27,7 @@ import org.openbravo.base.exception.OBException;
  * unchanged so nothing is reported recovered that was not recorded.
  *
  * <p>The webhook path itself, and its fence, are specified in
- * {@code EtendoGoJwtServletCoverageTest} and {@code CheckoutRequestStoreIntegrationTest}.
+ * {@code EtendoGoJwtServletPaidReactivationTest} and {@code CheckoutRequestStoreIntegrationTest}.
  *
  * @covers com.etendoerp.go.rest.PaidReactivationService
  */

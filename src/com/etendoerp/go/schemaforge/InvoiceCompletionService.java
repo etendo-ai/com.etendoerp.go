@@ -36,7 +36,6 @@ import org.openbravo.dal.service.OBDal;
 import org.openbravo.database.ConnectionProvider;
 import org.openbravo.erpCommon.utility.OBError;
 import org.openbravo.model.ad.ui.Process;
-import org.openbravo.model.common.invoice.Invoice;
 import org.openbravo.service.db.DalConnectionProvider;
 
 /**
@@ -86,8 +85,10 @@ import org.openbravo.service.db.DalConnectionProvider;
  *
  * <p>Two consequences callers MUST respect:
  * <ul>
- *   <li>Any {@code Invoice} reference held across the call is <b>detached</b> afterwards. Capture
- *       the id before completing and re-read the entity from the reopened session.</li>
+ *   <li>Every entity a caller holds across the call is <b>detached</b> afterwards, on every
+ *       outcome, success or failure: the session is cleared before the process runs (ETP-6414)
+ *       and closed by it on most outcomes. Capture the ids before completing and re-read the
+ *       entities by id.</li>
  *   <li>The rollback on failure is what makes create-and-confirm all-or-nothing: creation handlers
  *       only {@code flush()}, never commit, so a failed completion reverts the header, its lines,
  *       the discount line, the line links and the document-number sequence advance together.</li>
@@ -136,6 +137,8 @@ final class InvoiceCompletionService {
       // neither the Verifactu nor the TBAI ProcessInvoiceHook reads RequestContext today, so this
       // is a non-issue in practice. Revisit if a future hook needs request-scoped context.
       ConnectionProvider conn = new DalConnectionProvider(false);
+      // ETP-6414: no InvoiceTax made stale by the caller's last flush may reach the process.
+      releaseStaleSessionState();
       // ETP-4783: In Go, the Classic ETVFAC_C_INVOICE_SET_VERIFACTU callout is never triggered.
       // Copy DocType Verifactu fields to the invoice before completing so GenerateRFAfterProcessingHook
       // finds em_etvfac_inv_type / em_etvfac_verifac_desc populated (only for AR invoices; AP skipped
@@ -205,6 +208,35 @@ final class InvoiceCompletionService {
   }
 
   /**
+   * ETP-6414: flushes every pending write and then empties the Hibernate first-level cache, so
+   * {@link ProcessInvoiceUtil#process} starts from what the database really holds.
+   *
+   * <p>The creation flows refresh the invoice, touch its lines and flush again before completing
+   * (the shipment flow fixes gross amounts and list prices; the return flow fixes gross amounts and
+   * links the rectified invoices). That last flush fires {@code C_INVOICELINE_TRG2} /
+   * {@code C_INVOICELINETAX_TRG}, which rewrite {@code C_InvoiceTax} under Hibernate, so the
+   * session can still hold an {@code InvoiceTax} whose row no longer exists. The process reuses
+   * that session and reloads/refreshes the invoice (its cascade {@code refresh(invoice)} after
+   * {@code C_Invoice_Post}), reaches the stale tax and fails with "No row with the given identifier
+   * exists: [InvoiceTax#...]", and the whole creation is rolled back.
+   * Same hazard, same remedy as {@code InvoiceFromOrderSupport#applyOrderDiscountToInvoice}
+   * (ETP-4015): evicting single entities is not enough, because the invoice's collections still
+   * reference them.
+   *
+   * <p>Runs BEFORE {@link #populateVerifactuFieldsFromDocType}: the flush makes the caller's writes
+   * visible to its native {@code UPDATE}, and no dirty copy of the invoice is left in the session
+   * to overwrite that update on the process's own flush. Entities a caller holds are detached after
+   * this call on every outcome, success or failure: re-read them by id. That includes the failures
+   * where the process returns without closing the session (a {@code ProcessInvoiceHook} refusal,
+   * a business partner without currency). {@code OBContext} keeps its own initialized entities.
+   */
+  private static void releaseStaleSessionState() {
+    OBDal dal = OBDal.getInstance();
+    dal.flush();
+    dal.getSession().clear();
+  }
+
+  /**
    * Reads the human-readable message out of a completion response.
    *
    * <p>Has to check both shapes: {@code NeoProcessService.translateClassicResult} puts the
@@ -241,8 +273,10 @@ final class InvoiceCompletionService {
    *
    * <p>Only touches AR sales invoices where {@code em_etvfac_inv_type} is currently null.
    * Uses native SQL so the Go module compiles even when the Verifactu module is absent.
-   * After the UPDATE the invoice is evicted from the Hibernate first-level cache so that
-   * {@link ProcessInvoiceUtil} (called immediately after) reads the fresh DB values.
+   * It runs right after {@link #releaseStaleSessionState} has cleared the session, so no cached
+   * copy of the invoice exists and {@link ProcessInvoiceUtil} (called immediately after) loads the
+   * updated row from the database; the per-entity evict this method used to do is no longer
+   * needed (ETP-6414). Do not call it with a session that may hold the invoice.
    *
    * <p>Fields populated (strictly from DocType — no fallback derivation):
    * <ul>
@@ -305,11 +339,6 @@ final class InvoiceCompletionService {
         ps.setString(1, invoiceId);
         int rows = ps.executeUpdate();
         if (rows > 0) {
-          // Evict from Hibernate first-level cache so ProcessInvoiceUtil sees the updated values
-          Invoice inv = OBDal.getInstance().getSession().get(Invoice.class, invoiceId);
-          if (inv != null) {
-            OBDal.getInstance().getSession().evict(inv);
-          }
           log.debug("[INVOICE-COMPLETE] Populated Verifactu DocType fields for invoice {}", invoiceId);
         }
       }

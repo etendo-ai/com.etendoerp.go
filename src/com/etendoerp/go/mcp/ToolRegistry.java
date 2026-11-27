@@ -764,6 +764,9 @@ public class ToolRegistry {
       case McpConstants.TOOL_NEO_DEFAULTS: definition = registry.buildDefaultsTool(List.of(), null); break;
       case McpConstants.TOOL_NEO_SCHEMA: definition = registry.buildSchemaTool(List.of()); break;
       case McpConstants.TOOL_NEO_DISCOVER: definition = registry.buildDiscoverTool(); break;
+      // ETP-5810: a mistyped root argument ('asyn:false') was dropped and the batch ran async,
+      // row by row, instead of as the one atomic transaction the agent asked for.
+      case McpConstants.TOOL_NEO_BATCH: definition = registry.buildBatchTool(); break;
       // ETP-5669: a top-level docAction was silently ignored and the call fell through to the
       // generic executor; the action's own parameters belong under 'parameters'.
       case McpConstants.TOOL_NEO_ACTION: definition = registry.buildActionTool(List.of()); break;

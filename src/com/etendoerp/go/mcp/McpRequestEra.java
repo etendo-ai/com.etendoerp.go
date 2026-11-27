@@ -35,8 +35,6 @@ import org.codehaus.jettison.json.JSONException;
 import org.codehaus.jettison.json.JSONObject;
 
 import com.etendoerp.go.common.GoRuntimeProperties;
-import com.etendoerp.go.featureflags.FeatureFlagContext;
-import com.etendoerp.go.featureflags.GoFeatureFlags;
 
 /**
  * Decides which MCP era a request belongs to, and whether a modern request is well formed
@@ -55,9 +53,9 @@ import com.etendoerp.go.featureflags.GoFeatureFlags;
  * modern error, so it would retry instead of falling back, and fail forever (design §2.2).</p>
  *
  * <p>{@link #classify} is pure: no servlet, DAL or {@code OBContext}. Every branch is on protocol
- * structure, never on a spec or entity. The two switches around it are read separately:
- * {@link #modernEnabled()} (the {@link GoFeatureFlags#FLAG_MCP_MODERN_ERA_DISABLED} kill
- * switch) and {@link #strict()} ({@value #PROP_STRICT}).</p>
+ * structure, never on a spec or entity. The one switch around it, {@link #strict()}
+ * ({@value #PROP_STRICT}), is read separately. The modern era is always served: its
+ * {@code mcp-modern-era-disabled} kill switch was retired in ETP-6461.</p>
  */
 final class McpRequestEra {
 
@@ -95,12 +93,6 @@ final class McpRequestEra {
   static final String PROP_STRICT = "mcp.modern.strict";
   /** Environment-variable spelling of {@value #PROP_STRICT}. */
   static final String ENV_STRICT = "ETGO_MCP_MODERN_STRICT";
-
-  /**
-   * The kill switch is environment level: no targeting key, no attributes (see
-   * {@link GoFeatureFlags#FLAG_MCP_MODERN_ERA_DISABLED}). Shared, so nothing is built per request.
-   */
-  private static final FeatureFlagContext ENVIRONMENT = FeatureFlagContext.environment();
 
   /** Methods that select legacy semantics whatever else the request carries. */
   private static final Set<String> LEGACY_HANDSHAKE =
@@ -157,9 +149,7 @@ final class McpRequestEra {
   }
 
   /**
-   * Classify one HTTP request, or call it legacy outright while the
-   * {@link GoFeatureFlags#FLAG_MCP_MODERN_ERA_DISABLED} kill switch is on — exactly how the servlet
-   * behaved before the modern era existed.
+   * Classify one HTTP request.
    *
    * @param request the HTTP request, read for its mirror headers only
    * @param method  the JSON-RPC method
@@ -168,9 +158,6 @@ final class McpRequestEra {
    */
   static Classification forRequest(HttpServletRequest request, String method,
       JSONObject params) {
-    if (!modernEnabled()) {
-      return Classification.legacy();
-    }
     return classify(method, params,
         new Headers(request.getHeader(McpProtocolVersion.HEADER), request.getHeader(HEADER_METHOD),
             request.getHeader(HEADER_NAME)),
@@ -238,17 +225,6 @@ final class McpRequestEra {
     JSONObject meta = params != null ? params.optJSONObject("_meta") : null;
     Object declared = meta != null ? meta.opt(META_PROTOCOL_VERSION) : null;
     return declared instanceof String ? StringUtils.trimToNull((String) declared) : null;
-  }
-
-  /**
-   * Whether the modern era is served. {@code false} only when the
-   * {@link GoFeatureFlags#FLAG_MCP_MODERN_ERA_DISABLED} kill switch is positively on; a missing
-   * flag or an unreachable control plane keeps the server dual-era.
-   *
-   * @return {@code true} unless the kill switch is on
-   */
-  static boolean modernEnabled() {
-    return !GoFeatureFlags.isEnabled(GoFeatureFlags.FLAG_MCP_MODERN_ERA_DISABLED, ENVIRONMENT);
   }
 
   /** @return whether {@value #PROP_STRICT} is on (default {@code false}) */

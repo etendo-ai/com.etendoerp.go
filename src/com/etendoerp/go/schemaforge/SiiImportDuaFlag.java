@@ -27,7 +27,7 @@ import com.etendoerp.go.featureflags.GoFeatureFlags;
 
 /**
  * ETP-6284 — the one gate of the {@value GoFeatureFlags#FLAG_SII_IMPORT_DUA} flag (purchase imports
- * with DUA for SII). Retiring the flag is a grep for this class. It is the <b>only</b> reader of the
+ * with DUA, with or without SII). Retiring the flag is a grep for this class. It is the <b>only</b> reader of the
  * flag: never evaluate the key anywhere else.
  *
  * <p><b>Evaluate at request entry.</b> {@link #isEnabled()} resolves the account from the
@@ -37,9 +37,11 @@ import com.etendoerp.go.featureflags.GoFeatureFlags;
  * unconfigured flag, an unreachable control plane and any evaluation error; no method throws.
  *
  * <p><b>What it gates:</b> the writes on the purchase-invoice {@code tax} entity
- * ({@link PurchaseInvoiceTaxExtension}) and the {@code siiDeferredVat} header action
- * ({@link PurchaseInvoiceSiiDeferredVat}); off, both answer {@link #featureDisabled()} on every
- * channel. <b>Not gated:</b> the reads of the tax entity, the header DUA fields (Classic columns),
+ * ({@link PurchaseInvoiceTaxExtension}), the {@code siiDeferredVat} header action
+ * ({@link PurchaseInvoiceSiiDeferredVat}) and turning on the header's "Importación con DUA" check
+ * ({@code etgoImportDua}, {@link PurchaseInvoiceImportDua}); off, all three answer
+ * {@link #featureDisabled()} on every channel. <b>Not gated:</b> the reads of the tax entity, the
+ * header DUA fields (Classic columns), the DUA rule of an invoice whose check is already on,
  * {@code hasManualTaxLines} and {@code aeatsiiFacturaIds}.
  */
 public final class SiiImportDuaFlag {

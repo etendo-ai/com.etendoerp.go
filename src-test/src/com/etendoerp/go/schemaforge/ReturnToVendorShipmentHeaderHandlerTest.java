@@ -84,7 +84,7 @@ import org.openbravo.model.materialmgmt.transaction.ShipmentInOutLine;
  *
  * <p>Covers:
  * <ul>
- *   <li>{@code handle()} — non-ACTION exit, clone delegation, unknown action, importReceiptLines
+ *   <li>{@code handle()} — importReceiptLines
  *       guard conditions, availableReceipts (SQL and error paths),
  *       availableReceiptLines (SQL and error paths), createReturnInvoice guard conditions,
  *       and the documentAction (fillMissingStorageBins) pass-through.</li>
@@ -93,6 +93,9 @@ import org.openbravo.model.materialmgmt.transaction.ShipmentInOutLine;
  *   <li>ETP-5711: the over-return cap on {@code importReceiptLines} and the contracts published
  *       to agents ({@code actionContracts()}).</li>
  * </ul>
+ *
+ * <p>What it shares with the customer return (posting/unpost/sifDefaults wiring, the generic
+ * action routing) is covered by {@code AbstractReturnDocumentHeaderHandlerTest}.
  *
  * @covers com.etendoerp.go.schemaforge.ReturnToVendorShipmentHeaderHandler
  * @covers com.etendoerp.go.schemaforge.NeoQuotaCreateCheck
@@ -114,46 +117,6 @@ public class ReturnToVendorShipmentHeaderHandlerTest {
     handler.cloneRecordHandler = mock(NeoCloneRecordHandler.class);
     handler.createDraftInvoiceHandler = mock(CreateDraftInvoiceHandler.class);
     when(handler.cloneRecordHandler.handle(any())).thenReturn(null);
-  }
-
-  // ── handle() — non-ACTION early exit ──────────────────────────────────────
-
-  /**
-   * Non-ACTION endpoint: handle returns null immediately.
-   */
-  @Test
-  public void testHandleReturnsNullForNonActionEndpoint() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("GET").endpointType(NeoEndpointType.CRUD).build();
-    assertNull(handler.handle(ctx));
-  }
-
-  // ── handle() — clone handler delegation ───────────────────────────────────
-
-  /**
-   * ACTION "clone": delegates to cloneRecordHandler and returns its response.
-   */
-  @Test
-  public void testHandleDelegatesToCloneHandlerAndReturnsItsResponse() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("clone").build();
-    NeoResponse cloneResp = new NeoResponse(200, new JSONObject());
-    when(handler.cloneRecordHandler.handle(ctx)).thenReturn(cloneResp);
-    assertSame(cloneResp, handler.handle(ctx));
-  }
-
-  // ── handle() — action routing ─────────────────────────────────────────────
-
-  /**
-   * ACTION with an unrecognised field name: handle returns null.
-   */
-  @Test
-  public void testHandleReturnsNullForUnknownAction() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("unknownAction").build();
-    assertNull(handler.handle(ctx));
   }
 
   // ── handle() — importReceiptLines guard conditions ─────────────────────────
@@ -386,19 +349,6 @@ public class ReturnToVendorShipmentHeaderHandlerTest {
   // ── handle() — createReturnInvoice guard conditions ───────────────────────
 
   /**
-   * ACTION "createReturnInvoice" with null recordId: returns 400.
-   */
-  @Test
-  public void testHandleCreateReturnInvoiceMissingRecordIdReturnsBadRequest() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("createReturnInvoice").recordId(null).build();
-    NeoResponse result = handler.handle(ctx);
-    assertNotNull(result);
-    assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
-  }
-
-  /**
    * ACTION "createReturnInvoice", OBDal.get returns null: returns 404.
    */
   @Test
@@ -562,32 +512,7 @@ public class ReturnToVendorShipmentHeaderHandlerTest {
     }
   }
 
-  // ── handle() — documentAction pass-through ────────────────────────────────
-
-  /**
-   * ACTION "documentAction": fillMissingStorageBins is called and handle returns null,
-   * leaving the NEO native completion handler to process the request.
-   */
-  @Test
-  public void testHandleDocumentActionReturnsNull() {
-    // fillMissingStorageBins exits early when recordId is null
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("documentAction").recordId(null).build();
-    assertNull(handler.handle(ctx));
-  }
-
   // ── afterHandle() — guard conditions ──────────────────────────────────────
-
-  /**
-   * Non-GET endpoint: afterHandle returns null immediately.
-   */
-  @Test
-  public void testAfterHandleReturnsNullForNonGetMethod() {
-    NeoContext ctx = NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION).build();
-    assertNull(handler.afterHandle(ctx));
-  }
 
   /**
    * GET without a previous result: afterHandle returns null.
@@ -1494,36 +1419,7 @@ public class ReturnToVendorShipmentHeaderHandlerTest {
     }
   }
 
-  @Test
-  public void handleRectifiableInvoices_missingRecordIdReturnsBadRequest() {
-    NeoResponse result = handler.handle(NeoContext.builder()
-        .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
-        .fieldName("rectifiableInvoices").build());
-    assertNotNull(result);
-    assertEquals(HttpServletResponse.SC_BAD_REQUEST, result.getHttpStatus());
-  }
-
-
   // ── ETP-5712: discoverability, response shape, duplicates, zero-amount guard ──────
-
-  /**
-   * ETP-5712: confirming a return does NOT create the factura rectificativa, and an agent that
-   * reads only {@code documentAction} must learn that and the call that does. The goods
-   * receipt/shipment keep their own text ({@link InOutCompletionContract#CONTRACT}).
-   */
-  @Test
-  public void testDocumentActionDescriptionSaysConfirmingDoesNotCreateTheRectificativa() {
-    String text = handler.actionContracts().get("documentAction").getDescription();
-
-    assertTrue(text, text.contains("DRAFT"));
-    assertTrue(text, text.contains("createReturnInvoice"));
-    assertTrue(text, text.contains("factura rectificativa"));
-    assertTrue(text, text.contains("does NOT create"));
-    assertFalse("the return text must not be the goods receipt/shipment one",
-        text.contains("createGoodsReceipt"));
-    assertFalse("the shared goods receipt/shipment contract stays untouched",
-        InOutCompletionContract.CONTRACT.getDescription().contains("createReturnInvoice"));
-  }
 
   /** ETP-5712: the createReturnInvoice description warns about duplicates and lists the response. */
   @Test
@@ -1599,6 +1495,43 @@ public class ReturnToVendorShipmentHeaderHandlerTest {
         order.verify(completion.processInvoiceUtil)
             .process(eq("ret-inv-1"), eq("CO"), anyString(), anyString(), anyString(), any(), any());
         order.verify(dal).refresh(completed);
+      }
+    }
+  }
+
+  /**
+   * ETP-6179 CP-12: the vendor return's contract does not declare {@code validateOnly}, so the key,
+   * if sent anyway, is not read (ReturnInvoiceKind.acceptsValidateOnly false): the real call runs
+   * and creates and completes the rectificativa, it is not answered as a dry run.
+   */
+  @Test
+  @SuppressWarnings({"unchecked", "rawtypes"})
+  public void handleCreateReturnInvoice_validateOnlyIsNotReadOnTheVendorReturn() throws Exception {
+    try (MockedStatic<OBContext> ignored = Mockito.mockStatic(OBContext.class);
+         MockedStatic<OBDal> dalMock = Mockito.mockStatic(OBDal.class);
+         MockedStatic<OBProvider> providerMock = Mockito.mockStatic(OBProvider.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OBProvider provider = mock(OBProvider.class);
+      providerMock.when(OBProvider::getInstance).thenReturn(provider);
+      stubReturnInvoiceQueries(dal, "inv-src-1");
+      mockCreateReturnInvoiceFlow(dal, provider, "ret-inv-1");
+      when(dal.get(eq(Invoice.class), eq("inv-src-1"))).thenReturn(mock(Invoice.class));
+
+      try (CompletionMocks completion = new CompletionMocks(dal, completionSuccess())) {
+        mockCompletedInvoice(dal, "ret-inv-1", "REC-2000001", "CO");
+
+        NeoResponse result = handler.handle(NeoContext.builder()
+            .httpMethod("POST").endpointType(NeoEndpointType.ACTION)
+            .fieldName("createReturnInvoice").recordId("ret-1")
+            .requestBody(new JSONObject().put("validateOnly", true)).build());
+
+        assertEquals(200, result.getHttpStatus());
+        JSONObject data = result.getBody().getJSONObject("response").getJSONObject("data");
+        assertFalse(data.has("validateOnly"));
+        assertEquals("ret-inv-1", data.getString("id"));
+        verify(completion.processInvoiceUtil, Mockito.times(1))
+            .process(eq("ret-inv-1"), eq("CO"), anyString(), anyString(), anyString(), any(), any());
       }
     }
   }
@@ -2001,39 +1934,7 @@ public class ReturnToVendorShipmentHeaderHandlerTest {
     }
   }
 
-  // ── ETP-5714: the unpost gate is wired in front of the posting service ─────
-
-  /** The behavior of the gate is covered in {@code GoodsPostingContractsTest}; this is the wiring. */
-  @Test
-  public void handle_unpostGateRunsBeforeThePostingService() throws Exception {
-    com.etendoerp.go.schemaforge.handlers.DocumentPostingService service =
-        mock(com.etendoerp.go.schemaforge.handlers.DocumentPostingService.class);
-    NeoContext ctx = NeoContext.builder().httpMethod("POST")
-        .endpointType(NeoEndpointType.ACTION).fieldName("unpost").recordId("r-1").build();
-    NeoResponse refusal = NeoResponse.error(422, "not posted");
-    ReturnToVendorShipmentHeaderHandler h = new ReturnToVendorShipmentHeaderHandler();
-    h.setPostingService(service);
-
-    try (MockedStatic<GoodsPostingContracts> gate = Mockito.mockStatic(GoodsPostingContracts.class)) {
-      gate.when(() -> GoodsPostingContracts.checkUnpost(ctx)).thenReturn(refusal);
-
-      assertSame(refusal, h.handle(ctx));
-      Mockito.verify(service, Mockito.never()).handleAction(any());
-    }
-  }
-
   // ── sifDefaults: the SIF fields of its factura rectificativa (ETP-6179) ──
-
-  /** sifDefaults is declared as a read action that creates nothing and documents its answer. */
-  @Test
-  public void actionContracts_declaresSifDefaultsAsAReadOnlyPreview() {
-    java.util.Map<String, NeoActionContract> contracts = handler.actionContracts();
-
-    InvoiceSifPreviewTestSupport.assertReadOnlySifDefaultsContract(
-        contracts.get(InvoiceSifPreset.ACTION_SIF_DEFAULTS));
-    assertTrue(contracts.get("createReturnInvoice").getParams().stream()
-        .anyMatch(p -> InvoiceSifPreset.PARAM_SIF_FIELDS.equals(p.getName())));
-  }
 
   /**
    * sifDefaults on a return to a vendor previews its purchase factura rectificativa: SII only —

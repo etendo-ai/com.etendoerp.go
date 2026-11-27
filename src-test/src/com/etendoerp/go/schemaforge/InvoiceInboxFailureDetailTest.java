@@ -36,6 +36,22 @@ import org.junit.jupiter.api.Test;
 class InvoiceInboxFailureDetailTest {
 
   @Test
+  @DisplayName("step_refused_status stores the step and the status and parses back")
+  void stepRefusedStatusRoundTrip() {
+    InvoiceInboxFailureDetail.Detail built = InvoiceInboxFailureDetail.of(
+        InvoiceInboxFailureDetail.STEP_REFUSED_STATUS, "step", "vendorAddress", "status", 403);
+
+    Optional<InvoiceInboxFailureDetail.Detail> parsed =
+        InvoiceInboxFailureDetail.parse(built.stored());
+
+    assertTrue(parsed.isPresent());
+    assertEquals("step_refused_status", parsed.get().code());
+    assertEquals("vendorAddress", parsed.get().params().get("step"));
+    assertEquals(403, parsed.get().params().get("status"));
+    assertEquals("step vendorAddress was refused by the server (HTTP 403)", parsed.get().text());
+  }
+
+  @Test
   @DisplayName("build and parse round trip keeps the code, the params and the English text")
   void roundTrip() {
     InvoiceInboxFailureDetail.Detail built = InvoiceInboxFailureDetail.of(

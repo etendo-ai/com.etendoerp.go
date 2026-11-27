@@ -358,9 +358,9 @@ link we mailed.
 | `return-to-vendor-send` | `custom` | `C_BPartner.EM_Etgo_Email`, falling back to active contact email, resolved from the vendor-return business partner | `version`, `recordId` |
 | `return-material-receipt-send` | `custom` | `C_BPartner.EM_Etgo_Email`, falling back to active contact email, resolved from the return receipt business partner | `version`, `recordId` |
 | `return-to-vendor-shipment-send` | `custom` | `C_BPartner.EM_Etgo_Email`, falling back to active contact email, resolved from the return shipment business partner | `version`, `recordId` |
-| `portal-quotation-decision-confirm` | `custom` | The **first To** stored on the root `ETGO_Portal_Link` row of the session's link — never CC, never an address from the caller | `linkId`, `recordId` (the quotation), `tenantId`, `language`, `decision`, `reasonCode`?, `reasonText`?. Only inside `PortalDecisionScope` (set by `PortalDecisionService#request`); else 403. Mints the `ETGO_PORTAL_DECISION` row in `resolve`, usable from `onDelivered`. Card design and Etendo footer (see *Portal email design* below). Its button names the decision ("Confirmar rechazo" / "Confirmar aceptación", `confirm.cta.<DECISION>`) and is the confirmation itself: the landing auto-submits the confirm POST on open, a bare GET applies nothing |
+| `portal-quotation-decision-confirm` | `custom` | **Every To of the quotation's original send, never its CC** (QA CP-45 as revised): the newest `sales-quotation-send` row of `ETGO_EMAIL_SEND_LOG` with status `SENT` that reached the To/CC of the session's link (`PortalQuotationSends`) — never an address from the caller. Its own subject (`confirm.subject.<DECISION>`), a standalone email: no "Re:" until the gateway carries `In-Reply-To`/`References` | `linkId`, `recordId` (the quotation), `tenantId`, `language`, `decision`, `reasonCode`?, `reasonText`?. Only inside `PortalDecisionScope` (set by `PortalDecisionService#request`); else 403. Mints the `ETGO_PORTAL_DECISION` row in `resolve`, usable from `onDelivered`. Card design and etendo.ai footer (see *Portal email design* below). Its button names the decision ("Confirmar rechazo" / "Confirmar aceptación", `confirm.cta.<DECISION>`) and is the confirmation itself: the landing auto-submits the confirm POST on open, a bare GET applies nothing |
 | `portal-quotation-decision-notice` | `custom` | The ETGO_ACCOUNT email of the user who created the decision's root link (the sender of the quotation) | `decisionId`, `recordId`, `tenantId`, `language`. Only inside `PortalDecisionScope`, after the confirmation's commit |
-| `portal-link-renewal` | `custom` | The To and CC stored on the expired `ETGO_Portal_Link` row named by `linkId` — never the person who opened the link | `linkId`, `recordId` (the document), `tenantId`, `language`. Accepted only inside `PortalRenewalScope` (set by `PortalLinkService#renew`); any other caller gets 403 |
+| `portal-link-renewal` | `custom` | The To and CC stored on the expired `ETGO_Portal_Link` row named by `linkId` — never the person who opened the link | `linkId`, `recordId` (the document), `tenantId`, `language`. Accepted only inside `PortalRenewalScope` (set by `PortalLinkService#renew`); any other caller gets 403. Card design (issuer logo or initials, title, button, fallback, validity note, etendo.ai footer), no Etendo signature |
 
 ### Customer portal link (ETP-5267, ETP-6209)
 
@@ -374,7 +374,7 @@ return contracts) the email is byte-identical to before. The base class only ask
 was declared and whether a link was minted; it names no window or table.
 The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-portal.md`.
 
-### Portal email design: the decision card and the Etendo footer (ETP-6209)
+### Portal email design: the decision card and the etendo.ai footer (ETP-6209)
 
 - **`portal-quotation-decision-confirm` uses the card design** (Figma): issuer avatar + "Confirmación
   pendiente" badge, title and subtitle per decision, a "Datos del presupuesto" box with three
@@ -399,19 +399,39 @@ The portal side (endpoints, renewal checks, rate limits, PDF) is in `customer-po
     initials avatar.
   - The "¿El botón no funciona?" block is centred; the "¿No reconoces esta solicitud?" block is
     left-aligned, as in the design.
-- **The "Creado con Etendo" footer** (`EmailFooter`, copy `footer.*`) closes the emails our
-  customers' customers receive through the portal: both decision confirmations, the
-  `portal-link-renewal`, and the four portal document sends **only when a portal link was minted**
+- **The «Creado con etendo.ai» footer** (`EmailFooter`, copy `footer.prefix`) closes the emails
+  our customers' customers receive through the portal: both decision confirmations, the
+  `portal-link-renewal`, and the sales document sends **only when a portal link was minted**
   (`CallToAction#isPortal`). Flag off, purchase/return sends, account emails and the seller's
-  `portal-quotation-decision-notice` render byte-identical: the footer exists only when the
-  content asks for it. The icon is the hosted `EmailLayout.LOGO_URL` (the lime Etendo tile) on a
-  lime cell, so it still reads with images blocked.
-- **Footer URLs are provisional.** `EmailFooter.PRICING_URL` is `https://etendo.ai`.
-  `EmailFooter.PRIVACY_URL` is empty, so the "Política de cookies y privacidad" row is **not
-  rendered** (a privacy link to the home page would mislead); setting marketing's real URL there
-  brings it back, copy `footer.privacy` is kept. Marketing will send the final ones plus a UTM per piece: fill
-  `EmailFooter.Piece`'s tracking query (`DOCUMENT_SEND`, `LINK_RENEWAL`, `DECISION_ACCEPT`,
-  `DECISION_REJECT`); `EmailFooter.link` appends it to every footer link, no contract changes.
+  `portal-quotation-decision-notice` carry none: the footer exists only when the content asks for
+  it.
+- **Footer design (marketing / legal spec, ETP-6209 QA).** One small centred line: «Creado con» /
+  «Built with» followed by the horizontal etendo.ai logo published by marketing
+  (`EmailFooter.LOGO_URL` =
+  `https://etendo.ai/wp-content/uploads/2026/11/etendoai-logo-email-200.png`, a 200×30 asset drawn
+  at 100×15: `width`/`height` attributes for Outlook plus inline `width`/`height`, `border:0`,
+  `vertical-align:baseline`), `alt="etendo.ai"` so the brand still reads when the client blocks
+  remote images. The words are 14px (`line-height:20px`) in `#4B5563` (`EmailLayout.FOOTER_TEXT_COLOR`),
+  separated from the logo by a `&nbsp;`. The logo is **baseline-aligned** because the wordmark's
+  baseline is the image's bottom edge, so words and wordmark sit on one line; `vertical-align:middle`
+  read as the words dropping below the logo in Gmail. Words and logo are **one** anchor to the
+  footer link below. No button, no «Conoce más», no social, no privacy link (dropped from the spec). These emails have no
+  plain-text part, so there is no text variant of the footer.
+- **The footer logo is a marketing-owned asset** on etendo.ai (the WordPress uploads path above),
+  not shipped with this module: if marketing moves or renames it, update `EmailFooter.LOGO_URL`,
+  or every email silently falls back to the `alt` text — nothing fails or logs.
+- **Footer link.** `https://etendo.ai/` with the email's UTM, declared per `EmailFooter.Piece`
+  (each contract passes its own piece; the layout names no contract):
+  `utm_source=portal_clientes&utm_medium=email&utm_campaign=portal_clientes&utm_content=` +
+  `mail_envio_documento` (`DOCUMENT_SEND`), `mail_reenvio_enlace` (`LINK_RENEWAL`),
+  `mail_aceptacion` (`DECISION_ACCEPT`), `mail_rechazo` (`DECISION_REJECT`).
+- **No tracking in the markup.** None of these emails adds an open pixel, and every link points
+  straight at its target (no click-redirect wrapping). The only images are the issuer's logo
+  (`/sws/portal/public-logo/…`, which records nothing), the footer's etendo.ai logo (a static,
+  shared asset with no per-email parameter, so it identifies no recipient) and, in the letter
+  design, the Etendo header icon. SES open/click tracking would come from an SES configuration set, which the gateway
+  Lambda does not pass (`send_email` without `ConfigurationSetName`); a default configuration set
+  on the sending identity is infra configuration, outside this repo.
 
 - **One link per send.** `PortalLinkService#mintForSend` inserts an `ETGO_Portal_Link` row in
   `resolve()` with `SENT_AT` null (pending) and the email's To and CC. The link id travels as
@@ -523,18 +543,40 @@ Document-send contracts generate `download_link` from server configuration:
 
 | Property | Environment Variable | Purpose |
 |----------|----------------------|---------|
-| `etendo.go.email.documentDownloadBaseUrl` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_BASE_URL` | Base URL for signed document download links, normally `/etendo/sws/neo/document-download` |
-| `etendo.go.email.documentDownloadTokenSecret` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_SECRET` | Server-side HMAC secret used to sign document download tokens |
-| `etendo.go.email.documentDownloadTokenTtlSeconds` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_TTL_SECONDS` | Optional token lifetime in seconds. Defaults to 7 days and never allows less than 60 seconds |
+| `etendo.go.email.documentDownloadBaseUrl` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_BASE_URL` | Base URL for document download links, normally `/etendo/sws/neo/document-download` |
+| `etendo.go.email.documentDownloadTokenSecret` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_SECRET` | Server-side HMAC secret used to sign document download tokens. Required for any link, share links included, because the signed token is their fallback |
+| `etendo.go.email.documentDownloadTokenTtlSeconds` | `ETGO_EMAIL_DOCUMENT_DOWNLOAD_TOKEN_TTL_SECONDS` | Optional link lifetime in seconds, for share links and signed tokens alike. Defaults to 7 days and never allows less than 60 seconds |
 
-Document download links are generated as `{base}/{token}`. The token is tied to the email send
-event through the resolved idempotency key and contains the trusted document record id and client
-id resolved by the server-side contract. The public download endpoint treats the signed token as a
-short-lived bearer authorization: it validates the HMAC signature and expiration, then serves only
-the cached `ETGO_PREVIEW_FILE` file for the token client/spec/record tuple. The send attempt is
-still audited by `TransactionalEmailService`, but the download endpoint does not depend on
-process-local audit state so links keep working across restarts and clustered nodes until their
-token expires.
+Document download links come in two formats (ETP-5035; full contract in `docs/neo-headless.md`
+§4.8):
+
+- **Share link, `{base}/{shareCode}`** — what new emails carry. The code is 10 random characters of
+  `[A-Za-z0-9]`, and the contract, spec, record id, client id, idempotency key and expiry live in
+  one `ETGO_Doc_Share_Link` row (`DocShareLinkService`). The row is committed on a pooled
+  connection of its own before the email is sent, so a later rollback of the send transaction
+  cannot leave the recipient with a dead link. An unknown, expired or revoked code answers
+  `404 Document not found`, the same answer as a missing file, so the response never tells whether
+  a record exists.
+- **Signed token, `{base}/{token}`** — the fallback when the share-link row cannot be stored (a WARN
+  names the send's idempotency key), and the format of every link sent before ETP-5035. The token
+  carries the same claims, signed with HMAC; the endpoint validates the signature and expiration
+  and answers `403 Invalid or expired link` when either fails, `404 Document file not found` when
+  the file is gone.
+
+Either way the endpoint serves the record's main attachment for the link's client/spec/record
+tuple, and does not depend on process-local audit state, so links keep working across restarts
+and clustered nodes until they expire. The send attempt is still audited by
+`TransactionalEmailService`; the link a recipient got is the `download_link` of its
+`ETGO_Email_Send_Log` row. Every send attempt mints a new share link, also one that ends up not
+sent (duplicate, throttled, suppressed), and the stored idempotency key is per record, so all the
+links of one document share it.
+
+Each download of a live share link that serves the file counts one open (`Open_Count`, and
+`First_Opened_At` once). Downloads whose `User-Agent` names a known email security scanner or link
+previewer (Microsoft Safe Links, Google's image proxy, Mimecast, Proofpoint, Barracuda and others;
+the list is `NeoDocumentDownloadService.EMAIL_SCANNER_USER_AGENT_TOKENS`) get the file but are not
+counted. Scanners that present a plain browser `User-Agent` still count, so the open count is an
+upper bound. Expired and revoked share-link rows are kept: nothing deletes them automatically.
 
 ## Document summary block (ETP-5003)
 

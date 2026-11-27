@@ -139,7 +139,7 @@ final class RemittanceSepaFileData {
     return NeoActionContract.write(ACTION_SAVE_CREDITOR_ID,
         "Saves the SEPA creditor identifier (AT-02). With a saved, not yet confirmed collection "
             + "remittance (remittanceId, or the record id) it is saved on THAT remittance only: its "
-            + "file, its regenerations and later account edits use this copy. The financial "
+            + "file (every download) and later account edits use this copy. The financial "
             + "account's default changes only when saveToAccount is true, which is also the only "
             + "write when no remittance is given (record id new): the account form. Upper-cased "
             + "and stripped of spaces and separators, then validated: country code, two mod-97 "

@@ -95,9 +95,17 @@ public final class HubSpotOutbox {
   static final String FIELD_HUTK = "hutk";
   static final String FIELD_PAGE_URI = "pageUri";
   static final String FIELD_PAGE_NAME = "pageName";
+  /** ETP-6363 — the notice the visitor accepted by signing up, as shown, for HubSpot's record. */
+  static final String FIELD_CONSENT_TEXT = "consentText";
+  /** ETP-6363 — the label of the promotional-mail checkbox, as shown. */
+  static final String FIELD_COMMUNICATIONS_TEXT = "communicationsText";
+  /** ETP-6363 — the checkbox's state when the account was created, added to the sign-up form. */
+  static final String FIELD_MARKETING_CONSENT = "marketingConsent";
   private static final Pattern HUTK = Pattern.compile("[0-9a-f]{32}");
   private static final int MAX_PAGE_URI = 2000;
   private static final int MAX_PAGE_NAME = 255;
+  // With the address and the title it still fits the 4000 characters of HUBSPOT_CONTEXT.
+  private static final int MAX_CONSENT_TEXT = 500;
 
   /**
    * Reads the country sent by the register form (ETP-6363): an ISO 3166-1 alpha-2 code.
@@ -187,11 +195,32 @@ public final class HubSpotOutbox {
     // ETP-6363: the sign-up form goes first, with the lead attribution the sign-up kept, so
     // HubSpot creates the contact with its source; the account's event then waits for that
     // contact (HubSpotEventSender) instead of creating it without one.
-    String signupContext = signupContextOf(account);
+    String signupContext = withMarketingConsent(signupContextOf(account), account);
     write("account " + accountId + " created", connection -> {
       enqueue(connection, accountId, HubSpotOutboxStore.SIGNUP_FORM, null, signupContext);
       enqueue(connection, accountId, HubSpotOutboxStore.ACCOUNT_CREATED, null, null);
     });
+  }
+
+  /**
+   * ETP-6363 — the sign-up form also carries the promotional-mail checkbox, sent to HubSpot with
+   * the label the visitor saw. Only when that label came with the sign-up: without it HubSpot would
+   * have no proof of what was accepted, so nothing is claimed.
+   */
+  static String withMarketingConsent(String signupContext, Account account) {
+    if (signupContext == null) {
+      return null;
+    }
+    try {
+      JSONObject context = new JSONObject(signupContext);
+      if (!context.has(FIELD_COMMUNICATIONS_TEXT)) {
+        return signupContext;
+      }
+      return context.put(FIELD_MARKETING_CONSENT,
+          Boolean.TRUE.equals(account.isMarketingConsent())).toString();
+    } catch (JSONException e) {
+      return signupContext;
+    }
   }
 
   private static String signupContextOf(Account account) {
@@ -202,8 +231,9 @@ public final class HubSpotOutbox {
 
   /**
    * ETP-6363 — the lead attribution a sign-up sends ({@code hubspotContext}), kept as it may reach
-   * HubSpot: the visitor cookie only when it is one (32 hex characters), a web address, a title.
-   * Anything else is dropped, never refused: attribution is not worth a failed sign-up.
+   * HubSpot: the visitor cookie only when it is one (32 hex characters), a web address, a title,
+   * and the consent texts the visitor was shown. Anything else is dropped, never refused:
+   * attribution is not worth a failed sign-up.
    *
    * @param raw what the register form or the single sign-on sent
    * @return the JSON to keep with the account, or {@code null} when nothing is left
@@ -227,6 +257,12 @@ public final class HubSpotOutbox {
       String pageName = StringUtils.trimToNull(raw.optString(FIELD_PAGE_NAME, null));
       if (pageName != null) {
         kept.put(FIELD_PAGE_NAME, StringUtils.left(pageName, MAX_PAGE_NAME));
+      }
+      for (String field : new String[] { FIELD_CONSENT_TEXT, FIELD_COMMUNICATIONS_TEXT }) {
+        String text = StringUtils.trimToNull(raw.optString(field, null));
+        if (text != null) {
+          kept.put(field, StringUtils.left(text, MAX_CONSENT_TEXT));
+        }
       }
       return kept.length() == 0 ? null : kept.toString();
     } catch (JSONException e) {

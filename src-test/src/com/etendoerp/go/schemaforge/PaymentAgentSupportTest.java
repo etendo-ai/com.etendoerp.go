@@ -43,6 +43,7 @@ import java.util.Map;
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
 import org.hibernate.Session;
+import org.hibernate.criterion.Criterion;
 import org.hibernate.query.Query;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -52,6 +53,7 @@ import org.junit.jupiter.api.Test;
 import org.mockito.Mockito;
 import org.mockito.MockedStatic;
 import org.openbravo.dal.core.OBContext;
+import org.openbravo.dal.service.OBCriteria;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBCurrencyUtils;
 import org.openbravo.model.common.currency.Currency;
@@ -64,6 +66,7 @@ import org.openbravo.model.financialmgmt.payment.FIN_PaymentMethod;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentSchedule;
 import org.openbravo.model.financialmgmt.payment.FIN_PaymentScheduleDetail;
 import org.openbravo.model.financialmgmt.payment.FinAccPaymentMethod;
+import org.openbravo.module.remittance.RemittanceLine;
 import org.openbravo.service.json.JsonUtils;
 
 /**
@@ -73,6 +76,8 @@ import org.openbravo.service.json.JsonUtils;
  * <p>The DAL is mocked at its edges only: {@link TenantOwnership#loadOwned} answers from an
  * in-memory map of "owned" entities, so {@link PaymentOwnership} runs for real and an id missing
  * from the map behaves like an unknown or another tenant's id.</p>
+ *
+ * @covers com.etendoerp.go.schemaforge.PaymentAgentSupport
  */
 @DisplayName("ETP-5558 — PaymentAgentSupport")
 class PaymentAgentSupportTest {
@@ -184,6 +189,18 @@ class PaymentAgentSupportTest {
   /** Links {@code psd} to a payment detail, which is what makes it no longer pending. */
   private static FIN_PaymentScheduleDetail link(FIN_PaymentScheduleDetail psd) {
     when(psd.getPaymentDetails()).thenReturn(mock(FIN_PaymentDetail.class));
+    return psd;
+  }
+
+  /** Links {@code psd} to a payment of a confirmed remittance ({@code REM_SENT}). */
+  private static FIN_PaymentScheduleDetail remitted(FIN_PaymentScheduleDetail psd) {
+    FIN_Payment remittedPayment = mock(FIN_Payment.class);
+    when(remittedPayment.getId()).thenReturn("pay-rem");
+    when(remittedPayment.getDocumentNo()).thenReturn("PAY-REM");
+    when(remittedPayment.getStatus()).thenReturn(InvoiceRemittance.STATUS_REMITTED);
+    FIN_PaymentDetail detail = mock(FIN_PaymentDetail.class);
+    when(detail.getFinPayment()).thenReturn(remittedPayment);
+    when(psd.getPaymentDetails()).thenReturn(detail);
     return psd;
   }
 
@@ -363,6 +380,114 @@ class PaymentAgentSupportTest {
 
       assertNull(PaymentAgentSupport.checkRegister("inv-unknown", body, true));
       assertFalse(body.has(KEY_SCHEDULE_ID));
+    }
+  }
+
+  // ─── checkRegister: an installment in a confirmed remittance (ETP-6247) ─────
+
+  @Nested
+  @DisplayName("checkRegister — installment in a confirmed remittance")
+  class Remittance {
+
+    @BeforeEach
+    @SuppressWarnings("unchecked")
+    void remittanceLine() {
+      org.openbravo.module.remittance.Remittance remittance =
+          mock(org.openbravo.module.remittance.Remittance.class);
+      when(remittance.getId()).thenReturn("rem-1");
+      when(remittance.getDocumentNo()).thenReturn("REM-0042");
+      RemittanceLine line = mock(RemittanceLine.class);
+      when(line.getRemittance()).thenReturn(remittance);
+      OBCriteria<RemittanceLine> criteria = mock(OBCriteria.class);
+      when(criteria.add(any(Criterion.class))).thenReturn(criteria);
+      when(criteria.uniqueResult()).thenReturn(line);
+      when(dal.createCriteria(RemittanceLine.class)).thenReturn(criteria);
+    }
+
+    private void assertInRemittance(NeoResponse refusal, String payable) throws Exception {
+      assertNotNull(refusal);
+      assertEquals(422, refusal.getHttpStatus());
+      JSONObject error = error(refusal);
+      assertEquals(InvoiceRemittance.MSG_INVOICE_IN_REMITTANCE,
+          error.getJSONArray("messageKeys").getString(0));
+      assertEquals("rem-1", error.getString(InvoiceRemittance.KEY_REMITTANCE_ID));
+      assertEquals("REM-0042", error.getString(InvoiceRemittance.KEY_REMITTANCE_DOCUMENT_NO));
+      assertEquals(0, new BigDecimal(payable)
+          .compareTo(decimal(error, InvoiceRemittance.KEY_PAYABLE_AMOUNT)));
+      assertFalse(error.has("allowedValues"), "no overpaymentAction is offered: " + error);
+    }
+
+    @Test
+    @DisplayName("funds over the payable part are refused as 'in remittance' before the agent is"
+        + " asked for an overpaymentAction")
+    void remittanceIsCheckedBeforeOverpayment() throws Exception {
+      invoice(INVOICE,
+          schedule("s-1", INVOICE, day(2026, 1, 1), "100", remitted(psd("60")), psd("40")));
+      JSONObject body = body(KEY_SCHEDULE_ID, "s-1", "actual_payment", "100");
+
+      // A collection in the org currency would otherwise be offered leave-credit / refund.
+      assertInRemittance(PaymentAgentSupport.checkRegister(INVOICE, body, true), "40");
+    }
+
+    @Test
+    @DisplayName("consumed credit counts toward the funds checked against the payable part")
+    void creditSourcesCountTowardThePayablePart() throws Exception {
+      invoice(INVOICE,
+          schedule("s-1", INVOICE, day(2026, 1, 1), "100", remitted(psd("60")), psd("40")));
+      JSONObject body = body(KEY_SCHEDULE_ID, "s-1", "actual_payment", "30");
+      body.put("creditSources", new JSONArray().put(
+          new JSONObject().put("kind", "credit").put("paymentId", "pay-credit").put("use", "11")));
+
+      assertInRemittance(PaymentAgentSupport.checkRegister(INVOICE, body, true), "40");
+    }
+
+    @Test
+    @DisplayName("funds within the payable part of a partly remitted installment pass")
+    void fundsWithinThePayablePartPass() throws Exception {
+      invoice(INVOICE,
+          schedule("s-1", INVOICE, day(2026, 1, 1), "100", remitted(psd("60")), psd("40")));
+      JSONObject body = body("actual_payment", "40");
+
+      assertNull(PaymentAgentSupport.checkRegister(INVOICE, body, true));
+      // The only installment with something payable is filled in.
+      assertEquals("s-1", body.getString(KEY_SCHEDULE_ID));
+    }
+
+    @Test
+    @DisplayName("an invoice whose only installment is fully remitted says so, not 'no pending"
+        + " installment'")
+    void fullyRemittedInvoiceIsRefusedAsInRemittance() throws Exception {
+      invoice(INVOICE, schedule("s-1", INVOICE, day(2026, 1, 1), "100", remitted(psd("100"))));
+
+      NeoResponse refusal = PaymentAgentSupport.checkRegister(INVOICE,
+          body("actual_payment", "10"), true);
+
+      assertInRemittance(refusal, "0");
+      assertEquals(0, new BigDecimal("100")
+          .compareTo(decimal(error(refusal), InvoiceRemittance.KEY_REMITTED_AMOUNT)));
+    }
+
+    @Test
+    @DisplayName("an installment paid by an ordinary payment keeps the generic refusal")
+    void paidInstallmentKeepsTheGenericRefusal() throws Exception {
+      invoice(INVOICE, schedule("s-1", INVOICE, day(2026, 1, 1), "100", link(psd("100"))));
+
+      NeoResponse refusal = PaymentAgentSupport.checkRegister(INVOICE,
+          body("actual_payment", "10"), true);
+
+      assertEquals(422, refusal.getHttpStatus());
+      assertEquals(PaymentRegistrationService.MSG_NO_PENDING_PSD,
+          error(refusal).getString("message"));
+    }
+
+    @Test
+    @DisplayName("the pending amount of an installment leaves the remitted part out")
+    void pendingAmountExcludesTheRemittedPart() {
+      FIN_PaymentSchedule schedule = schedule("s-1", INVOICE, day(2026, 1, 1), "100",
+          remitted(psd("60")), psd("25.50"), link(psd("4.50")));
+
+      assertEquals(0, new BigDecimal("25.50")
+          .compareTo(PaymentAgentSupport.pendingAmount(schedule)));
     }
   }
 
@@ -744,6 +869,24 @@ class PaymentAgentSupportTest {
       assertEquals(0, new BigDecimal("70.00").compareTo(decimal(invoice, "outstandingAmount")));
       assertEquals(0, new BigDecimal("30.00").compareTo(decimal(invoice, "totalPaid")));
       assertFalse(invoice.getBoolean("paymentComplete"));
+      // ETP-6247: always present; nothing is remitted in these fixtures.
+      assertEquals(0, BigDecimal.ZERO.compareTo(decimal(invoice, "remittedAmount")));
+    }
+
+    @Test
+    @DisplayName("the invoice state carries the part a confirmed remittance will collect")
+    void invoiceStateCarriesTheRemittedAmount() throws Exception {
+      when(payment.isProcessed()).thenReturn(true);
+      Invoice remittedInvoice = invoice(INVOICE,
+          schedule("s-1", INVOICE, day(2026, 1, 1), "100", remitted(psd("60")), psd("40")),
+          schedule("s-2", INVOICE, day(2026, 2, 1), "50", remitted(psd("12.345"))));
+      when(dal.get(Invoice.class, INVOICE)).thenReturn(remittedInvoice);
+
+      JSONObject data = data(PaymentAgentSupport.enrich("registerPayment", result(), INVOICE,
+          new JSONObject(), null));
+
+      assertEquals(0, new BigDecimal("72.345")
+          .compareTo(decimal(data.getJSONObject("invoice"), "remittedAmount")));
     }
 
     @Test

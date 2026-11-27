@@ -245,6 +245,66 @@ public interface NeoHandler {
   }
 
   /**
+   * A more precise refusal for a {@code DELETE} the CRUD target guard has already refused because
+   * the current tenant can READ the row but not write it — typically a System ({@code 0}) row
+   * shared by every client (ETP-6365).
+   *
+   * <p><b>Why.</b> The guard ({@code NeoActionRecordGuard.deleteRefusalFor}) answers such a row
+   * the same 404 an unknown id gets, before any customization runs. For a row the tenant can see
+   * in the app that answer is wrong, and only the customization knows the real reason (a
+   * downloaded conversion rate is locked, for one). Shared code never names the entity.</p>
+   *
+   * <p><b>Contract.</b> Asked only for a {@code DELETE} on a row that exists, that the tenant can
+   * read and that the guard refused; never for another tenant's row or an unknown id. It can only
+   * replace one refusal with another: the engine uses the answer when it is an error (status
+   * {@code >= 400}) and keeps the 404 otherwise — a {@code null} or a success answer can never
+   * make the row deletable. Pure: no write.</p>
+   *
+   * <p>Readers: {@code NeoWritePreflight} (REST single and batch), MCP {@code etendo_delete}.</p>
+   *
+   * @param context the delete request context; its record id names the row
+   * @return the refusal to answer instead of the 404, or {@code null} (the default) to keep it
+   */
+  default NeoResponse refusalForReadOnlyTarget(NeoContext context) {
+    return null;
+  }
+
+  /**
+   * Answers whether the app offers {@code candidateId} for the reference {@code propertyName} of
+   * the record being written, when the picker the app shows for that field is this
+   * customization's own and not the field's generic selector (ETP-6365).
+   *
+   * <p><b>Why the customization answers.</b> The write validation of references (ETP-6176,
+   * {@code NeoReferenceSelectorValidation}) accepts a value only when the app would offer it, and
+   * by default asks the field's generic selector. Some fields are not picked through that
+   * selector: a document header's currency is chosen from the header's own
+   * {@code currencyOptions} action, which lists the currencies with a conversion range against the
+   * organization currency, while the generic {@code Currency} selector keeps the EUR/USD/GBP
+   * allowlist other pickers need. Only the customization knows its field has its own picker, so it
+   * is the one that says what that picker offers; shared code never names the entity or the
+   * field.</p>
+   *
+   * <p><b>Contract.</b> {@code Optional.empty()} — the default — leaves the decision to the
+   * generic selector. {@code Optional.of(true)} accepts the value, {@code Optional.of(false)}
+   * refuses it as not offered; either replaces the generic selector's answer for this field. Pure
+   * (no side effect); a {@link RuntimeException} refuses the write as not verifiable (fail
+   * closed). Ownership and activeness are checked before and are not affected.</p>
+   *
+   * <p>Readers: {@code NeoReferenceSelectorValidation}, shared by REST single
+   * ({@code NeoWritePreflight}), batch ({@code BatchService}) and MCP writes.</p>
+   *
+   * @param propertyName the DAL property name of the reference being validated
+   * @param candidateId  the id the write sets
+   * @param mergedRecord the merged record (parent, stored and incoming values), keyed by DAL
+   *                     property name and by column name
+   * @return the customization's answer, or empty to defer to the generic selector
+   */
+  default Optional<Boolean> offersReference(String propertyName, String candidateId,
+      Map<String, String> mergedRecord) {
+    return Optional.empty();
+  }
+
+  /**
    * Declares DAL property names that the create-time callout cascade must not populate or
    * overwrite for this entity. The default is empty so handlers opt in only when a legacy
    * callout differs from the entity's NEO contract.
@@ -278,6 +338,42 @@ public interface NeoHandler {
    */
   default Set<String> governedCreateFields(NeoContext context) {
     return Collections.emptySet();
+  }
+
+  /**
+   * Declares the value this customization will itself persist for a create-body key it REMOVED in
+   * its pre-hook, so the {@code adjustedFields} diagnostic reports what was really saved
+   * (ETP-5806 QA pass 3).
+   *
+   * <p><b>Why this exists.</b> {@code adjustedFields} is computed by comparing the create body as
+   * the pre-hook received it against the body it hands to persistence
+   * ({@code McpSupersededReconciler#reconcileSupersededDefaults}). That is the right question for
+   * a pre-hook that genuinely drops a caller's value — the key is gone and nothing writes it, so
+   * {@code persisted: null} is true. It is the WRONG answer for a pre-hook that removes a key
+   * precisely because it has taken over the write: the value is saved moments later by the
+   * post-hook, and the response told the agent the opposite. {@code adjustedFieldsHint} says
+   * "\"persisted\" is what was saved", so an agent reading {@code null} concludes the data was
+   * lost — the same "applied but reported as not applied" failure class as ETP-5806 CP-12g, which
+   * QA classified as blocking.
+   *
+   * <p>Only the customization knows which keys it removed for that reason and what it will write
+   * for them, so it is the one that says so; shared code never names the entity or the field. A
+   * key the body still carries is unaffected — the body always wins — and a removed key with no
+   * entry here keeps reporting {@code persisted: null}, which is the honest answer for a genuine
+   * drop. Declaring the real value also KEEPS the diagnostic working: a customization that
+   * rewrites what the caller sent (a blank Building Number saved as {@code "s/n"}) is still
+   * reported, now with the value that was actually stored.
+   *
+   * <p>Reader: the MCP create path, once, after this customization's pre-hook ran, so the answer
+   * may depend on state the pre-hook recorded. Declare every spelling of a key the pre-hook may
+   * have removed — the lookup is by the key the caller sent. It only corrects a diagnostic; it
+   * changes no value and writes nothing. Must never throw: a failure is treated as "none".
+   *
+   * @param context the create context carrying the final request body
+   * @return key -> the value this customization persists for it; empty by default
+   */
+  default Map<String, Object> deferredCreateValues(NeoContext context) {
+    return Collections.emptyMap();
   }
 
   /**

@@ -20,6 +20,7 @@ package com.etendoerp.go.schemaforge;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyBoolean;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.mockStatic;
@@ -35,8 +36,11 @@ import org.mockito.MockedStatic;
 import org.mockito.Mockito;
 import org.openbravo.dal.core.OBContext;
 import org.openbravo.dal.service.OBDal;
+import org.openbravo.model.common.enterprise.Organization;
 import org.openbravo.model.common.invoice.Invoice;
 import org.openbravo.model.common.invoice.InvoiceTax;
+import org.openbravo.module.sii.data.AEATSIIConfig;
+import org.openbravo.module.sii.utils.SIIUtils;
 
 /**
  * Unit tests for {@link PurchaseInvoiceTaxExtension}, the {@code purchase-invoice/tax}
@@ -54,6 +58,8 @@ public class PurchaseInvoiceTaxExtensionTest {
   private MockedStatic<OBDal> obDal;
   private MockedStatic<OBContext> obContext;
   private MockedStatic<SiiImportDuaFlag> siiImportDua;
+  private AEATSIIConfig siiConfig;
+  private MockedStatic<SIIUtils> siiUtils;
 
   private Invoice invoice;
   private InvoiceTax taxRow;
@@ -79,6 +85,18 @@ public class PurchaseInvoiceTaxExtensionTest {
     when(invoice.isAeatsiiIssent()).thenReturn(false);
     when(invoice.isAeatsiiMultiDua()).thenReturn(false);
     when(invoice.getAeatsiiClaveTipoFc()).thenReturn("F5");
+    // ETP-6284: by default the organization files SII for the invoice (adopted before its date).
+    Organization org = mock(Organization.class);
+    when(org.getId()).thenReturn("org-sii");
+    when(invoice.getOrganization()).thenReturn(org);
+    when(invoice.getAccountingDate()).thenReturn(new Date());
+    when(dal.get(Organization.class, "org-sii")).thenReturn(org);
+    siiConfig = mock(AEATSIIConfig.class);
+    when(siiConfig.isAcogidaAlSII()).thenReturn(true);
+    when(siiConfig.getFechaAcogidaSII()).thenReturn(new Date(0L));
+    siiUtils = mockStatic(SIIUtils.class);
+    siiUtils.when(() -> SIIUtils.getSiiConfigFromOrg(any(Organization.class)))
+        .thenReturn(siiConfig);
     taxRow = mock(InvoiceTax.class);
     when(taxRow.getInvoice()).thenReturn(invoice);
     when(taxRow.isRecalculate()).thenReturn(false);
@@ -88,6 +106,7 @@ public class PurchaseInvoiceTaxExtensionTest {
 
   @After
   public void tearDown() {
+    siiUtils.close();
     siiImportDua.close();
     obContext.close();
     obDal.close();
@@ -211,11 +230,38 @@ public class PurchaseInvoiceTaxExtensionTest {
   }
 
   @Test
+  public void aMultiDuaImportRowWithoutDuaContinuesWhenTheOrgDoesNotFileSii() throws Exception {
+    when(siiConfig.isAcogidaAlSII()).thenReturn(false);
+    when(invoice.isAeatsiiMultiDua()).thenReturn(true);
+
+    assertNull(extension.handle(crud("POST", null, newRow())));
+  }
+
+  @Test
+  public void aMultiDuaImportRowWithoutDuaContinuesWhenDatedBeforeTheSiiAdoption()
+      throws Exception {
+    when(invoice.isAeatsiiMultiDua()).thenReturn(true);
+    when(invoice.getAccountingDate()).thenReturn(new Date(-86_400_000L));
+
+    assertNull(extension.handle(crud("POST", null, newRow())));
+  }
+
+  @Test
   public void multiDuaOnANonImportInvoiceDoesNotRequireLineDua() throws Exception {
     when(invoice.isAeatsiiMultiDua()).thenReturn(true);
     when(invoice.getAeatsiiClaveTipoFc()).thenReturn("F1");
 
     assertNull(extension.handle(crud("POST", null, newRow())));
+  }
+
+  @Test
+  public void multiDuaWithTheImportCheckRequiresLineDuaWithoutAnSiiType() throws Exception {
+    when(invoice.isAeatsiiMultiDua()).thenReturn(true);
+    when(invoice.getAeatsiiClaveTipoFc()).thenReturn(null);
+    when(invoice.get(PurchaseInvoiceImportDua.FIELD_IMPORT_DUA)).thenReturn(true);
+
+    assertRefused(extension.handle(crud("POST", null, newRow())), 400,
+        PurchaseInvoiceTaxExtension.MSG_DUA_REQUIRED);
   }
 
   // ── a sent or processed draft is locked too ──────────────────────────────────────────────
