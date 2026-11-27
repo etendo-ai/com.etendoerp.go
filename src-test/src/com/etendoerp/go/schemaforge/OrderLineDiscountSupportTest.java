@@ -1501,4 +1501,20 @@ class OrderLineDiscountSupportTest {
     }
     assertEquals(2, body.length(), "only what the caller sent: " + body);
   }
+
+  /** ETP-6107, purchase lines over REST: the stored tax is not carried onto a new product. */
+  @Test
+  void theAmountInputsAreNotCarriedOntoANewProduct() throws Exception {
+    JSONObject body = new JSONObject().put("product", "NEW").put("unitPrice", 40);
+    try (MockedStatic<OBDal> dalMock = mockStatic(OBDal.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OrderLine stored = storedLineWithProduct("OLD");
+      when(dal.get(OrderLine.class, LINE_ID)).thenReturn(stored);
+
+      OrderLineDiscountSupport.completeAmountInputsOnUpdate(
+          updateCtx("PATCH", body, mock(Tab.class)));
+    }
+    assertEquals(2, body.length(), "only what the caller sent: " + body);
+  }
 }

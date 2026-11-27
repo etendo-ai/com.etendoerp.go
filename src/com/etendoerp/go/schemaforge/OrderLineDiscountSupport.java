@@ -557,8 +557,13 @@ final class OrderLineDiscountSupport {
    * @param ctx the pre-hook context; its request body is mutated in place
    */
   static void completeAmountInputsOnUpdate(NeoContext ctx) {
-    if (ctx != null && changesAmountInput(ctx.getRequestBody())) {
-      new StoredLine(ctx).carryAmountInputsInto(ctx);
+    if (ctx == null || !changesAmountInput(ctx.getRequestBody())) {
+      return;
+    }
+    StoredLine storedLine = new StoredLine(ctx);
+    // ETP-6107: the stored tax and prices belong to the previous product (see applyLineRules).
+    if (!storedLine.changesProduct()) {
+      storedLine.carryAmountInputsInto(ctx);
     }
   }
 
