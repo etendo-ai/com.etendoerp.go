@@ -32,17 +32,19 @@ import org.junit.jupiter.api.Test;
 import org.mockito.MockedStatic;
 import org.openbravo.base.session.OBPropertiesProvider;
 
-import com.etendoerp.psd2.bank.integration.utils.BankIntegrationUrlUtils;
-
 /**
  * The address Salt Edge is told to bring the browser back to after SCA (ETP-4895).
  *
- * <p>It used to be composed from {@code context.url} + {@code context.name} through PSD2's
- * {@code buildBaseUrl}. That holds for PSD2's own convention — {@code context.url} = bare server,
- * as its README documents — but Etendo's {@code Openbravo.properties.template} ships
- * {@code context.url} WITH the context path, and on a server configured that way the composition
- * repeated it: Salt Edge sent the user to {@code /etendo/etendo/sws/pis-return}, which matches no
- * servlet mapping, so the browser landed on Etendo's generic error page right after paying.
+ * <p>It is taken from the request whenever that request names a host a bank can reach, and
+ * otherwise falls back to PSD2's {@code BankIntegrationUrlUtils.buildBaseUrl()}. That fallback runs
+ * for real here, against mocked Openbravo properties: since PSD2 2.3.1 (Issue #151) it appends
+ * {@code context.name} only when {@code context.url} does not already end with it, so a server
+ * configured as Etendo's {@code Openbravo.properties.template} documents ({@code context.url} WITH
+ * the context path) no longer sends the user to {@code /etendo/etendo/sws/pis-return}, a path that
+ * matches no servlet mapping. Etendo Go used to collapse that repetition itself; the workaround was
+ * removed once PSD2 fixed it at the source (ETP-6463).
+ *
+ * @covers com.etendoerp.go.schemaforge.PisPaymentBridge
  */
 class PisPaymentBridgeReturnUrlTest {
 
@@ -87,14 +89,9 @@ class PisPaymentBridgeReturnUrlTest {
       throws Exception {
     OBPropertiesProvider provider = mock(OBPropertiesProvider.class);
     when(provider.getOpenbravoProperties()).thenReturn(properties);
-    try (MockedStatic<OBPropertiesProvider> propsMock = mockStatic(OBPropertiesProvider.class);
-        MockedStatic<BankIntegrationUrlUtils> urlMock = mockStatic(BankIntegrationUrlUtils.class)) {
+    try (MockedStatic<OBPropertiesProvider> propsMock = mockStatic(OBPropertiesProvider.class)) {
       propsMock.when(OBPropertiesProvider::getInstance).thenReturn(provider);
-      // Mirrors what the real helper composes, so the collapse is exercised against its actual
-      // output rather than against an assumption about it.
-      String composed = properties.getProperty("context.url").replaceAll("/$", "")
-          + "/" + properties.getProperty("context.name");
-      urlMock.when(BankIntegrationUrlUtils::buildBaseUrl).thenReturn(composed);
+      // PSD2's real buildBaseUrl runs: it reads these same properties through the provider above.
       return resolve(request);
     }
   }
@@ -173,13 +170,37 @@ class PisPaymentBridgeReturnUrlTest {
     }
 
     @Test
-    @DisplayName("collapses the context path the composition repeats")
-    void collapsesTheRepeatedContextPath() throws Exception {
-      // context.url per Etendo's own template (with the path) + context.name composed on top.
+    @DisplayName("does not repeat a context path context.url already carries")
+    void doesNotRepeatAContextPathTheUrlAlreadyCarries() throws Exception {
+      // context.url per Etendo's own template (with the path): PSD2 >= 2.3.1 leaves it as is.
       String url = withProperties(props("https://public.example.com/etendo", "etendo"),
           directRequest("http", "localhost", 8080, "/etendo"));
 
       assertEquals("https://public.example.com/etendo" + PATH, url);
+    }
+
+    @Test
+    @DisplayName("a context.name with a trailing slash does not repeat the context path")
+    void doesNotRepeatTheContextPathForAContextNameWithATrailingSlash() throws Exception {
+      // PSD2 strips the slashes around context.name before comparing it with the end of
+      // context.url, so "etendo/" matches the "/etendo" the URL already carries.
+      String url = withProperties(props("https://public.example.com/etendo", "etendo/"),
+          directRequest("http", "localhost", 8080, "/etendo"));
+
+      assertEquals("https://public.example.com/etendo" + PATH, url);
+    }
+
+    @Test
+    @DisplayName("an empty or blank context.name defaults to etendo and is not repeated")
+    void doesNotRepeatTheDefaultContextPathForABlankContextName() throws Exception {
+      // PSD2 falls back to "etendo" for a missing context.name, which context.url already ends with.
+      String fromEmpty = withProperties(props("https://public.example.com/etendo", ""),
+          directRequest("http", "localhost", 8080, "/etendo"));
+      String fromBlank = withProperties(props("https://public.example.com/etendo", "   "),
+          directRequest("http", "localhost", 8080, "/etendo"));
+
+      assertEquals("https://public.example.com/etendo" + PATH, fromEmpty);
+      assertEquals("https://public.example.com/etendo" + PATH, fromBlank);
     }
 
     @Test
@@ -193,8 +214,8 @@ class PisPaymentBridgeReturnUrlTest {
 
     @Test
     @DisplayName("a path that merely resembles the context name is not mangled")
-    void onlyCollapsesAnExactRepetition() throws Exception {
-      // Ends with /etendo once, not twice: nothing to collapse.
+    void appendsTheContextToAPathThatOnlyResemblesIt() throws Exception {
+      // Ends with /apps, not with /etendo: PSD2 appends the context name.
       String url = withProperties(props("https://public.example.com/apps", "etendo"),
           directRequest("http", "localhost", 8080, "/etendo"));
 
