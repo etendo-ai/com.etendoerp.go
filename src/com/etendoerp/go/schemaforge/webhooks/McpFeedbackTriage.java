@@ -77,8 +77,9 @@ public class McpFeedbackTriage extends BaseWebhookService {
   private static final Pattern CELL = Pattern.compile("Celula[A-Za-z]+");
   /** A GitHub login: letters, digits and hyphens, at most 39 characters. */
   private static final Pattern ASSIGNEE = Pattern.compile("[A-Za-z0-9-]{1,39}");
-  private static final Pattern ISSUE =
-      Pattern.compile("https://github\\.com/etendosoftware/[A-Za-z0-9._-]+/issues/\\d+");
+  /** An issue of etendo-ai, where pre-tickets live now, or of the former etendosoftware. */
+  private static final Pattern ISSUE = Pattern.compile(
+      "https://github\\.com/(?:etendo-ai|etendosoftware)/[A-Za-z0-9._-]+/issues/\\d+");
   private static final Pattern TASK = Pattern.compile("[A-Z][A-Z0-9]+-\\d+");
 
   /** Widths of the target columns, so a value that matches its format still cannot overflow. */
@@ -135,7 +136,8 @@ public class McpFeedbackTriage extends BaseWebhookService {
       return "cell must match Celula[A-Za-z]+ (at most " + CELL_WIDTH + " characters)";
     }
     if (!fits(issue, ISSUE, ISSUE_WIDTH)) {
-      return "issue must be a https://github.com/etendosoftware/<repo>/issues/<number> URL";
+      return "issue must be a https://github.com/(etendo-ai|etendosoftware)/<repo>/issues/<number>"
+          + " URL";
     }
     if (task != null && !fits(task, TASK, TASK_WIDTH)) {
       return "task must be a Jira key such as ETP-1234";
