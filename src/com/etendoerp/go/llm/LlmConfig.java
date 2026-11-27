@@ -90,6 +90,17 @@ public final class LlmConfig {
     return new LlmConfig(baseUrl, apiKey, otherModel, timeoutMs);
   }
 
+  /**
+   * The same configuration with another connect and request timeout.
+   *
+   * @param otherTimeoutMs connect and request timeout in milliseconds; not positive means
+   *     {@value #DEFAULT_TIMEOUT_MS}
+   * @return a copy that uses {@code otherTimeoutMs}
+   */
+  public LlmConfig withTimeout(int otherTimeoutMs) {
+    return new LlmConfig(baseUrl, apiKey, model, otherTimeoutMs);
+  }
+
   /** @return whether a key was found, i.e. whether a call can be attempted at all */
   public boolean isConfigured() {
     return apiKey != null;

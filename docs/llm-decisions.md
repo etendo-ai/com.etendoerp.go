@@ -102,7 +102,7 @@ them (legacy upper-case names included):
 | API key | `openai.api.key` (legacy `OPENAI_API_KEY`) via `OpenAIUtils.getOpenaiApiKey()` | `LlmDecisionException`, no call made |
 | Gateway | `copilot.proxy.url` (legacy `COPILOT_PROXY_URL`) | `https://llm.etendo.software` |
 | Model | constant `etendo-decisions` | — |
-| Timeout | constant 30 s (connect and request) | — |
+| Timeout | constant 30 s (connect and request); `LlmConfig.withTimeout(ms)` for another | — |
 
 The key is the LiteLLM key Copilot (and, through the Copilot service, the OCR) already uses. The
 request goes to `{gateway}/decisions`. LiteLLM serves it with or without `/v1`, so the Copilot URL
@@ -112,6 +112,28 @@ works as is. `LlmConfig.toString()` never prints the key.
 the only model OpenAI's Decisions API accepts. LiteLLM can route other decision models (TypeSafe
 Jev, Cloudflare Clef, …) once they are added there; a caller selects one, keeping the same
 credentials, with `new LlmDecider(LlmConfig.fromRuntime().withModel("<model group>"), "<target>")`.
+
+**First production caller: bank-rejection suggestions (ETP-6359).** `BankBounceAi` asks one
+`choice` question per bank rejection from inside a REST `autoMatch` (gated by the
+`bank-bounce-suggestions` flag plus a configured key; it has no flag of its own, by product
+decision), with target
+`bank-bounce-suggestions` (so its spend is told apart in `ETGO_USAGE_EVENT`) and
+`LlmConfig.fromRuntime().withTimeout(8000)`: a request thread waits for it, so the generic 30 s is
+too long. `withTimeout` is generic (a copy with another connect and request timeout, next to
+`withModel`); a not-positive value means the default. That caller releases the DAL connection
+before `decide()` (the note under *Request*: do not hold a DAL transaction around the call), keeps a
+JVM-wide back-off after a failure (`isRetryable()` picks 5 or 30 minutes) and never logs the
+exception message, which carries the gateway's text. Its runtime configuration is read on every call, so a key added later needs no restart (a rotated key
+does, since the HTTP client is reused while the gateway, model and configured state are unchanged).
+The prompt is calibrated against overconfidence (`BankBounceAiQuestions.GUIDANCE`): the line may
+not be a bank rejection at all (a refund or credit of the counterparty), so `none` is a normal answer;
+same amount and opposite sign is necessary, never sufficient; missing text is missing information;
+no outflow gets more than about 90 % unless the text or reference singles out exactly one candidate;
+a lone candidate is not evidence; two lines never reverse the same outflow. Any change to it bumps
+`PROMPT_VERSION` (now `bounce-ai-v2`), which is part of every cache key, so assessments from an
+older prompt are discarded.
+See `neo-headless.md` §4.12.1.1, *AI second
+layer*.
 
 ## Errors
 
