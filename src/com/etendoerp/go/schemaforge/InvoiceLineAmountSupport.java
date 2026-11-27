@@ -243,15 +243,28 @@ final class InvoiceLineAmountSupport {
       }
       InvoiceLine line = OBDal.getInstance().get(InvoiceLine.class, ctx.getRecordId());
       if (line == null
-          || (line.getProduct() != null && productId.equals(line.getProduct().getId()))
-          || LinePriceListSupport.applyClientListPrice(body, FIELD_UNIT_PRICE, FIELD_LIST_PRICE,
-              FIELD_DISCOUNT)) {
+          || (line.getProduct() != null && productId.equals(line.getProduct().getId()))) {
+        return;
+      }
+      if (LinePriceListSupport.applyClientListPrice(body, FIELD_UNIT_PRICE, FIELD_LIST_PRICE,
+          FIELD_DISCOUNT)) {
+        // A list price sent without a discount is undiscounted, as on create.
+        if (!body.has(FIELD_DISCOUNT)) {
+          body.put(FIELD_DISCOUNT, BigDecimal.ZERO);
+        }
         return;
       }
       ProductPrice catalog = catalogPrice(OBDal.getInstance().get(Product.class, productId),
           line.getInvoice());
-      if (LinePriceListSupport.applyCatalogPrice(body, catalog, FIELD_UNIT_PRICE, FIELD_LIST_PRICE)
-          || catalog == null || catalog.getListPrice() == null
+      if (LinePriceListSupport.applyCatalogPrice(body, catalog, FIELD_UNIT_PRICE,
+          FIELD_LIST_PRICE)) {
+        // The stored discount was the previous product's: the new price is undiscounted.
+        if (!body.has(FIELD_DISCOUNT)) {
+          body.put(FIELD_DISCOUNT, BigDecimal.ZERO);
+        }
+        return;
+      }
+      if (catalog == null || catalog.getListPrice() == null
           || catalog.getListPrice().signum() <= 0
           || !LineAmountSupport.isZero(body.opt(FIELD_LIST_PRICE))) {
         return;
@@ -259,11 +272,12 @@ final class InvoiceLineAmountSupport {
       BigDecimal list = catalog.getListPrice();
       body.put(FIELD_LIST_PRICE, list);
       BigDecimal unit = LineAmountSupport.decimal(body.opt(FIELD_UNIT_PRICE));
-      if (!body.has(FIELD_DISCOUNT) && unit != null && unit.signum() >= 0
-          && unit.compareTo(list) < 0) {
-        // The discount is the gap between the new list price and the sent net, as on an order.
-        body.put(FIELD_DISCOUNT, list.subtract(unit).multiply(HUNDRED)
-            .divide(list, 2, RoundingMode.HALF_UP));
+      if (!body.has(FIELD_DISCOUNT) && unit != null && unit.signum() >= 0) {
+        // The discount is the gap between the new list price and the sent net, as on an order;
+        // a price at or above the list is undiscounted (never the previous product's discount).
+        body.put(FIELD_DISCOUNT, unit.compareTo(list) < 0
+            ? list.subtract(unit).multiply(HUNDRED).divide(list, 2, RoundingMode.HALF_UP)
+            : BigDecimal.ZERO);
       }
     } catch (Exception e) {
       log.warn("[INVOICE-LINE-PRICE] Could not re-price the line on {} {}: {}",
