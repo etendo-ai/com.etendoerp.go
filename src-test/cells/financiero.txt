@@ -86,6 +86,7 @@ com.etendoerp.go.schemaforge.PisPaymentBridgeReturnUrlTest
 com.etendoerp.go.schemaforge.PisPaymentServiceTest
 com.etendoerp.go.schemaforge.PisPaymentStatusGatesTest
 com.etendoerp.go.schemaforge.PisRejectedPaymentHandlerTest
+com.etendoerp.go.schemaforge.PisReturnCallbackServletFallbackBodyTest
 com.etendoerp.go.schemaforge.ReconciledPaymentReactivationTest
 com.etendoerp.go.schemaforge.ReconciliationAgentActionsTest
 com.etendoerp.go.schemaforge.ReconciliationConversionSupportTest
