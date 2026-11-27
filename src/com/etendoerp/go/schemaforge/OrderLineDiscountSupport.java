@@ -517,6 +517,12 @@ final class OrderLineDiscountSupport {
     // One lazy read of the stored line for the whole update: each step that needs it asks, the
     // first one reads, and a request no step needs it for reads nothing.
     StoredLine storedLine = new StoredLine(ctx);
+    if (storedLine.changesProduct()) {
+      // ETP-6107: the stored prices and tax belong to the previous product. NeoUpdateCalloutRefire
+      // fires the product's callout and then those of the prices sent, as the form does; deriving
+      // or carrying the stored values here would protect them from it.
+      return;
+    }
     // Judged on what the caller sent: the steps below write lineGrossAmount into the body, which
     // changesAmountInput would then read as the caller's own gross.
     boolean sentAmountInput = ctx != null && changesAmountInput(ctx.getRequestBody());
@@ -841,6 +847,26 @@ final class OrderLineDiscountSupport {
       } catch (Exception e) {
         log.warn("[ORDER-LINE-AMOUNTS] Could not complete the amount inputs on {} {}: {}",
             ctx.getSpecName(), ctx.getEntityName(), e.getMessage());
+      }
+    }
+
+    /**
+     * Whether an update sets a product other than the stored one. Read from the line itself:
+     * {@link #get} already overlays the patch, so it shows the new product.
+     */
+    boolean changesProduct() {
+      String sent = patch == null ? null : patch.optString(FIELD_PRODUCT, null);
+      if (StringUtils.isBlank(recordId) || StringUtils.isBlank(sent)) {
+        return false;
+      }
+      try {
+        OrderLine line = OBDal.getInstance().get(OrderLine.class, recordId);
+        return line != null
+            && (line.getProduct() == null || !sent.equals(line.getProduct().getId()));
+      } catch (Exception e) {
+        log.warn("[ORDER-LINE-PRICE] Could not read the stored product of {}: {}", recordId,
+            e.getMessage());
+        return false;
       }
     }
 

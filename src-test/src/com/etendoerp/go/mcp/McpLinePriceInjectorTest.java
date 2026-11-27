@@ -373,6 +373,51 @@ class McpLinePriceInjectorTest {
     assertEquals("40", body.get(UNIT_PRICE).toString());
   }
 
+  /**
+   * ETP-6107: a price sent with a new product is not the Precio. The refire prices the line as the
+   * form and REST do (list price from the tariff, the sent price as the net), so it is left alone.
+   */
+  @Test
+  void anUpdatedPriceSentWithANewProductIsLeftAlone() throws Exception {
+    Entity entity = lineEntity(UNIT_PRICE, LIST_PRICE, "discount");
+    org.openbravo.base.model.Property productProperty = mock(org.openbravo.base.model.Property.class);
+    when(entity.getProperty(PRODUCT, false)).thenReturn(productProperty);
+    org.openbravo.base.structure.BaseOBObject oldProduct =
+        mock(org.openbravo.base.structure.BaseOBObject.class);
+    when(oldProduct.getId()).thenReturn("OLD");
+    org.openbravo.base.structure.BaseOBObject stored =
+        mock(org.openbravo.base.structure.BaseOBObject.class);
+    when(stored.get(PRODUCT)).thenReturn(oldProduct);
+    JSONObject body = body(UNIT_PRICE, new BigDecimal("40"));
+    body.put(PRODUCT, "NEW");
+
+    assertFalse(McpLinePriceInjector.applyAgentPriceOnUpdate(body, entity,
+        Set.of(UNIT_PRICE, PRODUCT), stored));
+    assertEquals("40", body.get(UNIT_PRICE).toString());
+    assertFalse(body.has(LIST_PRICE));
+  }
+
+  /** The same product sent back is no change: the price is still the Precio (ETP-5852). */
+  @Test
+  void anUpdatedPriceWithTheSameProductIsStillTheListPrice() throws Exception {
+    Entity entity = lineEntity(UNIT_PRICE, LIST_PRICE, "discount");
+    org.openbravo.base.model.Property productProperty = mock(org.openbravo.base.model.Property.class);
+    when(entity.getProperty(PRODUCT, false)).thenReturn(productProperty);
+    org.openbravo.base.structure.BaseOBObject product =
+        mock(org.openbravo.base.structure.BaseOBObject.class);
+    when(product.getId()).thenReturn("SAME");
+    org.openbravo.base.structure.BaseOBObject stored =
+        mock(org.openbravo.base.structure.BaseOBObject.class);
+    when(stored.get(PRODUCT)).thenReturn(product);
+    when(stored.get("discount")).thenReturn(BigDecimal.ZERO);
+    JSONObject body = body(UNIT_PRICE, new BigDecimal("40"));
+    body.put(PRODUCT, "SAME");
+
+    assertTrue(McpLinePriceInjector.applyAgentPriceOnUpdate(body, entity,
+        Set.of(UNIT_PRICE, PRODUCT), stored));
+    assertEquals(0, new BigDecimal("40").compareTo(new BigDecimal(body.get(LIST_PRICE).toString())));
+  }
+
   static java.util.stream.Stream<org.junit.jupiter.params.provider.Arguments> agentPrices() {
     return java.util.stream.Stream.of(
         // CO-08: 10 × 50 at 5 % is 475 — the discount applies to the price the agent sent.

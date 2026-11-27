@@ -1443,4 +1443,62 @@ class OrderLineDiscountSupportTest {
     when(currency.getPricePrecision()).thenReturn(2L);
     return currency;
   }
+
+  // ── ETP-6107: an update that changes the product ─────────────────────────────
+
+  private static OrderLine storedLineWithProduct(String productId) {
+    Product product = mock(Product.class);
+    when(product.getId()).thenReturn(productId);
+    OrderLine line = mock(OrderLine.class);
+    when(line.getProduct()).thenReturn(product);
+    return line;
+  }
+
+  private static boolean changesProduct(String sentProduct, OrderLine stored) throws Exception {
+    JSONObject body = new JSONObject().put("unitPrice", 40);
+    if (sentProduct != null) {
+      body.put("product", sentProduct);
+    }
+    try (MockedStatic<OBDal> dalMock = mockStatic(OBDal.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      when(dal.get(OrderLine.class, LINE_ID)).thenReturn(stored);
+      return new OrderLineDiscountSupport.StoredLine(updateCtx("PATCH", body, mock(Tab.class)))
+          .changesProduct();
+    }
+  }
+
+  @Test
+  void aNewProductIsAProductChange() throws Exception {
+    assertTrue(changesProduct("NEW", storedLineWithProduct("OLD")));
+  }
+
+  @Test
+  void theStoredProductSentBackIsNoChange() throws Exception {
+    assertFalse(changesProduct("OLD", storedLineWithProduct("OLD")));
+  }
+
+  @Test
+  void anUpdateWithoutAProductIsNoChange() throws Exception {
+    assertFalse(changesProduct(null, storedLineWithProduct("OLD")));
+  }
+
+  /**
+   * ETP-6107: a price sent with a new product is left to NeoUpdateCalloutRefire. Deriving the
+   * discount here read the PREVIOUS product's list price (0.83 → a discount of -4719.28 for a
+   * price of 40), and carrying the stored tax made the old tax a caller value the refire kept.
+   */
+  @Test
+  void aPriceSentWithANewProductIsNotDerivedFromTheStoredLine() throws Exception {
+    JSONObject body = new JSONObject().put("product", "NEW").put("unitPrice", 40);
+    try (MockedStatic<OBDal> dalMock = mockStatic(OBDal.class)) {
+      OBDal dal = mock(OBDal.class);
+      dalMock.when(OBDal::getInstance).thenReturn(dal);
+      OrderLine stored = storedLineWithProduct("OLD");
+      when(dal.get(OrderLine.class, LINE_ID)).thenReturn(stored);
+
+      OrderLineDiscountSupport.applyLineRules(updateCtx("PATCH", body, mock(Tab.class)));
+    }
+    assertEquals(2, body.length(), "only what the caller sent: " + body);
+  }
 }

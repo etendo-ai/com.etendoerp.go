@@ -261,7 +261,8 @@ final class McpLinePriceInjector {
     }
     String discountKey = discountKey(dalEntity);
     java.math.BigDecimal price = decimalOrNull(body.opt(FIELD_UNIT_PRICE));
-    if (discountKey == null || price == null || price.signum() == 0) {
+    if (discountKey == null || price == null || price.signum() == 0
+        || changesAReference(body, dalEntity, current)) {
       return false;
     }
     java.math.BigDecimal discount = lineDiscount(body, discountKey, agentProvided, current);
@@ -272,6 +273,33 @@ final class McpLinePriceInjector {
     body.put(FIELD_UNIT_PRICE, price.multiply(HUNDRED.subtract(discount))
         .divide(HUNDRED, 6, java.math.RoundingMode.HALF_UP).stripTrailingZeros());
     return true;
+  }
+
+  /**
+   * ETP-6107: whether the update also points a reference (the product) somewhere else. Then
+   * {@code NeoUpdateCalloutRefire} prices the line as the form does when the user picks the product
+   * and types a price — list price from the tariff, the sent price as the net, the discount between
+   * them — exactly as REST, so the price is not rewritten as the list price here.
+   */
+  static boolean changesAReference(JSONObject body, Entity dalEntity, BaseOBObject current) {
+    if (current == null) {
+      return false;
+    }
+    java.util.Iterator<?> keys = body.keys();
+    while (keys.hasNext()) {
+      String key = String.valueOf(keys.next());
+      Property property = dalEntity.getProperty(key, false);
+      Object value = body.opt(key);
+      if (property == null || property.isPrimitive() || property.isOneToMany()
+          || !(value instanceof String) || StringUtils.isBlank((String) value)) {
+        continue;
+      }
+      Object stored = current.get(key);
+      if (!(stored instanceof BaseOBObject) || !value.equals(((BaseOBObject) stored).getId())) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private static String discountKey(Entity dalEntity) {

@@ -51,6 +51,44 @@ class NeoUpdateCalloutRefireTest {
     assertFalse(stored.has("description"));
   }
 
+  /**
+   * ETP-6107: after a new product, the prices the caller sent with it fire their callouts too, as
+   * when the user types the price after picking the product. Only sent, non-reference fields with
+   * a callout qualify, in the order sent.
+   */
+  @Test
+  void testSentValuesWithACalloutFollowTheReference() throws Exception {
+    org.openbravo.base.model.Entity entity = org.mockito.Mockito.mock(
+        org.openbravo.base.model.Entity.class);
+    org.openbravo.base.model.Property primitive = org.mockito.Mockito.mock(
+        org.openbravo.base.model.Property.class);
+    org.mockito.Mockito.when(primitive.isPrimitive()).thenReturn(true);
+    org.openbravo.base.model.Property reference = org.mockito.Mockito.mock(
+        org.openbravo.base.model.Property.class);
+    org.mockito.Mockito.when(entity.getProperty("unitPrice", false)).thenReturn(primitive);
+    org.mockito.Mockito.when(entity.getProperty("description", false)).thenReturn(primitive);
+    org.mockito.Mockito.when(entity.getProperty("listPrice", false)).thenReturn(primitive);
+    org.mockito.Mockito.when(entity.getProperty("product", false)).thenReturn(reference);
+    org.openbravo.model.ad.ui.Tab tab = org.mockito.Mockito.mock(org.openbravo.model.ad.ui.Tab.class);
+    JSONObject body = new JSONObject().put("product", "NEW").put("unitPrice", 40)
+        .put("description", "x").put("listPrice", 50);
+    java.util.Set<String> sent = new java.util.HashSet<>(
+        java.util.Arrays.asList("product", "unitPrice", "description"));
+
+    try (org.mockito.MockedStatic<NeoCalloutService> callouts =
+        org.mockito.Mockito.mockStatic(NeoCalloutService.class)) {
+      NeoCalloutService.CalloutInfo info = org.mockito.Mockito.mock(
+          NeoCalloutService.CalloutInfo.class);
+      callouts.when(() -> NeoCalloutService.resolveCallout(tab, "unitPrice")).thenReturn(info);
+      callouts.when(() -> NeoCalloutService.resolveCallout(tab, "listPrice")).thenReturn(info);
+      callouts.when(() -> NeoCalloutService.resolveCallout(tab, "product")).thenReturn(info);
+
+      // listPrice came from the product's callout, not from the caller: it does not qualify.
+      assertEquals(java.util.Collections.singletonList("unitPrice"),
+          NeoUpdateCalloutRefire.sentValuesWithCallout(entity, body, sent, tab));
+    }
+  }
+
   @Test
   void testStoredValuesAreKept() throws Exception {
     JSONObject stored = new JSONObject()

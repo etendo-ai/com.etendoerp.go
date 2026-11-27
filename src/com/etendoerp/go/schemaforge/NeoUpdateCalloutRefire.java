@@ -92,6 +92,13 @@ public final class NeoUpdateCalloutRefire {
       }
       NeoDefaultsCascadeHelper.executeCalloutsForTriggerFields(ctx, adTab, formState, body,
           triggers, sent);
+      // ETP-6107: then the values sent with it, as when the user types a price after picking the
+      // product — a price sent with a new product is discounted from the NEW list price.
+      List<String> sentValues = sentValuesWithCallout(entity, body, sent, adTab);
+      if (!sentValues.isEmpty()) {
+        NeoDefaultsCascadeHelper.executeCalloutsForTriggerFields(ctx, adTab, formState, body,
+            sentValues, sent);
+      }
     } catch (Exception e) {
       log.warn("Could not re-fire the callouts of an update on {}: {}", dalEntityName,
           e.getMessage());
@@ -124,6 +131,22 @@ public final class NeoUpdateCalloutRefire {
       formState.remove(key);
     }
     return formState;
+  }
+
+  /** The non-reference fields the caller sent that have a callout, in the order sent. */
+  static List<String> sentValuesWithCallout(Entity entity, JSONObject body,
+      Set<String> sent, Tab adTab) {
+    List<String> fields = new ArrayList<>();
+    Iterator<?> keys = body.keys();
+    while (keys.hasNext()) {
+      String key = String.valueOf(keys.next());
+      Property property = entity.getProperty(key, false);
+      if (sent.contains(key) && property != null && property.isPrimitive()
+          && NeoCalloutService.resolveCallout(adTab, key) != null) {
+        fields.add(key);
+      }
+    }
+    return fields;
   }
 
   private static List<String> changedReferencesWithCallout(Entity entity, BaseOBObject stored,
