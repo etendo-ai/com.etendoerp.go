@@ -13869,7 +13869,21 @@ How:
   `completeAmountInputsOnUpdate`) when `StoredLine.changesProduct()`: the stored price, list price
   and tax are the previous product's, so nothing is derived from them nor carried into the body
   (the re-fire keeps what the body carries). Only the stored quantity is carried, which the gross
-  needs. On any update, not only a product change, a `lineGrossAmount` of 0 in the body is the
+  needs.
+- **Order lines are priced from the order's price list** (`OrderLineProductChangePrice`), not from
+  the product callout's answer: `SL_Order_Product` reads the price from the selector's auxiliary
+  values, which `SelectorAuxResolver` resolves by the product id alone, without the order's price
+  list, so on a tenant with several lists the line kept a price of another list (the public API
+  e2e, 33 instead of 44). The new product's catalog price in the order's price list
+  (`FinancialUtils.getProductPrice`, converted to the order's currency as on create) gives the list
+  price; the unit price is the caller's when sent (the net, on MCP too: with a product change a
+  lone `unitPrice` is not the ETP-5852 Precio), else the list less a sent discount, else the
+  catalog's standard price, and the standard price follows it; the discount is the caller's when
+  sent, else the gap. A sent `listPrice` and a tax-included list are left to the callout. On REST
+  the body is what the caller sent; on MCP the re-fire and the agent price rule rewrote it first,
+  so the caller's values are a snapshot `McpToolRouter.handleUpdate` takes before them
+  (`NeoContext.ATTR_CLIENT_SENT_VALUES`).
+- **Gross on every update.** On any update, not only a product change, a `lineGrossAmount` of 0 in the body is the
   re-fire's (`SL_Order_Amt` publishes `grossUnitPrice × qty`, 0 on a net list) and is derived
   again (`dropZeroGrossOnUpdate`), as on create (`dropStaleGrossAfterRefire`): an MCP update of the
   tax alone used to store a gross of 0.

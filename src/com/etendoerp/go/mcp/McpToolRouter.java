@@ -1136,6 +1136,8 @@ public class McpToolRouter {
     // further down), so every key filteredBody carries at this point is the caller's own — this
     // snapshot is a fixed reference set for a 422's fieldErrors, not a "before defaults" one.
     Set<String> updateUserProvidedFields = NeoCrudHelper.snapshotBodyFields(filteredBody);
+    // ETP-6107: what the caller sent, before the re-fire and the price compensations rewrite it.
+    JSONObject callerSentValues = new JSONObject(filteredBody.toString());
 
     // IMP-4: resolve FK-by-name search strings before persist (mirrors handleCreate).
     Entity dalEntity = ModelProvider.getInstance()
@@ -1210,6 +1212,7 @@ public class McpToolRouter {
     // ETP-5415: routed through NeoExtensionDispatcher so this write is traced. Resolution and the
     // pre-hook contract are unchanged — any non-null response still short-circuits.
     NeoContext hookCtx = McpHookExecutor.buildHookContext(specName, entityName, HTTP_METHOD_PUT, recordId, filteredBody, adTab, sfEntity);
+    hookCtx.setAttribute(NeoContext.ATTR_CLIENT_SENT_VALUES, callerSentValues);
     NeoExtensionRequest extensionRequest = NeoExtensionRequest.builder()
         .qualifier(sfEntity.getJavaQualifier())
         .specName(specName)

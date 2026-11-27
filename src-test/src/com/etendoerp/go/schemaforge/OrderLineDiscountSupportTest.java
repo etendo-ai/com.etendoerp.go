@@ -1623,6 +1623,52 @@ class OrderLineDiscountSupportTest {
     assertEquals(sent.length() + 1, body.length(), label + ": only the quantity added " + body);
   }
 
+  /**
+   * ETP-6107: both product-change paths price the line from the order's price list (44), not
+   * from the stored line nor the selector (the public API e2e got the previous list price, 33).
+   */
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("productChangePaths")
+  void aNewProductIsPricedFromTheOrdersPriceList(String label, boolean salesPath)
+      throws Exception {
+    JSONObject body = new JSONObject().put("product", "NEW");
+    OBDal dal = mock(OBDal.class);
+    PriceList priceList = mock(PriceList.class);
+    Order order = mock(Order.class);
+    when(order.getOrderDate()).thenReturn(new Date());
+    when(order.getPriceList()).thenReturn(priceList);
+    OrderLine stored = storedLineWithProduct("OLD");
+    when(stored.getSalesOrder()).thenReturn(order);
+    Product product = mock(Product.class);
+    when(dal.get(Product.class, "NEW")).thenReturn(product);
+    ProductPrice price = mock(ProductPrice.class);
+    when(price.getStandardPrice()).thenReturn(new BigDecimal("44"));
+    when(price.getListPrice()).thenReturn(new BigDecimal("44"));
+
+    try (MockedStatic<OBDal> dalMock = LineAmountTestSupport.taxRate(21.0, dal);
+        MockedStatic<OBProvider> provider = storedLine(dal, STORED_MONITOR_LINE, stored);
+        MockedStatic<FinancialUtils> financial = mockStatic(FinancialUtils.class)) {
+      financial.when(() -> FinancialUtils.getProductPrice(eq(product), any(), anyBoolean(),
+          eq(priceList), eq(false))).thenReturn(price);
+      NeoContext ctx = updateCtx("PATCH", body, mock(Tab.class));
+      if (salesPath) {
+        OrderLineDiscountSupport.applyLineRules(ctx);
+      } else {
+        OrderLineDiscountSupport.completeAmountInputsOnUpdate(ctx);
+      }
+    }
+
+    assertAmount(label + ": list", "44", body, OrderLineDiscountSupport.FIELD_LIST_PRICE);
+    assertAmount(label + ": unit", "44", body, OrderLineDiscountSupport.FIELD_UNIT_PRICE);
+    assertAmount(label + ": discount", "0", body, OrderLineDiscountSupport.FIELD_DISCOUNT);
+    assertEquals(10, body.getInt(OrderLineDiscountSupport.FIELD_ORDERED_QTY), label);
+  }
+
+  static Stream<Arguments> productChangePaths() {
+    return Stream.of(Arguments.of("sales (applyLineRules)", true),
+        Arguments.of("purchase (completeAmountInputsOnUpdate)", false));
+  }
+
   static Stream<Arguments> purchaseProductChange() {
     return Stream.of(
         Arguments.of("product alone", "{\"product\":\"NEW\"}"),

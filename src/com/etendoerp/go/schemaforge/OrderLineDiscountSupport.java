@@ -519,12 +519,13 @@ final class OrderLineDiscountSupport {
     StoredLine storedLine = new StoredLine(ctx);
     dropZeroGrossOnUpdate(ctx);
     if (storedLine.changesProduct()) {
-      // ETP-6107: the stored prices and tax belong to the previous product. NeoUpdateCalloutRefire
-      // fires the product's callout and then those of the prices sent, as the form does; deriving
-      // or carrying the stored values here would protect them from it. Only the quantity is
-      // the line's own: without it the gross of the new product cannot be derived. On MCP the
-      // re-fire already ran, so the gross derived here is the new product's; on REST it runs
-      // later and lineGrossAmount is read-only there, so this write is dropped and re-derived.
+      // ETP-6107: the stored prices and tax belong to the previous product, so nothing is derived
+      // from them nor carried. The new product is priced from the order's price list, as a new
+      // line is (OrderLineProductChangePrice); its tax and unit come from the callout re-fire. Only
+      // the quantity is the line's own: without it the gross cannot be derived. On MCP the re-fire
+      // already ran, so the gross derived here is final; on REST lineGrossAmount is read-only, so
+      // this write is dropped and derived again after the re-fire.
+      OrderLineProductChangePrice.reprice(ctx);
       storedLine.carryQuantityInto(ctx);
       deriveAmountsOnUpdate(ctx, storedLine);
       return;
@@ -587,6 +588,7 @@ final class OrderLineDiscountSupport {
     StoredLine storedLine = new StoredLine(ctx);
     // ETP-6107: the stored tax and prices belong to the previous product (see applyLineRules).
     if (storedLine.changesProduct()) {
+      OrderLineProductChangePrice.reprice(ctx);
       storedLine.carryQuantityInto(ctx);
     } else if (changesAmountInput(ctx.getRequestBody())) {
       storedLine.carryAmountInputsInto(ctx);
