@@ -225,10 +225,10 @@ Product window. One evaluator only, the backend: `ProductMovementsPolicy` evalua
 publishes the answer as `capabilities.productMovements`, and the tab reads that capability. The
 browser never evaluates the flag, so a rule on email, tenant or percentage cannot make the two ends
 disagree; a change reaches a user when the access map is next loaded. `ProductTransactionsHandler`
-asks the same policy before adding `etgoStockAfter` and `etgoProcessTime`. A request with no account is
+asks the same policy before adding `etgoStockAfter` and `etgoProcessTime`, and `ProductStockWarehouseHandler` (the `product/stock` rows, bound by `@NeoExtension`) before adding `etgoUomSymbol`, the `C_UOM.UOMSymbol` of the product's unit that the side panel prints after each quantity (left out when the UOM has no symbol). A request with no account is
 evaluated account-less and gets the default (off). Only behaviour is gated: the stored computed
 columns of `M_Transaction`, their triggers and the `ETGO_SF_*` configuration ship unconditionally, so
-run `update.database` and check `ad_scd_check` = 0 before targeting any account. The flag is not access control: with it off the `/transactions` rows (and the new `etgoWarehouse`, `etgoDocKind` and `etgoDocHeaderId` fields) stay readable under the role's entity and organization access; it only withholds `etgoStockAfter` and `etgoProcessTime` and hides the tab.
+run `update.database` and check `ad_scd_check` = 0 before targeting any account. The flag is not access control: with it off the `/transactions` rows (and the new `etgoWarehouse`, `etgoDocKind` and `etgoDocHeaderId` fields) stay readable under the role's entity and organization access; it only withholds `etgoStockAfter`, `etgoProcessTime` and `etgoUomSymbol` and hides the tab.
 
 `etgoProcessTime` is the time of day under each movement's date: `M_TRANSACTION.TRXPROCESSDATE` (timestamp without time zone, the server wall clock) as an ISO local date-time string `yyyy-MM-ddTHH:mm:ss`, fractions dropped and no time-zone conversion. It comes from the same statement as `etgoStockAfter` (no extra query), is display only (it changes neither ordering nor any other field), and is absent from a row with no process date.
 
