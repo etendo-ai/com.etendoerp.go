@@ -127,6 +127,24 @@ public class Fiscal390PreloadAggregatorTest {
     assertSame(onlyDraftNew, winners.get(1));
   }
 
+  /**
+   * ETP-5716 QA repro (ModelosFiscales 2026): the last period has its submitted ordinary 303
+   * (seq 0) and a LATER draft rectificativa (seq 1). The submitted one is the period's figure —
+   * a higher sequence never beats a submission — and the draft only counts as superseded.
+   */
+  @Test
+  public void testSubmittedBeatsALaterDraftOfTheSamePeriod() {
+    Decl303 submitted = new Decl303("t4-0", "T4", "submitted", true, 0);
+    Decl303 laterDraft = new Decl303("t4-1", "T4", "draft", false, 1);
+
+    List<Decl303> winners = Fiscal390PreloadAggregator.selectWinners(
+        Arrays.asList(laterDraft, submitted));
+
+    assertEquals(1, winners.size());
+    assertSame(submitted, winners.get(0));
+    assertEquals(1, submitted.superseded);
+  }
+
   // ── aggregation ─────────────────────────────────────────────────────
 
   /** Quarterly year: payments to the quarter's closing month, last-period credit to [97]. */
@@ -152,6 +170,21 @@ public class Fiscal390PreloadAggregatorTest {
     assertEquals(bd("100.00"), r.expectedResult); // 150 − 20 − 30
     assertFalse(r.territory);
     assertFalse(hasWarning(r, Fiscal390PreloadAggregator.W_MISSING));
+    assertEquals("0.00", in(r, Fiscal390DerivedBoxes.INVESTMENT_REGULARIZATION));
+  }
+
+  /**
+   * [63] regularización de bienes de inversión is the sum of the 303s' manual [43] — the same
+   * amount their [45] already deducted, so the 390 result keeps matching theirs.
+   */
+  @Test
+  public void testInvestmentRegularizationSumsBox43() {
+    Result r = Fiscal390PreloadAggregator.aggregate(Arrays.asList(
+        decl("T1", "100", "0", "I", boxes(43, "12.50")), decl("T2", "0", "0", "N"),
+        decl("T3", "100", "0", "I"), decl("T4", "100", "0", "I", boxes(43, "-2.25"))), false);
+
+    assertEquals("10.25", in(r, Fiscal390DerivedBoxes.INVESTMENT_REGULARIZATION));
+    assertEquals("87.50", in(r, "INGRESAR_03")); // [43] is part of the 303's [45]
   }
 
   /** Monthly register: every refund (the last one included) is a DEVOLVER_xx, [98] stays 0. */

@@ -59,6 +59,10 @@ import java.util.TreeSet;
  *   in-year credits never applied    → [662] LIQANUAL_ENDCOMPENSATION
  *   last 303 [65] / [89] [90] [91] [92] → [87] COMMON_TERRITORY / [88] ALAVA / [89] GUIPUZCOA /
  *                                       [90] VIZCAYA / [91] NAVARRA, only when Σ 303[89..92] &gt; 0
+ *   Σ [43]                           → [63] 390INVESTMENT_REGULARIZATION (regularización de bienes
+ *                                     de inversión: entered by hand in the 303s, it is part of
+ *                                     their [45], so the 390 must carry the same amount or its
+ *                                     result no longer matches theirs)
  * </pre>
  * A quarter's amount goes to its closing month (T1 → 03 … T4 → 12): classic only has per-month
  * inputs and AEAT only reads their sums. A refund outside the last period without the monthly
@@ -362,7 +366,9 @@ final class Fiscal390PreloadAggregator {
     BigDecimal priorLeft = priorCarry(usable.get(0));
     r.carryOverKnown = priorLeft != null;
     BigDecimal totalApplied = BigDecimal.ZERO;
+    BigDecimal investmentRegularization = BigDecimal.ZERO;
     for (Decl303 d : usable) {
+      investmentRegularization = investmentRegularization.add(get(d.boxes, 43));
       // [78] of this period: the prior-year carry first, then this year's earlier credits.
       BigDecimal applied = get(d.boxes, 78);
       totalApplied = totalApplied.add(applied);
@@ -378,6 +384,7 @@ final class Fiscal390PreloadAggregator {
       r.warnings.add(warning(W_PRIOR_CARRY_UNKNOWN, null));
     }
     putResults(r, t, last, monthlyReturn);
+    r.inputs.put(Fiscal390DerivedBoxes.INVESTMENT_REGULARIZATION, r2(investmentRegularization));
     return r;
   }
 

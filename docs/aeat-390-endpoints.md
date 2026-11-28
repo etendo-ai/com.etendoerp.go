@@ -83,7 +83,7 @@ The values the user types (compensations, territory percentages, monthly results
 `ISSUPPLEMENTARY`) are named by the classic `TaxReportParameter` search keys
 (`390_Report_Tax_Parameters.xml`): `LIQANUAL_COMPENSATION`, `LIQANUAL_VAT_LAW_REGULARIZATION`
 [658], `LIQANUAL_VAT_IMPORT` [659], `LIQANUAL_NoCurrentTypeBASE` [660],
-`LIQANUAL_NoCurrentTypeAMOUNT` [661], `COMMON_TERRITORY`/`ALAVA`/`GUIPUZCOA`/`VIZCAYA`/`NAVARRA`
+`LIQANUAL_NoCurrentTypeAMOUNT` [661], `390INVESTMENT_REGULARIZATION` [63], `COMMON_TERRITORY`/`ALAVA`/`GUIPUZCOA`/`VIZCAYA`/`NAVARRA`
 [87–91], `COMMON_TERRITORY_COMPENSATION` [93], `INGRESAR_01..12`, `DEVOLVER_01..12`,
 `TOTAL_LASTPERIOD` [97], `TOTAL_LASTPERIOD_DEVOLVER` [98], `LIQANUAL_ENDCOMPENSATION` [662],
 `390REAGYP` [101], `390USED_GOODS` [227], `390TRAVEL_AGENCY` [228],
@@ -104,7 +104,7 @@ the snapshot is taken before the PUT's `manualData` is applied.
 ### Server-side 303 preload (ETP-5716, AEAT PAR016)
 
 The block-9 inputs the year's 303s determine (`INGRESAR_xx`, `DEVOLVER_xx`, [97], [98], [662],
-[85]/[93], the territory percentages — `GET /fiscal390/preload` `inputs`) are applied **by the
+[85]/[93], the territory percentages — `GET /fiscal390/preload` `inputs`), plus [63] (Σ 303 [43]) are applied **by the
 backend** before computing anything — `boxes` (screen and list auto-compute), `generate`,
 `submit` (file and snapshot), `validate` / the guards (incidents) and the live snapshot payload —
 so none of them depends on the client having saved the preload, as the 303 / 349 compute from
@@ -163,7 +163,7 @@ Classic computes these on the bean or while writing TXT page 6
 
 ```
 [47] = [34] + Σ recargo-equivalencia cuotas + [44]   (only the RE cuotas when [34] is empty)
-[64] = Σ deductible cuotas (split element Total cuota, non-split element cuota) + [661]
+[64] = Σ deductible cuotas (split element Total cuota, non-split element cuota) + [63] + [661]
 [65] = [47] − [64]
 liquidation mode (no territory percentage):
   [84] = [65] + [658]
@@ -187,6 +187,16 @@ and takes it off the liquidation [84]/[86] while printing page 6
 (`AEAT390Report2021.generateTXTPage6`). The preview reproduces what the file prints, so in
 liquidation mode [84] = [65] + [658] holds.
 
+[63] (*regularización de bienes de inversión*, `390INVESTMENT_REGULARIZATION`) is a manual input:
+it depends on the prorrata of the acquisition years (arts. 107–110 LIVA), which Etendo does not
+keep, so it is never calculated. It can be negative. Unlike [661], classic puts it on the bean
+(`AEAT390Report2014.generateOperacionesRegimenGeneral` → `RegularizInversiones` and
+`SumDeducciones`), so it is part of `ResRegGeneral` and reaches [64], [65] and both the liquidation
+and the territory [84] with no quirk. The TXT prints it on page 4 (`AEAT390Report2018
+.generateTXTPage4`, [63]; position 625 of the 2025/2026 design). This key has no
+`TaxReportParameter` in the classic reference data: the classic launcher never sends it and
+classic keeps printing 0 there; GO sends it from `manualData.aeatInputs`.
+
 Classic quirks with [661] in territory mode:
 - the territory [84] (and so [92]/[94]) is printed from `Administraciones.SumResultados`, which
   never subtracts [661], so the file shows [84] = [65] + [661] + [658]. The preview shows the same
@@ -209,6 +219,11 @@ endpoint) then attributes those lines to the boxes the figure landed in. Consequ
   negative, reversal and credit-memo lines, cash-VAT lines per payment;
 - a line whose figure feeds no box (zero, `UNSUPPORTED_RATE`, negative volume base, `NO_BOX`) is
   not listed; derived boxes ([47], [64], [65], [84]…[108]) have no lines.
+- a foreign-currency line converts its base and its cuota to euros separately (the invoice's own
+  rate, else the general one) and rounds each to the **nearest** cent
+  (`AEAT390Utility.roundLineAmount`, HALF_UP, aeat390 module). Rounding UP, as classic did before
+  ETP-5716 QA (CAL-F1), put the cuota one cent above base × rate and above the 303 for the same
+  invoice, which surfaced as a false `DIFF_303` / blocking `BLOCK9_MISMATCH`.
 
 Query parameters (all optional besides `year`/`period`): `box` (AEAT box number), `type`
 (`accrued` | `deductible` — the row's `sides`, see below; `sales` | `purchase`, from the
@@ -289,6 +304,27 @@ the one `submit` uses in test mode; no certificate) and returned **whatever the 
 | `connection_failure` | an `IOException` reaching the validator (timeout, refused, unknown host) | untouched |
 | `not_validated` | any other failure (e.g. an answer that is not the validator's JSON, or one that is neither accepted nor carries an error) | untouched |
 
+**"Model not available" is not a rejection (ETP-5716).** While the AEAT has not loaded an exercise
+into ServValiDos, the validator answers every file of that model/year with
+`EV0 - Error al obtener la respuesta de la impresión OSGI... Error al cargar el modelo: No existe
+información del modelo: 390, 2026...` — a statement about the service, not about the file (the same
+file is accepted by the AEAT web form of that exercise). `FiscalAeatValidationOutcome.isModelNotAvailable`
+matches it by code AND text: every error must be code `EV0` (any case) with the text "No existe
+información del modelo" (case-insensitive; accent plain, missing or mis-decoded). Such an answer is
+`not_validated`: the file is downloaded with the "could not be validated" notice, no AEAT incident
+is stored (the previous ones are kept) and the attempt row records outcome `not_validated` with
+error code `EV0`. Any other error — another `EV0` text, or a real error next to it — keeps the answer
+`rejected`. The same rule applies to the 303 and 390 submit paths: a **test-mode** submit
+("Validar sin presentar") with that answer returns 200 `{ status: "ERROR", testMode: true,
+errorCode: "NOT_VALIDATED", errors: [<the AEAT text>] }` and stores no incident; the validation that
+precedes a **real** presentation treats it as "no answer", so the presentation follows
+`PRESENT_WHEN_VALIDATOR_UNANSWERED` (goes ahead). An `EV0` returned by the filing service itself
+(PresBasicaDos) is not matched: it stays an error. The presentation that goes ahead without a verdict —
+"model not available" or no answer at all — answers with `"preValidation": "NOT_VALIDATED"`, on
+success and on failure alike (`200 SUCCESS` / `200 ERROR` / `502 SUBMISSION_FAILED`); an accepted
+validation, and test mode, leave the field out (`FiscalAeatSubmissionSupport.withPreValidation`,
+shared with `/fiscal303/submit`).
+
 **Validation PDF.** An `accepted` answer carries the validator's draft PDF. It is attached to
 the declaration as `VALIDACION-390-<year>-0A.pdf`, as proof that the file was validated — it is not a filing
 receipt. Each accepted validation replaces the previous `VALIDACION-` attachment (the new one
@@ -326,10 +362,13 @@ service's default timeouts are restored for the presentation):
 | no errors (warnings allowed) | the presentation goes ahead, as before |
 | errors (at least one) | **not presented**: `200` with the usual result shape, `status: "ERROR"`, `testMode: false`, `stage: "validation"`, the AEAT `errors`; they replace the declaration's AEAT incidents; nothing else changes (draft) |
 | no answer, or an answer with neither a PDF nor an error | `FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED` (`true`): present anyway. When `false`: `502`, `errorCode: "VALIDATION_UNAVAILABLE"`, `stage: "validation"` |
+| "model not available": only `EV0` errors with the text "No existe información del modelo" | treated as **no answer** (row above), not as a rejection; any other error next to it keeps it a rejection — see "Model not available" is not a rejection |
 
 It writes its own attempt row (path `pre_submission_validation`); the presentation that follows
-writes its `direct_submission` row. No PDF is attached for this validation. `testMode = true` is
-unchanged.
+writes its `direct_submission` row. No PDF is attached for this validation. A presentation that went
+ahead without a verdict answers with `"preValidation": "NOT_VALIDATED"`. `testMode = true` is
+unchanged, except for the "model not available" answer (`200`, `errorCode: "NOT_VALIDATED"`, no
+incident stored). Same rules as `/fiscal303/submit` (`aeat-303-submit-endpoint.md`).
 
 Request body (JSON): `{ testMode, idi, presenterNif, presenterName }` — the same shape as
 `/fiscal303/submit` (see `aeat-303-submit-endpoint.md`), without `nrc`: a 390 is informative (the
@@ -469,6 +508,7 @@ values to `manualData.aeatInputs` (only to the inputs the user did not change) a
 | `LIQANUAL_ENDCOMPENSATION` [662] | credits generated in a non-last period of the year and never applied | AEAT [662]: "cuotas a compensar generadas en el ejercicio en alguno de los períodos … distintos del último cuando no se hubiesen aplicado" |
 | `COMMON_TERRITORY` [87] | last 303 [65] (= [107], ETP-5391), default 100 | only when Σ last 303 [89]–[92] > 0; otherwise no territory key is sent |
 | `ALAVA` [88] / `GUIPUZCOA` [89] / `VIZCAYA` [90] / `NAVARRA` [91] | last 303 [89] / [90] / [91] / [92] | ETP-5391 last-period territorial boxes, same order |
+| `390INVESTMENT_REGULARIZATION` [63] | Σ [43] of the periods | AEAT [63]: the annual regularization of investment goods, which the 303s already declared in [43] (part of their [45]); preloading it keeps the 390 result equal to theirs |
 
 [85]/[662] come from one walk in period order: each [78] consumes the prior-year carry first —
 the first 303's [110] ("cuotas pendientes de compensación de periodos anteriores") — then the

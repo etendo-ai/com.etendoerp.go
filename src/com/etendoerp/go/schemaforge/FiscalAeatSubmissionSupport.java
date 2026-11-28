@@ -62,6 +62,8 @@ import com.etendoerp.go.schemaforge.data.FiscalDecl;
 final class FiscalAeatSubmissionSupport {
 
   static final String PARAM_TEST_MODE = "testMode";
+  /** Key of the AEAT errors array in a submission answer. */
+  private static final String ERRORS_KEY = "errors";
 
   private FiscalAeatSubmissionSupport() {
   }
@@ -114,7 +116,7 @@ final class FiscalAeatSubmissionSupport {
     byte[] pdf = result.getPdfContent();
     o.put("pdfBase64", pdf != null ? Base64.getEncoder().encodeToString(pdf) : JSONObject.NULL);
     o.put("pdfDownloadFailed", result.isPdfDownloadFailed());
-    o.put("errors", new JSONArray(result.getErrors()));
+    o.put(ERRORS_KEY, new JSONArray(result.getErrors()));
     o.put("warnings", new JSONArray(result.getWarnings()));
     o.put("declarationData", declarationData);
     return o;
@@ -137,16 +139,33 @@ final class FiscalAeatSubmissionSupport {
   static final int VALIDATION_CONNECT_TIMEOUT_MILLIS = 10_000;
   static final int VALIDATION_READ_TIMEOUT_MILLIS = 30_000;
 
+  /**
+   * {@code preValidation} value of a real presentation's answer when its validation got no
+   * verdict ({@link PreSubmissionValidation#notValidated}).
+   */
+  static final String PRE_VALIDATION_NOT_VALIDATED = "NOT_VALIDATED";
+  /** Field of a real presentation's answer that reports a validation with no verdict. */
+  static final String PARAM_PRE_VALIDATION = "preValidation";
+
   /** What the validation before a presentation decided. */
   static final class PreSubmissionValidation {
     /** The validator's rejection: the presentation must not go ahead. Null otherwise. */
     final AEAT303SubmissionResult rejected;
     /** No answer and the policy is to stop ({@link #PRESENT_WHEN_VALIDATOR_UNANSWERED}). */
     final boolean unavailable;
+    /**
+     * No verdict was obtained — the validator did not answer, or answered without accepting or
+     * rejecting the file ("model not available", EV0). The presentation may still go ahead
+     * ({@link #PRESENT_WHEN_VALIDATOR_UNANSWERED}); its answer then says the file was not
+     * validated first ({@link #withPreValidation}).
+     */
+    final boolean notValidated;
 
-    private PreSubmissionValidation(AEAT303SubmissionResult rejected, boolean unavailable) {
+    private PreSubmissionValidation(AEAT303SubmissionResult rejected, boolean unavailable,
+        boolean notValidated) {
       this.rejected = rejected;
       this.unavailable = unavailable;
+      this.notValidated = notValidated;
     }
 
     /** True when the real presentation goes ahead. */
@@ -201,12 +220,35 @@ final class FiscalAeatSubmissionSupport {
     // Only a verdict decides: an answer that is neither accepted nor carries a single error is
     // "no answer", never a rejection.
     if (outcome.outcome() == FiscalAeatValidationOutcome.Outcome.REJECTED) {
-      return new PreSubmissionValidation(result, false);
+      return new PreSubmissionValidation(result, false, false);
     }
     if (outcome.outcome() == FiscalAeatValidationOutcome.Outcome.ACCEPTED) {
-      return new PreSubmissionValidation(null, false);
+      return new PreSubmissionValidation(null, false, false);
     }
-    return new PreSubmissionValidation(null, !PRESENT_WHEN_VALIDATOR_UNANSWERED);
+    return new PreSubmissionValidation(null, !PRESENT_WHEN_VALIDATOR_UNANSWERED, true);
+  }
+
+  /**
+   * True when the validation that precedes a real presentation stopped it (and already answered
+   * the request). A null validation — test mode, where nothing is validated first — never stops.
+   */
+  static boolean stopsPresentation(PreSubmissionValidation validation) {
+    return validation != null && !validation.proceed();
+  }
+
+  /**
+   * Marks a real presentation's answer — success or failure — with
+   * {@code preValidation: "NOT_VALIDATED"} when the validation that preceded it got no verdict, so
+   * the user learns the file was presented without being validated first. An accepted validation
+   * (or none, in test mode: {@code validation == null}) leaves the answer unchanged. Returns
+   * {@code answer}.
+   */
+  static JSONObject withPreValidation(JSONObject answer, PreSubmissionValidation validation)
+      throws Exception {
+    if (validation != null && validation.notValidated) {
+      answer.put(PARAM_PRE_VALIDATION, PRE_VALIDATION_NOT_VALIDATED);
+    }
+    return answer;
   }
 
   private static void restoreTimeouts(AEAT303SubmissionService service) {
@@ -250,6 +292,37 @@ final class FiscalAeatSubmissionSupport {
     return result;
   }
 
+  /**
+   * {@code errorCode} of a "Validar sin presentar" whose answer is no verdict about the file: the
+   * validator has not loaded the model/exercise yet
+   * ({@link FiscalAeatValidationOutcome#isModelNotAvailable}).
+   */
+  static final String ERR_NOT_VALIDATED = "NOT_VALIDATED";
+
+  /**
+   * True when a TEST-mode answer (ServValiDos) is the validator saying it cannot validate this
+   * model/exercise yet. Such an answer is not a rejection of the file: the caller answers
+   * {@link #notValidatedJson} and stores no AEAT incident (like a validator that did not answer).
+   * A production answer is never matched: there it is the filing service speaking.
+   */
+  static boolean isNotValidatedTestAnswer(boolean testMode, AEAT303SubmissionResult result) {
+    return testMode && result != null && !result.isSuccessful()
+        && FiscalAeatValidationOutcome.isModelNotAvailable(result.getErrors());
+  }
+
+  /**
+   * The answer of a "Validar sin presentar" the validator could not validate
+   * ({@link #isNotValidatedTestAnswer}): {@code status ERROR}, {@code testMode true},
+   * {@code errorCode NOT_VALIDATED} and the AEAT text in {@code errors}, for reference.
+   */
+  static JSONObject notValidatedJson(AEAT303SubmissionResult result) throws Exception {
+    JSONObject o = failureJson(true, ERR_NOT_VALIDATED,
+        "The AEAT could not validate the file: its validation service has no information about"
+            + " this model and exercise yet.");
+    o.put(ERRORS_KEY, new JSONArray(result.getErrors()));
+    return o;
+  }
+
   /** The answer of a presentation stopped because the validator could not be reached. */
   static JSONObject validationUnavailableJson() throws Exception {
     JSONObject o = failureJson(false, ERR_VALIDATION_UNAVAILABLE,
@@ -281,7 +354,7 @@ final class FiscalAeatSubmissionSupport {
     o.put("errorCode", errorCode);
     JSONArray errors = new JSONArray();
     errors.put(StringUtils.defaultString(message));
-    o.put("errors", errors);
+    o.put(ERRORS_KEY, errors);
     o.put("warnings", new JSONArray());
     return o;
   }

@@ -38,7 +38,7 @@ import org.apache.commons.lang3.StringUtils;
  * <pre>
  * [47]  = [34] + sum of every recargo-equivalencia cuota + [44]     (only RE cuotas when [34] is empty)
  * [64]  = sum of the deductible cuotas (each split element's Total cuota, each non-split element's cuota)
- *         + [661]
+ *         + [63] + [661]
  * [65]  = [47] - [64]
  * LIQUIDATION mode (no territory percentage given):
  *   [84] = [65] + [658]
@@ -62,6 +62,12 @@ import org.apache.commons.lang3.StringUtils;
  * ([84] != [65] + [658]). The preview prints exactly what the file prints for every box it shows.
  * Known classic quirk NOT reproduced: in TERRITORY mode the TXT also prints the liquidation-mode
  * [84]/[86] slots as {@code 0 - [661]}; the preview only reports the territory [84].
+ *
+ * <p>[63] (regularización de bienes de inversión) is a user input (never calculated: it depends on
+ * the prorrata of the acquisition years, which Etendo does not keep). Unlike [661], classic puts it
+ * into the bean ({@code AEAT390Report2014#generateOperacionesRegimenGeneral}: {@code
+ * RegularizInversiones} and {@code SumDeducciones}), so it is part of {@code ResRegGeneral} and
+ * flows into [64], [65] and both the liquidation and the territory [84] with no quirk.
  */
 final class Fiscal390DerivedBoxes {
 
@@ -74,6 +80,8 @@ final class Fiscal390DerivedBoxes {
   static final String LIQANUAL_VAT_LAW_REGULARIZATION = "LIQANUAL_VAT_LAW_REGULARIZATION";
   static final String LIQANUAL_VAT_IMPORT = "LIQANUAL_VAT_IMPORT";
   static final String LIQANUAL_NO_CURRENT_TYPE_AMOUNT = "LIQANUAL_NoCurrentTypeAMOUNT";
+  /** [63], read by classic {@code AEAT390Utility.getInvestmentRegularization}. */
+  static final String INVESTMENT_REGULARIZATION = "390INVESTMENT_REGULARIZATION";
   static final String COMMON_TERRITORY = "COMMON_TERRITORY";
   static final String COMMON_TERRITORY_COMPENSATION = "COMMON_TERRITORY_COMPENSATION";
   static final String OPS_SUJETAS_OSS = "390OPSUJETASCONOSS";
@@ -135,9 +143,11 @@ final class Fiscal390DerivedBoxes {
     BigDecimal box47 = figures.totalCuotas34 == null ? figures.recargoCuotas
         : figures.totalCuotas34.add(figures.recargoCuotas).add(figures.modRecargoCuota);
     BigDecimal noCurrentType = in(inputs, LIQANUAL_NO_CURRENT_TYPE_AMOUNT);
-    // Classic's ResRegGeneral: [47] minus the deductible cuotas, before [661].
-    BigDecimal resRegGeneral = box47.subtract(figures.deductibleCuotas);
-    BigDecimal box64 = figures.deductibleCuotas.add(noCurrentType);
+    // Classic's SumDeducciones: the invoice deductions plus the [63] input.
+    BigDecimal sumDeducciones = figures.deductibleCuotas.add(in(inputs, INVESTMENT_REGULARIZATION));
+    // Classic's ResRegGeneral: [47] minus SumDeducciones, before [661].
+    BigDecimal resRegGeneral = box47.subtract(sumDeducciones);
+    BigDecimal box64 = sumDeducciones.add(noCurrentType);
     BigDecimal box65 = resRegGeneral.subtract(noCurrentType);
     put(boxes, 47, box47);
     put(boxes, 64, box64);
@@ -253,6 +263,7 @@ final class Fiscal390DerivedBoxes {
     Map<String, Integer> m = new LinkedHashMap<>();
     m.put("LIQANUAL_NoCurrentTypeBASE", 660);
     m.put(LIQANUAL_NO_CURRENT_TYPE_AMOUNT, 661);
+    m.put(INVESTMENT_REGULARIZATION, 63);
     m.put(LIQANUAL_VAT_LAW_REGULARIZATION, 658);
     m.put(LIQANUAL_VAT_IMPORT, 659);
     m.put("TOTAL_LASTPERIOD", 97);

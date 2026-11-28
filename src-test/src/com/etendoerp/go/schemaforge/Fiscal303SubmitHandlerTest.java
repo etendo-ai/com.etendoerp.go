@@ -113,6 +113,7 @@ import com.etendoerp.go.schemaforge.util.RoleAccessMatrix;
  *
  * @covers com.etendoerp.go.schemaforge.Fiscal303BoxesHandler
  * @covers com.etendoerp.go.schemaforge.Fiscal303SubmissionSupport
+ * @covers com.etendoerp.go.schemaforge.FiscalAeatSubmissionSupport
  */
 public class Fiscal303SubmitHandlerTest {
 
@@ -2628,6 +2629,8 @@ public class Fiscal303SubmitHandlerTest {
 
     assertEquals("SUCCESS", run.body.getString("status"));
     assertFalse(run.body.has("stage"));
+    // A validated file: the answer does not say "not validated".
+    assertFalse(run.body.has(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
     verify(run.decl).setDeclarationStatus("submitted_ack");
 
     List<FiscalAeatValidationOutcome> rows = run.attemptRows(2);
@@ -2682,6 +2685,8 @@ public class Fiscal303SubmitHandlerTest {
     if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
       verify(run.service).submitProduction(any());
       assertEquals("SUCCESS", run.body.getString("status"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
       List<FiscalAeatValidationOutcome> rows = run.attemptRows(2);
       assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());
       assertEquals(Outcome.CONNECTION_FAILURE, rows.get(0).outcome());
@@ -2693,6 +2698,203 @@ public class Fiscal303SubmitHandlerTest {
           run.body.getString("errorCode"));
       assertEquals(Outcome.CONNECTION_FAILURE, run.attemptRows(1).get(0).outcome());
     }
+  }
+
+  /** The validator's EV0 answer for a model/exercise it has not loaded yet. */
+  private static final String MODEL_NOT_LOADED_ERROR =
+      "EV0 - Error al cargar el modelo: No existe información del modelo: 303, 2026.";
+
+  /**
+   * "Validar sin presentar" while the validator has not loaded the 303 for the exercise (EV0):
+   * no verdict, so a 200 {@code ERROR / NOT_VALIDATED} in test mode, and no AEAT incident stored
+   * — the declaration's incidents are neither replaced nor committed.
+   */
+  @Test
+  public void testHandleSubmit_testModeModelNotLoaded_isNotValidatedAndStoresNoIncidents()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit("{\"testMode\":true}", new SubmitRun(), (service, ctx) ->
+        when(service.submitValidation(anyString(), anyString(), anyString(), anyString()))
+            .thenReturn(notLoaded));
+
+    verify(run.response).setStatus(HttpServletResponse.SC_OK);
+    assertEquals("ERROR", run.body.getString("status"));
+    assertTrue(run.body.getBoolean("testMode"));
+    assertEquals(FiscalAeatSubmissionSupport.ERR_NOT_VALIDATED,
+        run.body.getString("errorCode"));
+    verify(run.service, never()).submitProduction(any());
+    verify(run.obDal, never()).remove(run.staleIncident);
+    verify(run.obDal, never()).save(run.newIncident);
+    verify(run.obDal, never()).commitAndClose();
+
+    List<FiscalAeatValidationOutcome> rows = run.attemptRows(1);
+    assertEquals(Path.MANUAL_VALIDATION, rows.get(0).path());
+    assertEquals(Outcome.NOT_VALIDATED, rows.get(0).outcome());
+  }
+
+  /**
+   * The validation before a real presentation answers EV0 (model not loaded): that is no verdict,
+   * never a rejection, so the attempt is {@code NOT_VALIDATED} and — under
+   * {@link FiscalAeatSubmissionSupport#PRESENT_WHEN_VALIDATOR_UNANSWERED} — the presentation to
+   * PresBasicaDos goes ahead.
+   */
+  @Test
+  public void testHandleSubmit_productionValidatorModelNotLoaded_followsThePolicy()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit(PRODUCTION_REQUEST, new SubmitRun(), (service, ctx) -> {
+      when(service.hasOrgCertificate(any())).thenReturn(true);
+      when(service.submitValidation(eq("303"), anyString(), anyString(), anyString(),
+          anyString())).thenReturn(notLoaded);
+      when(service.submitProduction(any())).thenReturn(presentationResult(true));
+    });
+
+    if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
+      verify(run.service).submitProduction(any());
+      assertEquals("SUCCESS", run.body.getString("status"));
+      assertFalse(run.body.has("stage"));
+      // ETP-5716 — presented, but the answer says the file was not validated first.
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+      verify(run.decl).setDeclarationStatus("submitted_ack");
+      List<FiscalAeatValidationOutcome> rows = run.attemptRows(2);
+      assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());
+      assertEquals(Outcome.NOT_VALIDATED, rows.get(0).outcome());
+      assertEquals(Path.DIRECT_SUBMISSION, rows.get(1).path());
+      assertEquals(Outcome.ACCEPTED, rows.get(1).outcome());
+    } else {
+      verify(run.service, never()).submitProduction(any());
+      verify(run.response).setStatus(HttpServletResponse.SC_BAD_GATEWAY);
+      assertEquals(FiscalAeatSubmissionSupport.ERR_VALIDATION_UNAVAILABLE,
+          run.body.getString("errorCode"));
+      assertEquals(Outcome.NOT_VALIDATED, run.attemptRows(1).get(0).outcome());
+    }
+  }
+
+  /**
+   * EV0 before the presentation, then PresBasicaDos rejects the filing: the answer is the usual
+   * {@code ERROR} (nothing presented) AND says the file was not validated first (ETP-5716).
+   */
+  @Test
+  public void testHandleSubmit_productionModelNotLoadedThenRejected_saysNotValidated()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit(PRODUCTION_REQUEST, new SubmitRun(), (service, ctx) -> {
+      when(service.hasOrgCertificate(any())).thenReturn(true);
+      when(service.submitValidation(eq("303"), anyString(), anyString(), anyString(),
+          anyString())).thenReturn(notLoaded);
+      when(service.submitProduction(any())).thenReturn(presentationResult(false));
+    });
+
+    if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
+      verify(run.service).submitProduction(any());
+      assertEquals("ERROR", run.body.getString("status"));
+      assertFalse(run.body.getBoolean("testMode"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+      verify(run.decl, never()).setDeclarationStatus("submitted_ack");
+    }
+  }
+
+  /**
+   * EV0 before the presentation, then the filing call itself throws: the 502
+   * {@code SUBMISSION_FAILED} also says the file was not validated first (ETP-5716).
+   */
+  @Test
+  public void testHandleSubmit_productionModelNotLoadedThenCallFails_saysNotValidated()
+      throws Exception {
+    AEAT303SubmissionResult notLoaded = validatorResult(false);
+    notLoaded.addError(MODEL_NOT_LOADED_ERROR);
+
+    SubmitRun run = submit(PRODUCTION_REQUEST, new SubmitRun(), (service, ctx) -> {
+      when(service.hasOrgCertificate(any())).thenReturn(true);
+      when(service.submitValidation(eq("303"), anyString(), anyString(), anyString(),
+          anyString())).thenReturn(notLoaded);
+      when(service.submitProduction(any())).thenThrow(new OBException("refused"));
+    });
+
+    if (FiscalAeatSubmissionSupport.PRESENT_WHEN_VALIDATOR_UNANSWERED) {
+      verify(run.response).setStatus(HttpServletResponse.SC_BAD_GATEWAY);
+      assertEquals("SUBMISSION_FAILED", run.body.getString("errorCode"));
+      assertEquals(FiscalAeatSubmissionSupport.PRE_VALIDATION_NOT_VALIDATED,
+          run.body.getString(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+    }
+  }
+
+  /** A real error the validator can return next to EV0: a verdict about the file. */
+  private static final String OTHER_VALIDATOR_ERROR = "PAR016 - Error en el parametro PERIODO.";
+
+  /**
+   * "Validar sin presentar" answered with EV0 AND another real error: the EV0 is not the whole
+   * answer, so it is a rejection — not {@code NOT_VALIDATED}. The AEAT incidents are replaced
+   * with both errors, committed, and the attempt row is {@code REJECTED}.
+   */
+  @Test
+  public void testHandleSubmit_testModeModelNotLoadedWithAnotherError_isRejected()
+      throws Exception {
+    AEAT303SubmissionResult mixed = validatorResult(false);
+    mixed.addError(MODEL_NOT_LOADED_ERROR);
+    mixed.addError(OTHER_VALIDATOR_ERROR);
+
+    SubmitRun run = submit("{\"testMode\":true}", new SubmitRun(), (service, ctx) ->
+        when(service.submitValidation(anyString(), anyString(), anyString(), anyString()))
+            .thenReturn(mixed));
+
+    verify(run.response).setStatus(HttpServletResponse.SC_OK);
+    assertEquals("ERROR", run.body.getString("status"));
+    assertTrue(run.body.getBoolean("testMode"));
+    assertFalse("a rejection is not NOT_VALIDATED", run.body.has("errorCode"));
+    assertEquals(2, run.body.getJSONArray("errors").length());
+    assertEquals(OTHER_VALIDATOR_ERROR, run.body.getJSONArray("errors").getString(1));
+    verify(run.service, never()).submitProduction(any());
+    verify(run.obDal).remove(run.staleIncident);
+    verify(run.obDal, times(2)).save(run.newIncident);
+    verify(run.newIncident).set(FiscalDeclCrudHandler.PROPERTY_INCIDENT_CODE, "EV0");
+    verify(run.newIncident).set(FiscalDeclCrudHandler.PROPERTY_INCIDENT_CODE, "PAR016");
+    verify(run.obDal).commitAndClose();
+
+    List<FiscalAeatValidationOutcome> rows = run.attemptRows(1);
+    assertEquals(Path.MANUAL_VALIDATION, rows.get(0).path());
+    assertEquals(Outcome.REJECTED, rows.get(0).outcome());
+  }
+
+  /**
+   * The validation before a real presentation answers EV0 AND another real error: a rejection,
+   * so the presentation stops — PresBasicaDos is never called — and the answer is the
+   * validation's, without {@code preValidation} (the file WAS validated, and rejected).
+   */
+  @Test
+  public void testHandleSubmit_productionModelNotLoadedWithAnotherError_neverPresents()
+      throws Exception {
+    AEAT303SubmissionResult mixed = validatorResult(false);
+    mixed.addError(MODEL_NOT_LOADED_ERROR);
+    mixed.addError(OTHER_VALIDATOR_ERROR);
+
+    SubmitRun run = submit(PRODUCTION_REQUEST, new SubmitRun(), (service, ctx) -> {
+      when(service.hasOrgCertificate(any())).thenReturn(true);
+      when(service.submitValidation(eq("303"), anyString(), anyString(), anyString(),
+          anyString())).thenReturn(mixed);
+      when(service.submitProduction(any())).thenReturn(presentationResult(true));
+    });
+
+    verify(run.service, never()).submitProduction(any());
+    verify(run.decl, never()).setDeclarationStatus(anyString());
+    verify(run.obDal, times(2)).save(run.newIncident);
+    verify(run.response).setStatus(HttpServletResponse.SC_OK);
+    assertEquals("ERROR", run.body.getString("status"));
+    assertEquals(FiscalAeatSubmissionSupport.STAGE_VALIDATION, run.body.getString("stage"));
+    assertFalse(run.body.getBoolean("testMode"));
+    assertFalse(run.body.has(FiscalAeatSubmissionSupport.PARAM_PRE_VALIDATION));
+
+    List<FiscalAeatValidationOutcome> rows = run.attemptRows(1);
+    assertEquals(Path.PRE_SUBMISSION_VALIDATION, rows.get(0).path());
+    assertEquals(Outcome.REJECTED, rows.get(0).outcome());
   }
 
   /** "Validar sin presentar": ONE call to the validator, one {@code manual_validation} row. */
